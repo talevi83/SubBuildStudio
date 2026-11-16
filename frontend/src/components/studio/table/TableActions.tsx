@@ -1,5 +1,5 @@
-import React from 'react';
-import { Loader2, Plus, ShieldCheck, Timer } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Clock, Loader2, Plus, ShieldCheck, Timer } from 'lucide-react';
 import { useJobStore } from '../../../store/useJobStore';
 import { useT } from '../../../i18n';
 import { HistoryControls } from './HistoryControls';
@@ -12,9 +12,11 @@ interface TableActionsProps {
   onRunQa: () => void;
   autoScroll: boolean;
   onAutoScrollChange: (value: boolean) => void;
+  checkedCount?: number;
+  onShiftTimes?: (offsetSeconds: number) => void;
 }
 
-/** Right side of the second toolbar row: undo/redo/history, re-check timing, add line, quality check, auto-scroll. */
+/** Right side of the second toolbar row: undo/redo/history, shift times, re-check timing, add line, quality check, auto-scroll. */
 export const TableActions: React.FC<TableActionsProps> = ({
   canRecheck,
   canInsert,
@@ -22,16 +24,110 @@ export const TableActions: React.FC<TableActionsProps> = ({
   onRunQa,
   autoScroll,
   onAutoScrollChange,
+  checkedCount = 0,
+  onShiftTimes,
 }) => {
   const retimeActiveJob = useJobStore((s) => s.retimeActiveJob);
   const timingBusy = useJobStore((s) => s.timingBusy);
   const timingNote = useJobStore((s) => s.timingNote);
   const openInsert = useJobStore((s) => s.openInsert);
   const t = useT();
+  const [shiftOpen, setShiftOpen] = useState(false);
+  const [shiftOffset, setShiftOffset] = useState('0.5');
+  const shiftRootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!shiftOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (shiftRootRef.current && !shiftRootRef.current.contains(e.target as Node)) setShiftOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShiftOpen(false);
+    };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [shiftOpen]);
+
+  const applyShift = (offsetSeconds: number) => {
+    onShiftTimes?.(offsetSeconds);
+    setShiftOpen(false);
+  };
 
   return (
     <>
       {canRecheck && <HistoryControls />}
+      {canInsert && onShiftTimes && (
+        <div ref={shiftRootRef} className="relative">
+          <button
+            type="button"
+            onClick={() => setShiftOpen((v) => !v)}
+            title={t('table.shiftTimesTitle')}
+            data-testid="shift-time-toggle"
+            aria-expanded={shiftOpen}
+            className={`flex items-center gap-1.5 px-2 py-1 rounded border text-zinc-300 hover:text-white hover:border-indigo-500/60 cursor-pointer ${
+              shiftOpen ? 'border-indigo-500/60 text-white' : 'border-line'
+            }`}
+          >
+            <Clock className="w-3 h-3" />
+            {t('table.shiftTimes')}
+          </button>
+          {shiftOpen && (
+            <div
+              role="dialog"
+              data-testid="shift-time-popover"
+              className="absolute top-full end-0 mt-1 z-30 w-64 rounded-lg border border-line bg-surface p-3 shadow-xl shadow-black/40 space-y-2 text-xs"
+            >
+              <div className="font-semibold text-zinc-200">{t('table.shiftTimes')}</div>
+              <p className="text-[11px] text-zinc-400">
+                {checkedCount > 0 ? t('table.shiftScopeSelected', { count: checkedCount }) : t('table.shiftScopeAll')}
+              </p>
+              <label className="block space-y-1">
+                <span className="text-[11px] text-zinc-400">{t('table.shiftOffsetLabel')}</span>
+                <input
+                  type="number"
+                  step="0.1"
+                  dir="ltr"
+                  value={shiftOffset}
+                  onChange={(e) => setShiftOffset(e.target.value)}
+                  data-testid="shift-time-input"
+                  className="w-full bg-sunken border border-line rounded px-2 py-1 text-xs text-zinc-100 focus:outline-none focus:border-indigo-500"
+                />
+              </label>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => applyShift(-0.5)}
+                  className="px-2 py-1 rounded border border-line text-zinc-300 hover:text-white hover:border-indigo-500/60 cursor-pointer"
+                >
+                  -0.5s
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyShift(0.5)}
+                  className="px-2 py-1 rounded border border-line text-zinc-300 hover:text-white hover:border-indigo-500/60 cursor-pointer"
+                >
+                  +0.5s
+                </button>
+                <button
+                  type="button"
+                  data-testid="shift-time-apply"
+                  onClick={() => {
+                    const val = Number(shiftOffset);
+                    if (!Number.isNaN(val) && Math.abs(val) >= 0.001) applyShift(val);
+                  }}
+                  className="ms-auto px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-medium cursor-pointer"
+                >
+                  {t('table.shiftApply')}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {canRecheck && (
         <span className="flex items-center gap-2">
           {timingNote !== null && !timingBusy && (

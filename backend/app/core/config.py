@@ -121,7 +121,7 @@ def save_gemini_api_key(api_key: str) -> None:
     """Persist GEMINI_API_KEY to the .env file and update the in-memory settings."""
     import re
 
-    clean = (api_key or "").strip()
+    clean = re.sub(r"[\r\n\x00]+", "", api_key or "").strip()
     settings.gemini_api_key = clean or None
 
     target = env_file_path()

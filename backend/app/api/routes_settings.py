@@ -1,4 +1,5 @@
 import asyncio
+import re
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -193,5 +194,7 @@ async def ollama_setup(req: Optional[OllamaSetupRequest] = None):
     from app.core.ollama_setup import RECOMMENDED_LOCAL_MODEL, start_ollama_setup
 
     model = (req.model if req and req.model else RECOMMENDED_LOCAL_MODEL).strip()
+    if not re.fullmatch(r"[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)?", model):
+        raise HTTPException(status_code=400, detail=f"Invalid Ollama model name: {model}")
     return await start_ollama_setup(model=model)
 

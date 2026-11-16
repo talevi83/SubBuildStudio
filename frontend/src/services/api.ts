@@ -210,6 +210,33 @@ export const api = {
     );
   },
 
+  splitSegment(jobId: string, segmentId: number, splitTime?: number): Promise<SegmentsChange> {
+    return request(
+      `${API_BASE}/jobs/${jobId}/segments/${segmentId}/split`,
+      json('POST', splitTime !== undefined ? { split_time: splitTime } : {}),
+      'Could not split subtitle line'
+    );
+  },
+
+  mergeSegments(jobId: string, segmentIds: number[]): Promise<SegmentsChange> {
+    return request(
+      `${API_BASE}/jobs/${jobId}/segments/merge`,
+      json('POST', { segment_ids: segmentIds }),
+      'Could not merge selected lines'
+    );
+  },
+
+  shiftSegments(jobId: string, offsetSeconds: number, segmentIds?: number[]): Promise<SegmentsChange> {
+    return request(
+      `${API_BASE}/jobs/${jobId}/segments/shift`,
+      json('POST', {
+        offset_seconds: offsetSeconds,
+        ...(segmentIds && segmentIds.length > 0 ? { segment_ids: segmentIds } : {}),
+      }),
+      'Could not shift subtitle timing'
+    );
+  },
+
   getSettings(): Promise<SettingsResponse> {
     return request(`${API_BASE}/settings`, undefined, 'Could not load settings');
   },
@@ -262,8 +289,16 @@ export const api = {
     return `${API_BASE}/media/stream/${jobId}`;
   },
 
-  getExportUrl(jobId: string, format: 'srt' | 'vtt', useTranslated: boolean, applyRtl = true): string {
-    return `${API_BASE}/jobs/${jobId}/export/${format}?use_translated=${useTranslated}&apply_rtl=${applyRtl}`;
+  getExportUrl(
+    jobId: string,
+    format: 'srt' | 'vtt',
+    useTranslated: boolean,
+    applyRtl = true,
+    bilingual = false
+  ): string {
+    return `${API_BASE}/jobs/${jobId}/export/${format}?use_translated=${useTranslated}&apply_rtl=${applyRtl}${
+      bilingual ? '&bilingual=true' : ''
+    }`;
   },
 
   /** The project's edit history (steps oldest first, and the current one). */

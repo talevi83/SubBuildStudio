@@ -235,6 +235,18 @@ export const ExportToolbar: React.FC = () => {
         )}
         {hasTranslation && (
           <button
+            onClick={() => void downloadFile(api.getExportUrl(activeJob.id, 'srt', true, applyRtlExport, true))}
+            disabled={!hasSegments}
+            title={t('toolbar.bilingualSrtTitle')}
+            data-testid="export-bilingual-srt"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-200 border border-zinc-700/60 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+          >
+            <Languages className="w-3.5 h-3.5 text-indigo-300" />
+            {t('toolbar.bilingualSrt')}
+          </button>
+        )}
+        {hasTranslation && (
+          <button
             onClick={() => void saveNextToVideo()}
             disabled={!hasSegments || saving || !!activeJob.is_upload}
             title={activeJob.is_upload ? t('toolbar.saveNextToVideoUploaded') : t('toolbar.saveNextToVideoTitle')}

@@ -199,6 +199,19 @@ class MoveSegmentRequest(BaseModel):
     to_position: int = Field(description="0-based position in time order to drop the row at")
 
 
+class SplitSegmentRequest(BaseModel):
+    split_time: Optional[float] = Field(default=None, description="Optional split timestamp in seconds")
+
+
+class MergeSegmentsRequest(BaseModel):
+    segment_ids: List[int] = Field(min_length=2, description="IDs of 2 or more segments to merge")
+
+
+class ShiftSegmentsRequest(BaseModel):
+    offset_seconds: float = Field(description="Seconds to shift timestamps by (+/-)")
+    segment_ids: Optional[List[int]] = Field(default=None, description="Optional segment IDs to shift; None shifts all")
+
+
 class SegmentsChangeResponse(BaseModel):
     changed: int = 0
     retimed: bool = True

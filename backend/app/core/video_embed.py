@@ -17,12 +17,13 @@ import json
 import logging
 import os
 import shutil
+import sys
 import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from app.pipeline.stages.audio_stage import get_ffmpeg_bin
 from app.pipeline.stages.probe_stage import TEXT_SUBTITLE_CODECS, get_ffprobe_bin
@@ -155,9 +156,53 @@ def build_soft_command(video_path: str, subs_path: str, out_path: str, probe: di
     return cmd
 
 
-def burn_style(font_size: str) -> str:
+_DARWIN_ARIAL_PATHS = (
+    Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+    Path("/Library/Fonts/Arial.ttf"),
+)
+_LINUX_FONT_DIRS = (
+    Path("/usr/share/fonts"),
+    Path("/usr/local/share/fonts"),
+    Path.home() / ".local" / "share" / "fonts",
+)
+_LINUX_FONT_CANDIDATES = (
+    ("arial.ttf", "Arial"),
+    ("notosans-regular.ttf", "Noto Sans"),
+    ("dejavusans.ttf", "DejaVu Sans"),
+    ("liberationsans-regular.ttf", "Liberation Sans"),
+)
+
+
+def _burn_font_name(platform: Optional[str] = None) -> str:
+    """Pick a widely supported subtitle burn-in font for the host platform."""
+    plat = platform or sys.platform
+    if plat == "win32":
+        return "Arial"
+    if plat == "darwin":
+        for p in _DARWIN_ARIAL_PATHS:
+            if p.is_file():
+                return "Arial"
+        return "Helvetica Neue"
+
+    found_files: Set[str] = set()
+    for root in _LINUX_FONT_DIRS:
+        if not root.is_dir():
+            continue
+        try:
+            for font_file in root.rglob("*.ttf"):
+                found_files.add(font_file.name.lower())
+        except OSError:
+            continue
+    for filename, family in _LINUX_FONT_CANDIDATES:
+        if filename in found_files:
+            return family
+    return "DejaVu Sans"
+
+
+def burn_style(font_size: str, platform: Optional[str] = None) -> str:
     size = BURN_FONT_SIZES.get(font_size, BURN_FONT_SIZES["medium"])
-    return (f"FontName=Arial,FontSize={size},PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+    font = _burn_font_name(platform)
+    return (f"FontName={font},FontSize={size},PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
             f"BackColour=&H80000000,BorderStyle=1,Outline=1.6,Shadow=0.6,MarginV=16")
 
 

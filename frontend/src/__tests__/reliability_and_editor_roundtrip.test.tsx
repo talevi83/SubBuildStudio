@@ -65,6 +65,9 @@ describe('SubBuild Studio UI reliability & editor round-trip', () => {
       syncFile: null,
       syncRawFile: null,
       syncLanguage: null,
+      selectedSegmentIndex: null,
+      savingCount: 0,
+      lastSavedAt: null,
       error: null,
     });
   });
@@ -339,5 +342,303 @@ describe('SubBuild Studio UI reliability & editor round-trip', () => {
     const streamHex = streaming.digestHex();
     const blobHex = await hashBlobSha256(new Blob([sample]));
     expect(streamHex).toBe(blobHex);
+  });
+
+  it('flushes pending inline text edits before replaceAll runs', async () => {
+    const job = makeJob();
+    useJobStore.setState({ activeJob: job, jobs: [job] });
+
+    const serverSegment = { ...job.segments[0] };
+    const callOrder: string[] = [];
+
+    vi.spyOn(api, 'getHistory').mockResolvedValue({
+      cursor: 1,
+      can_undo: false,
+      can_redo: false,
+      entries: [],
+    });
+    vi.spyOn(api, 'updateSegment').mockImplementation(async (_jobId, _segId, patch) => {
+      callOrder.push('patch:single');
+      Object.assign(serverSegment, patch);
+      return { ...serverSegment };
+    });
+    vi.spyOn(api, 'updateSegments').mockImplementation(async (_jobId, patches) => {
+      callOrder.push('patch:bulk');
+      return patches.map((p) => ({ ...serverSegment, ...p }));
+    });
+
+    const view = render(<SubtitleTable />);
+    const hebrewTextarea = view.getByDisplayValue('שלום עולם') as HTMLTextAreaElement;
+    // Edit text to include a word we'll immediately replace without blurring or waiting 600ms
+    fireEvent.change(hebrewTextarea, { target: { value: 'שלום חבר יקר' } });
+
+    const count = await useJobStore.getState().replaceAll('חבר', 'ידיד', 'translated', false);
+    expect(count).toBe(1);
+    expect(callOrder).toEqual(['patch:single', 'patch:bulk']);
+    expect(useJobStore.getState().activeJob?.segments[0].translated_text).toBe('שלום ידיד יקר');
+  });
+
+  it('allows direct inline timecode editing and flags overlapping adjacent cues', async () => {
+    const job = makeJob();
+    job.segments = [
+      { ...job.segments[0], id: 101, index: 1, start_time: 1.0, end_time: 3.5 },
+      { ...job.segments[0], id: 102, index: 2, start_time: 4.0, end_time: 6.0, original_text: 'Next', translated_text: 'הבא' },
+    ];
+    useJobStore.setState({ activeJob: job, jobs: [job] });
+
+    vi.spyOn(api, 'getHistory').mockResolvedValue({
+      cursor: 1,
+      can_undo: false,
+      can_redo: false,
+      entries: [],
+    });
+    vi.spyOn(api, 'updateSegment').mockImplementation(async (_jobId, segId, patch) => {
+      const seg = useJobStore.getState().activeJob!.segments.find((s) => s.id === segId)!;
+      return { ...seg, ...patch };
+    });
+
+    const view = render(<SubtitleTable />);
+
+    // Click end-time of cue #1 and edit it to overlap cue #2 (4.5s > 4.0s)
+    fireEvent.click(view.getByTestId('end-time-1'));
+    const input = view.getByTestId('end-time-1-input') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '00:00:04,500' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(useJobStore.getState().activeJob?.segments[0].end_time).toBe(4.5);
+    });
+
+    // Both overlapping cues should now show the overlap warning icon
+    const warnings = view.getAllByLabelText('Time overlaps an adjacent subtitle');
+    expect(warnings).toHaveLength(2);
+  });
+
+  it('supports autosave status, split/merge/shift controls, search navigation, and bilingual export URL', async () => {
+    const job = makeJob();
+    job.segments = [
+      {
+        ...job.segments[0],
+        id: 101,
+        index: 1,
+        start_time: 1.0,
+        end_time: 5.0,
+        original_text: 'Hello world friend',
+        translated_text: 'שלום עולם חבר',
+      },
+      {
+        ...job.segments[0],
+        id: 102,
+        index: 2,
+        start_time: 6.0,
+        end_time: 8.0,
+        original_text: 'Goodbye world',
+        translated_text: 'להתראות עולם',
+      },
+    ];
+    useJobStore.setState({ activeJob: job, jobs: [job], applyRtlExport: true });
+
+    vi.spyOn(api, 'getHistory').mockResolvedValue({
+      cursor: 1,
+      can_undo: false,
+      can_redo: false,
+      entries: [],
+    });
+
+    let resolvePatch!: (seg: Job['segments'][0]) => void;
+    vi.spyOn(api, 'updateSegment').mockImplementation(
+      () =>
+        new Promise((res) => {
+          resolvePatch = res;
+        })
+    );
+
+    const splitSpy = vi.spyOn(api, 'splitSegment').mockResolvedValue({
+      changed: 2,
+      retimed: true,
+      created_id: 103,
+      segments: [
+        { ...job.segments[0], id: 101, index: 1, end_time: 3.0, original_text: 'Hello', translated_text: 'שלום' },
+        { ...job.segments[0], id: 103, index: 2, start_time: 3.0, end_time: 5.0, original_text: 'world friend', translated_text: 'עולם חבר' },
+        { ...job.segments[1], id: 102, index: 3 },
+      ],
+    });
+    const mergeSpy = vi.spyOn(api, 'mergeSegments').mockResolvedValue({
+      changed: 2,
+      retimed: true,
+      created_id: 101,
+      segments: [
+        { ...job.segments[0], id: 101, index: 1, start_time: 1.0, end_time: 5.0, original_text: 'Hello\nworld friend' },
+        { ...job.segments[1], id: 102, index: 2 },
+      ],
+    });
+    const shiftSpy = vi.spyOn(api, 'shiftSegments').mockResolvedValue({
+      changed: 2,
+      retimed: true,
+      segments: [
+        { ...job.segments[0], id: 101, index: 1, start_time: 2.0, end_time: 6.0 },
+        { ...job.segments[1], id: 102, index: 2, start_time: 7.0, end_time: 9.0 },
+      ],
+    });
+
+    const view = render(
+      <div>
+        <SubtitleTable />
+        <ExportToolbar />
+      </div>
+    );
+
+    // 1. Autosave status indicator transitions from Saving… -> Saved
+    fireEvent.click(view.getAllByTitle('+100ms')[0]);
+    expect(view.getByTestId('autosave-status').textContent).toContain('Saving');
+    resolvePatch({ ...job.segments[0], start_time: 1.1 });
+    await waitFor(() => {
+      expect(view.getByTestId('autosave-status').textContent).toContain('Saved');
+    });
+
+    // 2. Bilingual SRT export button builds URL with bilingual=true
+    const clickedHrefs: string[] = [];
+    const origClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      clickedHrefs.push(this.getAttribute('href') || '');
+    };
+    try {
+      fireEvent.click(view.getByTestId('export-bilingual-srt'));
+      await waitFor(() => expect(clickedHrefs.some((h) => h.includes('bilingual=true'))).toBe(true));
+    } finally {
+      HTMLAnchorElement.prototype.click = origClick;
+    }
+
+    // 3. Split cue #1
+    fireEvent.click(view.getByTestId('split-row-1'));
+    await waitFor(() => expect(splitSpy).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(useJobStore.getState().activeJob?.segments).toHaveLength(3));
+
+    // 4. Select rows #1 and #2 via checkboxes and click Merge
+    const rowCheckboxes = view.getAllByLabelText('Select this subtitle') as HTMLInputElement[];
+    fireEvent.click(rowCheckboxes[0]);
+    fireEvent.click(rowCheckboxes[1]);
+    fireEvent.click(view.getByTestId('rows-merge'));
+    await waitFor(() => expect(mergeSpy).toHaveBeenCalledWith('job_roundtrip_1', [101, 103]));
+    await waitFor(() => expect(useJobStore.getState().activeJob?.segments).toHaveLength(2));
+
+    // 5. Shift times by +1.0s
+    fireEvent.click(view.getByTestId('shift-time-toggle'));
+    fireEvent.change(view.getByTestId('shift-time-input'), { target: { value: '1.0' } });
+    fireEvent.click(view.getByTestId('shift-time-apply'));
+    await waitFor(() => expect(shiftSpy).toHaveBeenCalledWith('job_roundtrip_1', 1, undefined));
+
+    // 6. Search navigation Next / Prev match
+    useJobStore.setState({ selectedSegmentIndex: null });
+    const searchInput = view.getByPlaceholderText('Search subtitle text...') as HTMLInputElement;
+    fireEvent.change(searchInput, { target: { value: 'world' } });
+    await waitFor(() => expect(view.getByTestId('search-next-match')).toBeTruthy());
+    fireEvent.click(view.getByTestId('search-next-match'));
+    expect(useJobStore.getState().selectedSegmentIndex).toBe(1);
+    fireEvent.click(view.getByTestId('search-next-match'));
+    expect(useJobStore.getState().selectedSegmentIndex).toBe(2);
+    fireEvent.click(view.getByTestId('search-prev-match'));
+    expect(useJobStore.getState().selectedSegmentIndex).toBe(1);
+  });
+
+  it('preserves live Whisper transcribed segments when switching to another project and returning', async () => {
+    const liveJob: Job = {
+      ...makeJob(),
+      id: 'job_live_1',
+      status: 'TRANSCRIBING',
+      current_stage: 'TRANSCRIBING',
+      progress_percent: 35,
+      segments: [
+        {
+          job_id: 'job_live_1',
+          index: 1,
+          start_time: 1.0,
+          end_time: 2.5,
+          original_text: 'Live transcribed line one',
+          translated_text: null,
+          translation_failed: false,
+          segment_type: 'DIALOGUE',
+          confidence: 0.96,
+          cps: 16.0,
+        },
+        {
+          job_id: 'job_live_1',
+          index: 2,
+          start_time: 3.0,
+          end_time: 5.0,
+          original_text: 'Live transcribed line two',
+          translated_text: null,
+          translation_failed: false,
+          segment_type: 'DIALOGUE',
+          confidence: 0.92,
+          cps: 12.5,
+        },
+      ],
+    };
+    const otherJob: Job = {
+      ...makeJob(),
+      id: 'job_other_2',
+      file_name: 'OtherEpisode.mkv',
+      segments: [
+        {
+          id: 501,
+          job_id: 'job_other_2',
+          index: 1,
+          start_time: 0.5,
+          end_time: 2.0,
+          original_text: 'Other completed line',
+          translated_text: 'שורה מפרויקט אחר',
+          translation_failed: false,
+          segment_type: 'DIALOGUE',
+          confidence: 0.99,
+          cps: 10.0,
+        },
+      ],
+    };
+
+    useJobStore.setState({ activeJob: liveJob, jobs: [liveJob, otherJob] });
+    vi.spyOn(useJobStore.getState(), 'connectWebSocket').mockImplementation(() => {});
+    vi.spyOn(api, 'getHistory').mockResolvedValue({
+      cursor: null,
+      can_undo: false,
+      can_redo: false,
+      entries: [],
+    });
+    vi.spyOn(api, 'getJob').mockImplementation(async (jobId: string) => {
+      if (jobId === 'job_other_2') return otherJob;
+      if (jobId === 'job_live_1') return liveJob;
+      throw new Error(`Unexpected job id ${jobId}`);
+    });
+
+    const view = render(<SubtitleTable />);
+    expect(view.getByDisplayValue('Live transcribed line one')).toBeTruthy();
+
+    // Switch to another project
+    await useJobStore.getState().selectJob('job_other_2');
+    await waitFor(() => expect(view.getByDisplayValue('Other completed line')).toBeTruthy());
+
+    // Switch back to the transcribing project
+    await useJobStore.getState().selectJob('job_live_1');
+    await waitFor(() => expect(view.getByDisplayValue('Live transcribed line one')).toBeTruthy());
+    expect(view.getByDisplayValue('Live transcribed line two')).toBeTruthy();
+
+    // Also ensure refreshActiveJob with a slightly lagging response never drops newer live WS segments
+    const newerWsSeg = {
+      job_id: 'job_live_1',
+      index: 3,
+      start_time: 5.5,
+      end_time: 7.0,
+      original_text: 'Third live WS cue',
+      translated_text: null,
+      translation_failed: false,
+      segment_type: 'DIALOGUE' as const,
+      confidence: 0.94,
+      cps: 11.3,
+    };
+    useJobStore.setState({
+      activeJob: { ...liveJob, segments: [...liveJob.segments, newerWsSeg] },
+    });
+    await useJobStore.getState().refreshActiveJob();
+    expect(useJobStore.getState().activeJob?.segments.map((s) => s.index)).toEqual([1, 2, 3]);
   });
 });

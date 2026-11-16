@@ -21,9 +21,12 @@ def _lang_code(language: Optional[str]) -> Optional[str]:
     return language_code(language)
 
 
-def _build_filename(job: Job, use_translated: bool, ext: str) -> str:
+def _build_filename(job: Job, use_translated: bool, ext: str, bilingual: bool = False) -> str:
     code = _lang_code(job.target_language if use_translated else job.effective_source_language)
-    suffix = f".{code}.{ext}" if code else f".{ext}"
+    if bilingual:
+        suffix = f".{code}.dual.{ext}" if code else f".dual.{ext}"
+    else:
+        suffix = f".{code}.{ext}" if code else f".{ext}"
     return f"{Path(job.file_name).stem}{suffix}"
 
 
@@ -36,7 +39,14 @@ def _attachment_headers(filename: str) -> dict:
     }
 
 
-def _render(job: Job, use_translated: bool, apply_rtl: bool, max_chars_per_line: Optional[int], fmt: str) -> bytes:
+def _render(
+    job: Job,
+    use_translated: bool,
+    apply_rtl: bool,
+    max_chars_per_line: Optional[int],
+    fmt: str,
+    bilingual: bool = False,
+) -> bytes:
     """The subtitle file's bytes, exactly as downloaded (SRT with a UTF-8 BOM)."""
     serializer = serialize_to_srt if fmt == "srt" else serialize_to_vtt
     onscreen_pos = getattr(job, "onscreen_position", "top_center") or "top_center"
@@ -46,22 +56,30 @@ def _render(job: Job, use_translated: bool, apply_rtl: bool, max_chars_per_line:
         apply_rtl=apply_rtl,
         max_chars_per_line=max_chars_per_line or settings.max_chars_per_line,
         onscreen_position=onscreen_pos,
+        bilingual=bilingual,
     )
     # UTF-8 BOM: some players (and Windows Notepad) otherwise mis-detect Hebrew as ANSI.
     body = ("﻿" + content) if fmt == "srt" else content
     return body.encode("utf-8")
 
 
-def _export(job_id: str, session: Session, use_translated: bool, apply_rtl: bool,
-            max_chars_per_line: Optional[int], fmt: str) -> Response:
+def _export(
+    job_id: str,
+    session: Session,
+    use_translated: bool,
+    apply_rtl: bool,
+    max_chars_per_line: Optional[int],
+    fmt: str,
+    bilingual: bool = False,
+) -> Response:
     with history.job_lock(job_id):
         session.expire_all()
         job = session.get(Job, job_id)
         if not job:
             raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
         media_type = "application/x-subrip; charset=utf-8" if fmt == "srt" else "text/vtt; charset=utf-8"
-        content = _render(job, use_translated, apply_rtl, max_chars_per_line, fmt)
-        headers = _attachment_headers(_build_filename(job, use_translated, fmt))
+        content = _render(job, use_translated, apply_rtl, max_chars_per_line, fmt, bilingual=bilingual)
+        headers = _attachment_headers(_build_filename(job, use_translated, fmt, bilingual=bilingual))
     return Response(
         content=content,
         media_type=media_type,
@@ -75,10 +93,11 @@ def export_srt(
     use_translated: bool = Query(False, description="Export translated subtitle text if True"),
     apply_rtl: bool = Query(True, description="Apply BiDi RTL marks for Hebrew/Arabic"),
     max_chars_per_line: Optional[int] = Query(None, description="Line length limit"),
+    bilingual: bool = Query(False, description="Export both original and translated text in each cue"),
     session: Session = Depends(get_session),
 ):
     """Export and download subtitles as standard .srt format."""
-    return _export(job_id, session, use_translated, apply_rtl, max_chars_per_line, "srt")
+    return _export(job_id, session, use_translated, apply_rtl, max_chars_per_line, "srt", bilingual=bilingual)
 
 
 @router.get("/{job_id}/export/vtt")
@@ -87,10 +106,11 @@ def export_vtt(
     use_translated: bool = Query(False, description="Export translated subtitle text if True"),
     apply_rtl: bool = Query(True, description="Apply BiDi RTL marks for Hebrew/Arabic"),
     max_chars_per_line: Optional[int] = Query(None, description="Line length limit"),
+    bilingual: bool = Query(False, description="Export both original and translated text in each cue"),
     session: Session = Depends(get_session),
 ):
     """Export and download subtitles as WebVTT (.vtt) format."""
-    return _export(job_id, session, use_translated, apply_rtl, max_chars_per_line, "vtt")
+    return _export(job_id, session, use_translated, apply_rtl, max_chars_per_line, "vtt", bilingual=bilingual)
 
 
 @router.post("/{job_id}/export/save-next-to-video", response_model=SaveNextToVideoResponse)

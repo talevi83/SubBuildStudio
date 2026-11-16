@@ -1,5 +1,5 @@
 import React, { useState, useRef, useMemo, useCallback, useDeferredValue } from 'react';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Check, Loader2 } from 'lucide-react';
 import { useJobStore } from '../../store/useJobStore';
 import { isActiveStatus, isRtlLanguage } from '../../types';
 import type { SubtitleSegment } from '../../types';
@@ -34,7 +34,12 @@ export const SubtitleTable: React.FC = () => {
   const updateSegment = useJobStore((s) => s.updateSegment);
   const deleteSegment = useJobStore((s) => s.deleteSegment);
   const deleteSegments = useJobStore((s) => s.deleteSegments);
+  const splitSegment = useJobStore((s) => s.splitSegment);
+  const mergeSegments = useJobStore((s) => s.mergeSegments);
+  const shiftSegments = useJobStore((s) => s.shiftSegments);
   const moveSegment = useJobStore((s) => s.moveSegment);
+  const savingCount = useJobStore((s) => s.savingCount);
+  const lastSavedAt = useJobStore((s) => s.lastSavedAt);
   const retranslate = useJobStore((s) => s.retranslateActiveJob);
   const canTranslate = useJobStore((s) => !!s.systemInfo?.is_gemini_configured || !!s.pipelineConfig.gemini_api_key_override);
   const timingBusy = useJobStore((s) => s.timingBusy);
@@ -56,6 +61,22 @@ export const SubtitleTable: React.FC = () => {
     () => [...(activeJob?.segments || [])].sort((a, b) => a.start_time - b.start_time),
     [activeJob?.segments]
   );
+  const overlappedIds = useMemo(() => {
+    const ids = new Set<number>();
+    const scanLane = (lane: SubtitleSegment[]) => {
+      let prev: SubtitleSegment | null = null;
+      for (const cur of lane) {
+        if (prev && cur.start_time < prev.end_time - 0.001) {
+          if (prev.id) ids.add(prev.id);
+          if (cur.id) ids.add(cur.id);
+        }
+        if (!prev || cur.end_time > prev.end_time) prev = cur;
+      }
+    };
+    scanLane(segments.filter((s) => s.segment_type !== 'ON_SCREEN'));
+    scanLane(segments.filter((s) => s.segment_type === 'ON_SCREEN'));
+    return ids;
+  }, [segments]);
   const isRtl = isRtlLanguage(activeJob?.target_language);
   const jobFinished = !!activeJob && !isActiveStatus(activeJob.status);
   // Only promise "Translating…" while a translation is actually running
@@ -172,6 +193,15 @@ export const SubtitleTable: React.FC = () => {
     },
     [deleteSegment]
   );
+  const handleSplitRow = useCallback(
+    (seg: SubtitleSegment) => {
+      if (!seg.id) return;
+      const playhead = useJobStore.getState().videoCurrentTime;
+      const splitTime = playhead > seg.start_time + 0.15 && playhead < seg.end_time - 0.15 ? playhead : undefined;
+      void splitSegment(seg.id, splitTime);
+    },
+    [splitSegment]
+  );
 
   const handleDeleteSelected = async () => {
     if (checked.size === 0) return;
@@ -180,6 +210,39 @@ export const SubtitleTable: React.FC = () => {
     setChecked(new Set());
     await deleteSegments(ids);
   };
+
+  const handleMergeSelected = async () => {
+    if (checked.size < 2) return;
+    const ids = [...checked];
+    setChecked(new Set());
+    await mergeSegments(ids);
+  };
+
+  const handleShiftTimes = async (offsetSeconds: number) => {
+    await shiftSegments(offsetSeconds, checked.size > 0 ? [...checked] : undefined);
+  };
+
+  const currentMatchPos = useMemo(() => {
+    if (!searchTerm.trim() || filteredSegments.length === 0) return 0;
+    const pos = filteredSegments.findIndex((s) => s.index === selectedSegmentIndex);
+    return pos >= 0 ? pos : 0;
+  }, [searchTerm, filteredSegments, selectedSegmentIndex]);
+
+  const stepSearchMatch = useCallback(
+    (delta: 1 | -1) => {
+      if (filteredSegments.length === 0) return;
+      const curPos = filteredSegments.findIndex((s) => s.index === selectedSegmentIndex);
+      const nextPos =
+        curPos >= 0
+          ? (curPos + delta + filteredSegments.length) % filteredSegments.length
+          : delta > 0
+          ? 0
+          : filteredSegments.length - 1;
+      scrollToListIndex(nextPos);
+      onSelect(filteredSegments[nextPos]);
+    },
+    [filteredSegments, selectedSegmentIndex, scrollToListIndex, onSelect]
+  );
 
   const selectAllLabel = allFilteredChecked
     ? t('table.deselectAllShown')
@@ -196,6 +259,10 @@ export const SubtitleTable: React.FC = () => {
           regexError={regexError}
           isLive={isLive}
           onResult={showReplaceResult}
+          matchCount={searchTerm.trim() ? filteredSegments.length : 0}
+          currentMatchIndex={currentMatchPos}
+          onNextMatch={() => stepSearchMatch(1)}
+          onPrevMatch={() => stepSearchMatch(-1)}
         />
 
         <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400 px-1">
@@ -215,6 +282,27 @@ export const SubtitleTable: React.FC = () => {
                 </>
               )}
             </span>
+
+            {(savingCount > 0 || lastSavedAt !== null) && (
+              <span
+                data-testid="autosave-status"
+                className={`flex items-center gap-1 text-[11px] ${
+                  savingCount > 0 ? 'text-amber-300' : 'text-emerald-400'
+                }`}
+              >
+                {savingCount > 0 ? (
+                  <>
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    {t('table.saving')}
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-3 h-3" />
+                    {t('table.saved')}
+                  </>
+                )}
+              </span>
+            )}
 
             <TagFilterSelect value={tagFilter} onChange={setTagFilter} counts={tagCounts} />
 
@@ -237,6 +325,8 @@ export const SubtitleTable: React.FC = () => {
               onRunQa={() => void qa.run()}
               autoScroll={autoScroll}
               onAutoScrollChange={setAutoScroll}
+              checkedCount={checked.size}
+              onShiftTimes={(offset) => void handleShiftTimes(offset)}
             />
           </div>
         </div>
@@ -262,6 +352,8 @@ export const SubtitleTable: React.FC = () => {
           canTranslate={canTranslate}
           onTranslate={translateRows}
           onOpenNote={() => setRowsDialog(true)}
+          canMerge={canInsert}
+          onMerge={() => void handleMergeSelected()}
           canDelete={canInsert}
           onDelete={() => void handleDeleteSelected()}
           onClear={() => setChecked(new Set())}
@@ -293,7 +385,7 @@ export const SubtitleTable: React.FC = () => {
         <table className="w-full text-start border-collapse text-xs">
           <thead className="bg-sunken text-zinc-400 sticky top-0 z-10 border-b border-line uppercase font-semibold text-[10px] tracking-wider select-none">
             <tr>
-              <th className="py-2.5 px-3 w-14 text-center">
+              <th className="py-2.5 px-3 w-16 text-center">
                 <div className="flex items-center justify-center gap-1.5">
                   {canSelect && selectableFilteredIds.length > 0 && (
                     <input
@@ -355,8 +447,10 @@ export const SubtitleTable: React.FC = () => {
                       onCheck={canSelect ? handleCheck : undefined}
                       onSelectToEnd={canSelect ? handleSelectToEnd : undefined}
                       onInsertAfter={canInsert ? insertAfter : undefined}
+                      onSplit={canInsert ? handleSplitRow : undefined}
                       onDelete={canInsert ? handleDeleteRow : undefined}
                       onFilterTag={setTagFilter}
+                      overlapsNeighbor={overlappedIds.has(seg.id ?? -1)}
                       canDrag={rowCanDrag}
                       isDragging={rowCanDrag && dragId === seg.id}
                       dropPosition={dropPosition}

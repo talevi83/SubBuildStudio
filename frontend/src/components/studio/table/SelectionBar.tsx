@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronsDown, ChevronsUp, Trash2 } from 'lucide-react';
+import { ChevronsDown, ChevronsUp, Merge, Trash2 } from 'lucide-react';
 import { useT } from '../../../i18n';
 import type { Gender, ThinkingLevel } from '../../../types';
 import type { CheckedRangeBounds } from './useRowSelection';
@@ -21,12 +21,14 @@ interface SelectionBarProps {
   canTranslate: boolean;
   onTranslate: (opts: RowTranslateOptions) => void;
   onOpenNote: () => void;
+  canMerge?: boolean;
+  onMerge?: () => void;
   canDelete: boolean;
   onDelete: () => void;
   onClear: () => void;
 }
 
-/** Bar shown while rows are checked: range expansion, quick re-translations, delete, clear. */
+/** Bar shown while rows are checked: range expansion, quick re-translations, merge, delete, clear. */
 export const SelectionBar: React.FC<SelectionBarProps> = ({
   count,
   bounds,
@@ -35,6 +37,8 @@ export const SelectionBar: React.FC<SelectionBarProps> = ({
   canTranslate,
   onTranslate,
   onOpenNote,
+  canMerge = false,
+  onMerge,
   canDelete,
   onDelete,
   onClear,
@@ -112,6 +116,18 @@ export const SelectionBar: React.FC<SelectionBarProps> = ({
             {t('table.retranslateRows')}
           </button>
         </>
+      )}
+      {canMerge && count >= 2 && onMerge && (
+        <button
+          type="button"
+          onClick={onMerge}
+          title={t('table.mergeSelectedTitle')}
+          data-testid="rows-merge"
+          className="flex items-center gap-1 px-2 py-1 rounded border border-indigo-500/40 text-indigo-200 hover:bg-indigo-500/15 cursor-pointer"
+        >
+          <Merge className="w-3 h-3" />
+          {t('table.mergeSelected', { count })}
+        </button>
       )}
       {canDelete && (
         <button

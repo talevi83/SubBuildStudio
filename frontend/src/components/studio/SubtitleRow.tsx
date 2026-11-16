@@ -2,9 +2,9 @@ import React, { memo, useEffect, useRef, useState } from 'react';
 import type { SegmentPatch, SubtitleSegment } from '../../types';
 import { registerPendingFlush } from '../../store/useJobStore';
 import { CpsBadge } from './CpsBadge';
-import { formatTimecode } from '../../utils/time';
+import { formatTimecode, parseTimecode } from '../../utils/time';
 import { useT } from '../../i18n';
-import { AlertTriangle, ChevronsDown, GripVertical, Minus, Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, ChevronsDown, GripVertical, Minus, Plus, Scissors, Trash2 } from 'lucide-react';
 
 const SAVE_DELAY_MS = 600;
 
@@ -25,6 +25,8 @@ interface SubtitleRowProps {
   onSelectToEnd?: (segmentId: number) => void;
   /** "+" under the row number: add a line right after this one; omitted while the job runs */
   onInsertAfter?: (seg: SubtitleSegment) => void;
+  /** Split this subtitle line into two parts; omitted while the job runs */
+  onSplit?: (seg: SubtitleSegment) => void;
   /** Delete this subtitle line; omitted while the job runs */
   onDelete?: (seg: SubtitleSegment) => void;
   /** Drag-to-move support (passed as primitive/stable props so React.memo never invalidates) */
@@ -37,6 +39,8 @@ interface SubtitleRowProps {
   onDragEnd?: () => void;
   /** Filter the table by this tag when clicking the badge */
   onFilterTag?: (tag: string) => void;
+  /** True when this cue's time range overlaps an adjacent cue in the same lane */
+  overlapsNeighbor?: boolean;
 }
 
 type TextField = 'original_text' | 'translated_text';
@@ -112,6 +116,77 @@ const EditableText: React.FC<{
   );
 };
 
+const EditableTimecode: React.FC<{
+  value: number;
+  disabled: boolean;
+  isValid: (seconds: number) => boolean;
+  onCommit: (seconds: number) => void;
+  testId?: string;
+}> = ({ value, disabled, isValid, onCommit, testId }) => {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const startEdit = () => {
+    if (disabled) return;
+    setDraft(formatTimecode(value));
+    setEditing(true);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+  };
+
+  const commitEdit = () => {
+    setEditing(false);
+    const parsed = parseTimecode(draft);
+    if (parsed === null) return;
+    const rounded = Math.round(parsed * 1000) / 1000;
+    if (!isValid(rounded) || Math.abs(rounded - value) < 0.0005) return;
+    onCommit(rounded);
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        type="text"
+        dir="ltr"
+        value={draft}
+        data-testid={testId ? `${testId}-input` : undefined}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commitEdit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commitEdit();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            setEditing(false);
+          }
+        }}
+        className="w-24 bg-sunken border border-indigo-500/70 rounded px-1 py-0.5 text-[11px] font-mono-time text-zinc-100 focus:outline-none"
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={startEdit}
+      data-testid={testId}
+      className={
+        disabled
+          ? 'cursor-default'
+          : 'cursor-pointer hover:text-indigo-300 hover:underline underline-offset-2 transition-colors'
+      }
+    >
+      {formatTimecode(value)}
+    </button>
+  );
+};
+
 const textareaClass =
   'w-full bg-transparent hover:bg-sunken focus:bg-sunken p-1.5 rounded border hover:border-line focus:border-indigo-500/60 focus:outline-none resize-none text-xs leading-relaxed transition-colors disabled:cursor-default';
 
@@ -129,6 +204,7 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
   onCheck,
   onSelectToEnd,
   onInsertAfter,
+  onSplit,
   onDelete,
   canDrag,
   isDragging,
@@ -138,6 +214,7 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
   onDrop,
   onDragEnd,
   onFilterTag,
+  overlapsNeighbor,
 }) => {
   const t = useT();
   const editable = !!seg.id;
@@ -256,6 +333,21 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
               <Plus className="w-3 h-3" />
             </button>
           )}
+          {onSplit && seg.id && seg.end_time - seg.start_time >= 0.4 && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSplit(seg);
+              }}
+              title={t('table.splitRow', { index: seg.index })}
+              aria-label={t('table.splitRow', { index: seg.index })}
+              data-testid={`split-row-${seg.index}`}
+              className="flex h-4 w-4 items-center justify-center rounded text-zinc-500 hover:text-indigo-200 hover:bg-indigo-600/30 opacity-0 group-hover:opacity-100 focus:opacity-100 cursor-pointer transition-opacity"
+            >
+              <Scissors className="w-3 h-3" />
+            </button>
+          )}
           {onSelectToEnd && seg.id && (
             <button
               type="button"
@@ -339,16 +431,38 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
         )}
       </td>
 
-      <td className="py-2 px-3 font-mono-time text-zinc-400 text-[11px] whitespace-nowrap" onClick={(e) => e.stopPropagation()} dir="ltr">
+      <td
+        className={`py-2 px-3 font-mono-time text-[11px] whitespace-nowrap ${
+          overlapsNeighbor ? 'text-amber-300' : 'text-zinc-400'
+        }`}
+        title={overlapsNeighbor ? 'Time overlaps an adjacent subtitle' : undefined}
+        onClick={(e) => e.stopPropagation()}
+        dir="ltr"
+      >
         <div className="space-y-1">
           <div className="flex items-center gap-1">
+            {overlapsNeighbor && (
+              <AlertTriangle className="w-3 h-3 text-amber-400 flex-shrink-0" aria-label="Time overlaps an adjacent subtitle" />
+            )}
             <span className="text-zinc-500 text-[9px]">{t('table.in')}</span>
-            <span>{formatTimecode(seg.start_time)}</span>
+            <EditableTimecode
+              value={seg.start_time}
+              disabled={!editable}
+              isValid={(s) => s >= 0 && s < seg.end_time}
+              onCommit={(s) => seg.id && onSave(seg.id, { start_time: s })}
+              testId={`start-time-${seg.index}`}
+            />
             {nudgeButtons('start_time')}
           </div>
           <div className="flex items-center gap-1">
             <span className="text-zinc-500 text-[9px]">{t('table.out')}</span>
-            <span>{formatTimecode(seg.end_time)}</span>
+            <EditableTimecode
+              value={seg.end_time}
+              disabled={!editable}
+              isValid={(e) => e > seg.start_time}
+              onCommit={(e) => seg.id && onSave(seg.id, { end_time: e })}
+              testId={`end-time-${seg.index}`}
+            />
             {nudgeButtons('end_time')}
           </div>
         </div>

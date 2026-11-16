@@ -14,6 +14,7 @@ from app.core.database import get_session
 from app.core.glossary_profiles import clean_name, save_profile
 from app.core.housekeeping import delete_upload_if_unused, is_in_uploads
 from app.core.user_settings import load_settings
+from app.api.routes_media import validate_media_path
 from app.models.db_models import Job, JobStatus, SubtitleSegmentRecord
 from app.models.schemas import (
     AudioStreamInfo,
@@ -33,6 +34,9 @@ from app.models.schemas import (
     SegmentCreate,
     SegmentUpdate,
     SegmentsChangeResponse,
+    ShiftSegmentsRequest,
+    MergeSegmentsRequest,
+    SplitSegmentRequest,
     SubtitleSegmentSchema,
 )
 from app.pipeline.orchestrator import PipelineOrchestrator, spawn_background, ACTIVE_STATUSES, _now
@@ -129,11 +133,17 @@ def _job_to_response(
 
     segments: List[SubtitleSegmentSchema] = []
     if include_segments:
-        segments = [_segment_to_schema(s) for s in (job.segments or [])]
+        if job.segments:
+            segments = [_segment_to_schema(s) for s in job.segments]
+        else:
+            live = PipelineOrchestrator.get_live_segments(job.id)
+            segments = [SubtitleSegmentSchema(**s) for s in live]
         segment_count = len(segments)
         failed_count = sum(1 for s in segments if s.translation_failed)
     else:
         segment_count, failed_count = counts or (0, 0)
+        if segment_count == 0:
+            segment_count = len(PipelineOrchestrator.get_live_segments(job.id))
 
     return JobResponse(
         id=job.id,
@@ -198,6 +208,7 @@ async def create_job(req: JobCreate, session: Session = Depends(get_session)):
     path = Path(req.video_path.strip().strip('"').strip("'"))
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"Target video file not found: {req.video_path}")
+    validate_media_path(path)
 
     job_id = f"job_{uuid.uuid4().hex[:10]}"
     resolved = path.resolve()
@@ -537,10 +548,14 @@ def quality_check(job_id: str, session: Session = Depends(get_session)):
 def _delete_single_job(session: Session, job: Job) -> Tuple[str, bool]:
     """Delete a job, its cached audio/frames/logs, and (for browser uploads) the uploaded copy."""
     import shutil
+    from app.core import video_embed as ve
     from app.core.job_logging import delete_job_log
 
     job_id = job.id
     PipelineOrchestrator.cancel_job(job_id)
+    running_embed = ve.running_task(job_id)
+    if running_embed is not None:
+        ve.cancel_task(running_embed)
     video_path, is_upload = job.video_path, job.is_upload
 
     try:
@@ -559,6 +574,10 @@ def _delete_single_job(session: Session, job: Job) -> Tuple[str, bool]:
         pass
     try:
         shutil.rmtree(settings.storage_dir / "frames" / job_id, ignore_errors=True)
+    except OSError:
+        pass
+    try:
+        shutil.rmtree(settings.storage_dir / "exports" / f"embed_{job_id}", ignore_errors=True)
     except OSError:
         pass
 
@@ -638,6 +657,14 @@ def update_segment(
 
     _apply_segment_patch(seg, patch)
     session.add(seg)
+    if patch.start_time is not None or patch.end_time is not None:
+        session.flush()
+        rows = session.exec(select(SubtitleSegmentRecord).where(SubtitleSegmentRecord.job_id == job_id)).all()
+        rows.sort(key=lambda r: (r.start_time, r.end_time, r.id or 0))
+        for position, row in enumerate(rows, start=1):
+            if row.index != position:
+                row.index = position
+                session.add(row)
     session.commit()
     session.refresh(seg)
     fields = sorted(patch.model_dump(exclude_unset=True, exclude_none=True))
@@ -777,6 +804,188 @@ def delete_segment(job_id: str, segment_id: int, session: Session = Depends(get_
     _history_record(session, job, recording, "delete", {"index": deleted_index})
 
     return SegmentsChangeResponse(changed=1, segments=[_segment_to_schema(r) for r in _ordered_rows(session, job_id)])
+
+
+def _split_cue_text(text: str) -> Tuple[str, str]:
+    """Split a subtitle cue cleanly across line break or nearest balanced word boundary."""
+    s = (text or "").strip()
+    if not s:
+        return "", ""
+    if "\n" in s:
+        lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
+        if len(lines) >= 2:
+            return lines[0], "\n".join(lines[1:])
+    words = s.split()
+    if len(words) >= 2:
+        best_i, best_score = 1, float("inf")
+        for i in range(1, len(words)):
+            left = " ".join(words[:i])
+            right = " ".join(words[i:])
+            score = abs(len(left) - len(right)) - (8 if words[i - 1][-1:] in ".!?;:," else 0)
+            if score < best_score:
+                best_i, best_score = i, score
+        return " ".join(words[:best_i]), " ".join(words[best_i:])
+    if len(s) >= 2:
+        mid = len(s) // 2
+        return s[:mid], s[mid:]
+    return s, ""
+
+
+@router.post("/{job_id}/segments/{segment_id}/split", response_model=SegmentsChangeResponse)
+@_history_locked
+def split_segment(
+    job_id: str,
+    segment_id: int,
+    req: Optional[SplitSegmentRequest] = None,
+    session: Session = Depends(get_session),
+):
+    """Split one subtitle segment into two consecutive segments and renumber."""
+    job = _get_job_or_404(session, job_id)
+    if job.status in ACTIVE_STATUSES:
+        raise HTTPException(status_code=409, detail="The job is still running; split lines when it has finished")
+    seg = session.get(SubtitleSegmentRecord, segment_id)
+    if not seg or seg.job_id != job_id:
+        raise HTTPException(status_code=404, detail="Subtitle segment not found")
+
+    dur = seg.end_time - seg.start_time
+    if dur < 0.4:
+        raise HTTPException(status_code=422, detail="Line is too short to split")
+
+    orig1, orig2 = _split_cue_text(seg.original_text or "")
+    has_tr = bool((seg.translated_text or "").strip())
+    tr1, tr2 = _split_cue_text(seg.translated_text or "") if has_tr else ("", "")
+    if not orig2 and not tr2:
+        raise HTTPException(status_code=422, detail="Line text cannot be split into two parts")
+
+    req_time = req.split_time if req is not None else None
+    if req_time is not None and seg.start_time + 0.15 <= req_time <= seg.end_time - 0.15:
+        split_at = round(req_time, 3)
+    else:
+        p1, p2 = (tr1, tr2) if (tr1 and tr2) else (orig1, orig2)
+        ratio = max(0.25, min(0.75, len(p1) / max(1, len(p1) + len(p2))))
+        split_at = round(seg.start_time + dur * ratio, 3)
+
+    recording = _history_begin(session, job)
+    old_end = seg.end_time
+    old_index = seg.index
+
+    seg.end_time = split_at
+    seg.original_text = orig1 or seg.original_text
+    seg.translated_text = (tr1 or seg.translated_text) if has_tr else None
+    _refresh_cps(seg)
+    session.add(seg)
+
+    second = SubtitleSegmentRecord(
+        job_id=job_id,
+        index=0,
+        start_time=split_at,
+        end_time=old_end,
+        original_text=orig2 or orig1,
+        translated_text=(tr2 or tr1) if has_tr else None,
+        translation_failed=seg.translation_failed,
+        segment_type=seg.segment_type,
+        confidence=seg.confidence,
+    )
+    _refresh_cps(second)
+    session.add(second)
+    session.flush()
+
+    rows = _ordered_rows(session, job_id)
+    rows.sort(key=lambda r: (r.start_time, r.end_time, r.id or 0))
+    for position, row in enumerate(rows, start=1):
+        row.index = position
+        session.add(row)
+    session.commit()
+    session.refresh(second)
+    _history_record(session, job, recording, "split", {"index": old_index})
+    rows = _ordered_rows(session, job_id)
+    return SegmentsChangeResponse(changed=2, created_id=second.id, segments=[_segment_to_schema(r) for r in rows])
+
+
+@router.post("/{job_id}/segments/merge", response_model=SegmentsChangeResponse)
+@_history_locked
+def merge_segments(job_id: str, req: MergeSegmentsRequest, session: Session = Depends(get_session)):
+    """Merge 2 or more subtitle segments into one combined cue and renumber."""
+    job = _get_job_or_404(session, job_id)
+    if job.status in ACTIVE_STATUSES:
+        raise HTTPException(status_code=409, detail="The job is still running; merge lines when it has finished")
+
+    targets = session.exec(
+        select(SubtitleSegmentRecord).where(
+            SubtitleSegmentRecord.job_id == job_id,
+            SubtitleSegmentRecord.id.in_(req.segment_ids),
+        )
+    ).all()
+    targets.sort(key=lambda r: (r.start_time, r.end_time, r.index))
+    if len(targets) < 2:
+        raise HTTPException(status_code=400, detail="Select at least 2 lines to merge")
+
+    recording = _history_begin(session, job)
+    first = targets[0]
+    first.start_time = min(t.start_time for t in targets)
+    first.end_time = max(t.end_time for t in targets)
+    first.original_text = "\n".join(t.original_text.strip() for t in targets if (t.original_text or "").strip())
+    tr_parts = [t.translated_text.strip() for t in targets if (t.translated_text or "").strip()]
+    first.translated_text = "\n".join(tr_parts) if tr_parts else None
+    first.translation_failed = any(t.translation_failed for t in targets) and not bool(first.translated_text)
+    _refresh_cps(first)
+    session.add(first)
+
+    for extra in targets[1:]:
+        session.delete(extra)
+    session.flush()
+
+    rows = _ordered_rows(session, job_id)
+    rows.sort(key=lambda r: (r.start_time, r.end_time, r.id or 0))
+    for position, row in enumerate(rows, start=1):
+        row.index = position
+        session.add(row)
+    session.commit()
+    session.refresh(first)
+    _history_record(session, job, recording, "merge", {"index": first.index, "count": len(targets)})
+    rows = _ordered_rows(session, job_id)
+    return SegmentsChangeResponse(changed=len(targets), created_id=first.id, segments=[_segment_to_schema(r) for r in rows])
+
+
+@router.post("/{job_id}/segments/shift", response_model=SegmentsChangeResponse)
+@_history_locked
+def shift_segments(job_id: str, req: ShiftSegmentsRequest, session: Session = Depends(get_session)):
+    """Shift timestamps of all or selected subtitle segments by offset_seconds (+/-)."""
+    job = _get_job_or_404(session, job_id)
+    if job.status in ACTIVE_STATUSES:
+        raise HTTPException(status_code=409, detail="The job is still running; shift lines when it has finished")
+    if abs(req.offset_seconds) < 0.001 or abs(req.offset_seconds) > 86400:
+        raise HTTPException(status_code=422, detail="Offset must be between 0.001s and 86400s in magnitude")
+
+    rows = _ordered_rows(session, job_id)
+    wanted = set(req.segment_ids) if req.segment_ids else None
+    targets = [r for r in rows if wanted is None or r.id in wanted]
+    if not targets:
+        return SegmentsChangeResponse(changed=0, segments=[_segment_to_schema(r) for r in rows])
+
+    recording = _history_begin(session, job)
+    for seg in targets:
+        dur = max(0.1, round(seg.end_time - seg.start_time, 3))
+        shifted_start = seg.start_time + req.offset_seconds
+        new_start = max(0.0, round(shifted_start, 3))
+        if shifted_start < 0:
+            new_end = round(new_start + dur, 3)
+        else:
+            new_end = max(round(new_start + 0.1, 3), round(seg.end_time + req.offset_seconds, 3))
+        seg.start_time = new_start
+        seg.end_time = new_end
+        _refresh_cps(seg)
+        session.add(seg)
+    session.flush()
+
+    rows = _ordered_rows(session, job_id)
+    rows.sort(key=lambda r: (r.start_time, r.end_time, r.id or 0))
+    for position, row in enumerate(rows, start=1):
+        row.index = position
+        session.add(row)
+    session.commit()
+    _history_record(session, job, recording, "shift_time", {"count": len(targets)})
+    return SegmentsChangeResponse(changed=len(targets), segments=[_segment_to_schema(r) for r in rows])
 
 
 # --- Timing-only tools -------------------------------------------------------------------------

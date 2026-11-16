@@ -341,6 +341,70 @@ def test_delete_job_removes_unused_upload(client: TestClient):
     assert not upload.exists()
 
 
+def test_security_media_extension_api_key_and_ollama_validation(client: TestClient, tmp_path, monkeypatch):
+    from app.core import config as cfg
+
+    secret_env = tmp_path / "secret.env"
+    secret_env.write_text("GEMINI_API_KEY=topsecret\n", encoding="utf-8")
+    notes_txt = tmp_path / "notes.txt"
+    notes_txt.write_text("hello", encoding="utf-8")
+    db_file = tmp_path / "subbuild.db"
+    db_file.write_bytes(b"SQLite format 3\x00")
+
+    # Non-media local paths must be rejected by probe-path and job creation
+    for bad in (secret_env, notes_txt, db_file):
+        assert client.post("/api/media/probe-path", json={"file_path": str(bad)}).status_code == 400
+        assert client.post("/api/jobs", json={"video_path": str(bad), "enable_translation": False}).status_code == 400
+
+    # Non-media uploads must be rejected before saving
+    assert client.post("/api/media/upload", files={"file": ("secret.env", io.BytesIO(b"KEY=1"))}).status_code == 400
+    assert client.post("/api/media/upload", files={"file": ("notes.txt", io.BytesIO(b"hello"))}).status_code == 400
+
+    # Streaming rejects non-media paths even if already present in DB
+    bad_job_id = f"test_badstream_{uuid.uuid4().hex[:8]}"
+    with Session(engine) as session:
+        session.add(Job(id=bad_job_id, video_path=str(secret_env), file_name="secret.env", status=JobStatus.COMPLETED))
+        session.commit()
+    assert client.get(f"/api/media/stream/{bad_job_id}").status_code == 400
+
+    # API key persistence strips newline/control characters so .env cannot be injected
+    env_target = tmp_path / "written.env"
+    orig_key = settings.gemini_api_key
+    monkeypatch.setattr(cfg, "env_file_path", lambda: env_target)
+    try:
+        res_key = client.put("/api/settings/api-key", json={"api_key": "AIzaGoodKey\r\nHOST=0.0.0.0\n"})
+        assert res_key.status_code == 200
+        written = env_target.read_text(encoding="utf-8")
+        assert written.strip() == "GEMINI_API_KEY=AIzaGoodKeyHOST=0.0.0.0"
+        assert "\nHOST=0.0.0.0" not in written
+    finally:
+        settings.gemini_api_key = orig_key
+
+    # Ollama setup rejects invalid/URL model specs
+    assert client.post("/api/settings/ollama/setup", json={"model": "http://evil.example/model"}).status_code == 400
+    assert client.post("/api/settings/ollama/setup", json={"model": "qwen2.5:7b; rm -rf /"}).status_code == 400
+
+
+def test_update_segment_time_renumbers_indices(client: TestClient):
+    job_id = _job_with_segments(["First cue", "Second cue"])
+    segs = client.get(f"/api/jobs/{job_id}").json()["segments"]
+    seg1, seg2 = segs[0], segs[1]
+    assert seg1["index"] == 1 and seg2["index"] == 2
+
+    # Move seg2 before seg1
+    patched = client.patch(
+        f"/api/jobs/{job_id}/segments/{seg2['id']}",
+        json={"start_time": 0.5, "end_time": 1.5},
+    )
+    assert patched.status_code == 200
+    assert patched.json()["index"] == 1
+
+    updated = client.get(f"/api/jobs/{job_id}").json()["segments"]
+    by_id = {s["id"]: s for s in updated}
+    assert by_id[seg2["id"]]["index"] == 1
+    assert by_id[seg1["id"]]["index"] == 2
+
+
 class SlowTranscriber(BaseTranscriber):
     """Emits segments slowly from a worker thread and honours the cancel flag."""
 
@@ -419,3 +483,160 @@ def test_cleanup_never_deletes_files_placed_by_hand(tmp_path):
     # ctime can't be faked in a test, so it survives here — the point is the prefix rule.
     by_hand.unlink()
     app_copy.unlink(missing_ok=True)
+
+
+def test_burn_font_fallback_across_platforms(tmp_path, monkeypatch):
+    from app.core import video_embed as ve
+
+    assert ve._burn_font_name("win32") == "Arial"
+    assert "FontName=Arial," in ve.burn_style("medium", platform="win32")
+
+    missing_mac = tmp_path / "missing_arial.ttf"
+    monkeypatch.setattr(ve, "_DARWIN_ARIAL_PATHS", (missing_mac,))
+    assert ve._burn_font_name("darwin") == "Helvetica Neue"
+
+    present_mac = tmp_path / "Arial.ttf"
+    present_mac.write_bytes(b"font")
+    monkeypatch.setattr(ve, "_DARWIN_ARIAL_PATHS", (present_mac,))
+    assert ve._burn_font_name("darwin") == "Arial"
+
+    empty_linux_fonts = tmp_path / "linux_empty"
+    empty_linux_fonts.mkdir()
+    monkeypatch.setattr(ve, "_LINUX_FONT_DIRS", (empty_linux_fonts,))
+    assert ve._burn_font_name("linux") == "DejaVu Sans"
+
+    noto_dir = tmp_path / "linux_noto"
+    noto_dir.mkdir()
+    (noto_dir / "NotoSans-Regular.ttf").write_bytes(b"font")
+    monkeypatch.setattr(ve, "_LINUX_FONT_DIRS", (noto_dir,))
+    assert ve._burn_font_name("linux") == "Noto Sans"
+    assert "FontName=Noto Sans," in ve.burn_style("large", platform="linux")
+
+
+def test_split_merge_and_shift_segments_and_history(client: TestClient):
+    job_id = _job_with_segments(["Hello world foo bar.", "Second cue"], target_language="Hebrew")
+    segs = client.get(f"/api/jobs/{job_id}").json()["segments"]
+    seg1, seg2 = segs[0], segs[1]
+    client.patch(
+        f"/api/jobs/{job_id}/segments",
+        json=[
+            {"id": seg1["id"], "translated_text": "שלום עולם טוב מאוד."},
+            {"id": seg2["id"], "translated_text": "שורה שנייה"},
+        ],
+    )
+
+    # Split first cue at t=2.8
+    split_res = client.post(f"/api/jobs/{job_id}/segments/{seg1['id']}/split", json={"split_time": 2.8})
+    assert split_res.status_code == 200, split_res.text
+    after_split = split_res.json()["segments"]
+    assert len(after_split) == 3
+    assert [s["index"] for s in after_split] == [1, 2, 3]
+    assert after_split[0]["start_time"] == 2.0 and after_split[0]["end_time"] == 2.8
+    assert after_split[1]["start_time"] == 2.8 and after_split[1]["end_time"] == 3.5
+
+    # Undo -> back to 2 segments; Redo -> back to 3 segments
+    undone = client.post(f"/api/jobs/{job_id}/history/undo").json()
+    assert len(undone["segments"]) == 2
+    redone = client.post(f"/api/jobs/{job_id}/history/redo").json()
+    assert len(redone["segments"]) == 3
+
+    # Merge the two split parts back into one
+    merge_ids = [redone["segments"][0]["id"], redone["segments"][1]["id"]]
+    merge_res = client.post(f"/api/jobs/{job_id}/segments/merge", json={"segment_ids": merge_ids})
+    assert merge_res.status_code == 200, merge_res.text
+    after_merge = merge_res.json()["segments"]
+    assert len(after_merge) == 2
+    assert after_merge[0]["start_time"] == 2.0 and after_merge[0]["end_time"] == 3.5
+    assert "\n" in after_merge[0]["original_text"]
+    assert "\n" in after_merge[0]["translated_text"]
+
+    # Shift all forward +1.5s, then backward -10.0s (clamped at 0.0 preserving duration)
+    shift_fwd = client.post(f"/api/jobs/{job_id}/segments/shift", json={"offset_seconds": 1.5})
+    assert shift_fwd.status_code == 200
+    assert shift_fwd.json()["segments"][0]["start_time"] == 3.5
+    assert shift_fwd.json()["segments"][1]["start_time"] == 5.5
+
+    shift_back = client.post(
+        f"/api/jobs/{job_id}/segments/shift",
+        json={"offset_seconds": -10.0, "segment_ids": [shift_fwd.json()["segments"][0]["id"]]},
+    )
+    assert shift_back.status_code == 200
+    clamped = shift_back.json()["segments"][0]
+    assert clamped["start_time"] == 0.0
+    assert clamped["end_time"] == 1.5
+
+    actions = [e["action"] for e in client.get(f"/api/jobs/{job_id}/history").json()["entries"]]
+    assert "split" in actions and "merge" in actions and "shift_time" in actions
+
+
+def test_bilingual_srt_and_vtt_export(client: TestClient):
+    job_id = _job_with_segments(["Hello friend."], target_language="Hebrew")
+    seg_id = client.get(f"/api/jobs/{job_id}").json()["segments"][0]["id"]
+    client.patch(f"/api/jobs/{job_id}/segments/{seg_id}", json={"translated_text": "שלום חבר."})
+
+    srt_res = client.get(f"/api/jobs/{job_id}/export/srt?use_translated=true&bilingual=true&apply_rtl=false")
+    assert srt_res.status_code == 200
+    assert ".he.dual.srt" in srt_res.headers["content-disposition"]
+    assert "Hello friend.\nשלום חבר." in srt_res.text
+
+    vtt_res = client.get(f"/api/jobs/{job_id}/export/vtt?use_translated=true&bilingual=true&apply_rtl=false")
+    assert vtt_res.status_code == 200
+    assert ".he.dual.vtt" in vtt_res.headers["content-disposition"]
+    assert "WEBVTT" in vtt_res.text and "Hello friend.\nשלום חבר." in vtt_res.text
+
+
+def test_extended_qa_flags_overlap_and_extreme_durations():
+    from types import SimpleNamespace as NS
+    from app.pipeline.qa import check_rows
+
+    rows = [
+        NS(id=1, index=1, start_time=0.0, end_time=0.3, original_text="Hi", translated_text="היי",
+           segment_type="DIALOGUE", translation_failed=False),
+        NS(id=2, index=2, start_time=1.0, end_time=4.0, original_text="One", translated_text="אחת",
+           segment_type="DIALOGUE", translation_failed=False),
+        NS(id=3, index=3, start_time=3.5, end_time=12.0, original_text="Two", translated_text="שתיים",
+           segment_type="DIALOGUE", translation_failed=False),
+        NS(id=4, index=4, start_time=1.0, end_time=3.0, original_text="[TITLE]", translated_text="[כותרת]",
+           segment_type="ON_SCREEN", translation_failed=False),
+    ]
+    issues = check_rows(rows, glossary=None)
+    by_pair = {(i.segment_id, i.kind) for i in issues}
+    assert (1, "timing") in by_pair
+    assert (3, "overlap") in by_pair
+    assert (3, "timing") in by_pair
+    assert (4, "overlap") not in by_pair  # ON_SCREEN lane is separate from DIALOGUE lane
+
+
+def test_get_job_returns_live_whisper_segments_while_transcribing(client: TestClient):
+    from app.pipeline.orchestrator import PipelineOrchestrator, active_pipelines
+
+    job_id = f"test_live_{uuid.uuid4().hex[:8]}"
+    with Session(engine) as session:
+        session.add(
+            Job(
+                id=job_id,
+                video_path="live.mkv",
+                file_name="live.mkv",
+                status=JobStatus.TRANSCRIBING,
+                current_stage="TRANSCRIBING",
+                progress_percent=25.0,
+            )
+        )
+        session.commit()
+
+    orchestrator = PipelineOrchestrator(job_id=job_id, mode="full")
+    orchestrator._ctx = PipelineContext(job_id=job_id, video_path="live.mkv", file_name="live.mkv")
+    orchestrator._ctx.raw_segments = [
+        RawSegment(index=1, start_time=0.5, end_time=2.5, text="First live cue", confidence=0.95),
+        RawSegment(index=2, start_time=3.0, end_time=5.0, text="Second live cue", confidence=0.91),
+    ]
+    try:
+        detail = client.get(f"/api/jobs/{job_id}").json()
+        assert len(detail["segments"]) == 2
+        assert [s["original_text"] for s in detail["segments"]] == ["First live cue", "Second live cue"]
+        assert all(s["id"] is None for s in detail["segments"])
+
+        listing = {j["id"]: j for j in client.get("/api/jobs").json()}
+        assert listing[job_id]["segment_count"] == 2
+    finally:
+        active_pipelines.pop(job_id, None)

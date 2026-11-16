@@ -305,7 +305,7 @@ export interface SpeakerGuess {
 export interface QAIssue {
   segment_id: number;
   index: number;
-  kind: 'latin' | 'name' | 'term' | 'agreement' | 'missing';
+  kind: 'latin' | 'name' | 'term' | 'agreement' | 'missing' | 'overlap' | 'timing';
   message: string;
 }
 
@@ -524,6 +524,9 @@ export type HistoryAction =
   | 'insert'
   | 'delete'
   | 'delete_many'
+  | 'split'
+  | 'merge'
+  | 'shift_time'
   | 'move'
   | 'retime'
   | 'translate'
