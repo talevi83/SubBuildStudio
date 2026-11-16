@@ -16,10 +16,31 @@ def _adopt_legacy_database() -> None:
     """The app used to be called SubForge Studio and kept its data in ``subforge.db``.
 
     Keep existing projects: if the default ``subbuild.db`` doesn't exist yet but the old file
-    does, rename it (and its SQLite sidecar files) before the engine opens anything.
+    does, rename it (and its SQLite sidecar files) before the engine opens anything. Also
+    migrate an older ``DATABASE_URL=.../subforge.db`` from ``.env`` so it switches to ``subbuild.db``.
     """
     prefix = "sqlite:///"
     url = settings.database_url
+    if url.startswith(prefix) and url.endswith("/subforge.db"):
+        url = url[:-len("subforge.db")] + "subbuild.db"
+        settings.database_url = url
+        try:
+            from app.core.config import env_file_path
+
+            env_path = env_file_path()
+            if env_path.is_file():
+                content = env_path.read_text(encoding="utf-8", errors="replace")
+                updated = re.sub(
+                    r"^(\s*DATABASE_URL\s*=[^\r\n]*?)subforge\.db",
+                    r"\g<1>subbuild.db",
+                    content,
+                    flags=re.MULTILINE,
+                )
+                if updated != content:
+                    env_path.write_text(updated, encoding="utf-8")
+        except OSError as exc:
+            logger.warning(f"Could not update legacy DATABASE_URL in .env: {exc}")
+
     if not url.startswith(prefix) or not url.endswith("/subbuild.db"):
         return
     new = Path(url[len(prefix):])
