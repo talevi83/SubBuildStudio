@@ -7,6 +7,8 @@ from typing import Any, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field
 
+from app.core.ffmpeg_safety import safe_input
+
 MAX_FRAMES = 3
 MAX_SPAN_S = 30.0
 
@@ -36,7 +38,7 @@ def frame_times(start: float, end: float, count: int = MAX_FRAMES) -> List[float
 
 def grab_frame(video_path: str, t: float, ffmpeg: str = "ffmpeg") -> Optional[bytes]:
     """One JPEG frame (480px high) at time t, or None if ffmpeg could not produce it."""
-    cmd = [ffmpeg, "-v", "error", "-ss", f"{t:.2f}", "-i", video_path, "-frames:v", "1",
+    cmd = [ffmpeg, "-v", "error", "-ss", f"{t:.2f}", *safe_input(video_path), "-frames:v", "1",
            "-vf", "scale=-2:480", "-q:v", "4", "-f", "image2pipe", "-vcodec", "mjpeg", "-"]
     try:
         out = subprocess.run(cmd, capture_output=True, timeout=60).stdout

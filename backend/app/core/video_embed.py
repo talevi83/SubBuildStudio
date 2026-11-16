@@ -27,6 +27,7 @@ from typing import Dict, List, Optional, Set
 
 from app.pipeline.stages.audio_stage import get_ffmpeg_bin
 from app.pipeline.stages.probe_stage import TEXT_SUBTITLE_CODECS, get_ffprobe_bin
+from app.core.ffmpeg_safety import safe_input, safe_probe_input
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ async def probe_streams(video_path: str) -> dict:
     """ffprobe streams + duration: {"duration": float, "streams": [...]}."""
     proc = await asyncio.create_subprocess_exec(
         get_ffprobe_bin(), "-v", "error", "-print_format", "json", "-show_format", "-show_streams",
-        str(Path(video_path).resolve()),
+        *safe_probe_input(str(Path(video_path).resolve())),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     out, err = await proc.communicate()
@@ -125,7 +126,7 @@ def build_soft_command(video_path: str, subs_path: str, out_path: str, probe: di
     is_mp4 = ext in MP4_FAMILY
     streams = probe.get("streams") or []
     cmd = [get_ffmpeg_bin(), "-y", "-nostdin", "-v", "error", "-nostats", "-progress", "pipe:1",
-           "-i", str(Path(video_path).resolve()), "-i", str(subs_path)]
+           *safe_input(str(Path(video_path).resolve())), *safe_input(str(subs_path))]
 
     if is_mp4:
         # MP4 holds only text subtitles as mov_text, and no unknown data tracks
@@ -219,7 +220,7 @@ def build_burn_command(video_path: str, subs_name: str, out_path: str, probe: di
 
     vf = f"subtitles={subs_name}:charenc=UTF-8:force_style='{burn_style(opts.font_size)}',format=yuv420p"
     cmd = [get_ffmpeg_bin(), "-y", "-nostdin", "-v", "error", "-nostats", "-progress", "pipe:1",
-           "-i", str(Path(video_path).resolve()), "-map", "0:v:0"]
+           *safe_input(str(Path(video_path).resolve())), "-map", "0:v:0"]
     if audio:
         cmd += ["-map", f"0:a:{a_idx}"]
     cmd += ["-vf", vf]

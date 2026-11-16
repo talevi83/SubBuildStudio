@@ -6,6 +6,7 @@ from typing import Awaitable, Callable, List, Optional
 from app.core.config import settings
 from app.pipeline.context import PipelineContext, PipelineCancelled
 from app.pipeline.stages.base import PipelineStage, ProgressCallback
+from app.core.ffmpeg_safety import safe_input
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ def _build_command(
         "-y",
         "-nostats",
         "-progress", "pipe:1",              # machine-readable progress on stdout
-        "-i", str(Path(video_path).resolve()),
+        *safe_input(str(Path(video_path).resolve())),
         "-map", f"0:a:{audio_stream_index}",
         "-vn",
     ]

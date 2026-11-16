@@ -7,6 +7,7 @@ from typing import Optional
 from app.models.schemas import ProbeResponse, AudioStreamInfo, SubtitleStreamInfo
 from app.pipeline.context import PipelineContext
 from app.pipeline.stages.base import PipelineStage, ProgressCallback
+from app.core.ffmpeg_safety import safe_probe_input
 
 
 # Subtitle codecs ffmpeg can convert to SRT text (image codecs like PGS/VobSub cannot)
@@ -35,7 +36,7 @@ async def probe_media_file(file_path: str) -> ProbeResponse:
         "-show_format",
         "-show_streams",
         "-show_chapters",
-        str(path.resolve()),
+        *safe_probe_input(str(path.resolve())),
     ]
 
     process = await asyncio.create_subprocess_exec(

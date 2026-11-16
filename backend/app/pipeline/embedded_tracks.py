@@ -15,6 +15,7 @@ from app.models.schemas import SubtitleStreamInfo
 from app.pipeline.onscreen_merge import make_onscreen_segment
 from app.pipeline.stages.audio_stage import get_ffmpeg_bin
 from app.utils.subtitle_parser import SubtitleParseError, parse_subtitle_text
+from app.core.ffmpeg_safety import safe_input
 
 
 def pick_forced_track(streams: Sequence[SubtitleStreamInfo]) -> Optional[SubtitleStreamInfo]:
@@ -186,7 +187,7 @@ def parse_srt(content: str) -> List[Dict[str, Any]]:
 async def extract_forced_track(video_path: str, stream: SubtitleStreamInfo) -> List[Dict[str, Any]]:
     """Convert one embedded subtitle stream to ON_SCREEN segment dicts via ffmpeg."""
     process = await asyncio.create_subprocess_exec(
-        get_ffmpeg_bin(), "-v", "error", "-i", str(Path(video_path).resolve()),
+        get_ffmpeg_bin(), "-v", "error", *safe_input(str(Path(video_path).resolve())),
         "-map", f"0:s:{stream.index}", "-f", "srt", "pipe:1",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -211,7 +212,7 @@ async def extract_dialogue_track(
     - onscreen_segments: top-of-screen titles (marked with {\\an8} in SRT/ASS)
     """
     process = await asyncio.create_subprocess_exec(
-        get_ffmpeg_bin(), "-v", "error", "-i", str(Path(video_path).resolve()),
+        get_ffmpeg_bin(), "-v", "error", *safe_input(str(Path(video_path).resolve())),
         "-map", f"0:s:{stream.index}", "-f", "srt", "pipe:1",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,

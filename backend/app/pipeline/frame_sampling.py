@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from app.core.config import settings
 from app.pipeline.context import PipelineCancelled, PipelineContext
 from app.pipeline.stages.audio_stage import get_ffmpeg_bin
+from app.core.ffmpeg_safety import safe_input
 
 # Grayscale thumbnails used to measure frame-to-frame change (scene cuts / chyron overlays / static cards)
 _THUMB_W, _THUMB_H = 64, 36
@@ -62,7 +63,7 @@ async def sample_frames(ctx: PipelineContext, interval: Optional[float] = None) 
     command = [
         get_ffmpeg_bin(), "-v", "error", "-nostats", "-y",
         *input_flags,
-        "-i", str(Path(ctx.video_path).resolve()),
+        *safe_input(str(Path(ctx.video_path).resolve())),
         "-filter_complex",
         f"[0:v:0]fps=1/{interval},split=2[big][small];"
         f"[big]scale=640:-2[o1];[small]scale={_THUMB_W}:{_THUMB_H},format=gray[o2]",
@@ -257,7 +258,7 @@ async def sample_subtitle_crops(
         get_ffmpeg_bin(), "-v", "error", "-nostats", "-y",
         "-hwaccel", "auto",
         "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}",
-        "-i", str(Path(ctx.video_path).resolve()),
+        *safe_input(str(Path(ctx.video_path).resolve())),
         "-map", "0:v:0", "-an", "-sn",
         "-vf", f"fps=1/{interval},{_SUB_CROP}",
         "-q:v", "4", str(out_dir / f"{tag}_%05d.jpg"),

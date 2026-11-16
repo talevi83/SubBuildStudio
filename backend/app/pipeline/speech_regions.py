@@ -13,6 +13,7 @@ from typing import List, Optional, Tuple
 from app.core.config import settings
 from app.pipeline.foreign_speech import SAMPLE_RATE, load_wav
 from app.pipeline.stages.audio_stage import build_audio_filter, get_ffmpeg_bin
+from app.core.ffmpeg_safety import safe_input
 
 Region = Tuple[float, float]
 
@@ -28,7 +29,7 @@ def _extract(video_path: str, wav_path: str, stream: int, channels: int, comms_b
         cmd += ["-ss", f"{start:.3f}"]
     if length is not None:
         cmd += ["-t", f"{length:.3f}"]
-    cmd += ["-i", str(Path(video_path).resolve()), "-map", f"0:a:{stream}", "-vn"]
+    cmd += [*safe_input(str(Path(video_path).resolve())), "-map", f"0:a:{stream}", "-vn"]
     audio_filter = build_audio_filter(channels >= 6, comms_boost)
     if audio_filter:
         cmd += ["-af", audio_filter]
