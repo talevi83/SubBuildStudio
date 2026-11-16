@@ -340,4 +340,74 @@ describe('SubBuild Studio UI reliability & editor round-trip', () => {
     const blobHex = await hashBlobSha256(new Blob([sample]));
     expect(streamHex).toBe(blobHex);
   });
+
+  it('flushes pending inline text edits before replaceAll runs', async () => {
+    const job = makeJob();
+    useJobStore.setState({ activeJob: job, jobs: [job] });
+
+    const serverSegment = { ...job.segments[0] };
+    const callOrder: string[] = [];
+
+    vi.spyOn(api, 'getHistory').mockResolvedValue({
+      cursor: 1,
+      can_undo: false,
+      can_redo: false,
+      entries: [],
+    });
+    vi.spyOn(api, 'updateSegment').mockImplementation(async (_jobId, _segId, patch) => {
+      callOrder.push('patch:single');
+      Object.assign(serverSegment, patch);
+      return { ...serverSegment };
+    });
+    vi.spyOn(api, 'updateSegments').mockImplementation(async (_jobId, patches) => {
+      callOrder.push('patch:bulk');
+      return patches.map((p) => ({ ...serverSegment, ...p }));
+    });
+
+    const view = render(<SubtitleTable />);
+    const hebrewTextarea = view.getByDisplayValue('שלום עולם') as HTMLTextAreaElement;
+    // Edit text to include a word we'll immediately replace without blurring or waiting 600ms
+    fireEvent.change(hebrewTextarea, { target: { value: 'שלום חבר יקר' } });
+
+    const count = await useJobStore.getState().replaceAll('חבר', 'ידיד', 'translated', false);
+    expect(count).toBe(1);
+    expect(callOrder).toEqual(['patch:single', 'patch:bulk']);
+    expect(useJobStore.getState().activeJob?.segments[0].translated_text).toBe('שלום ידיד יקר');
+  });
+
+  it('allows direct inline timecode editing and flags overlapping adjacent cues', async () => {
+    const job = makeJob();
+    job.segments = [
+      { ...job.segments[0], id: 101, index: 1, start_time: 1.0, end_time: 3.5 },
+      { ...job.segments[0], id: 102, index: 2, start_time: 4.0, end_time: 6.0, original_text: 'Next', translated_text: 'הבא' },
+    ];
+    useJobStore.setState({ activeJob: job, jobs: [job] });
+
+    vi.spyOn(api, 'getHistory').mockResolvedValue({
+      cursor: 1,
+      can_undo: false,
+      can_redo: false,
+      entries: [],
+    });
+    vi.spyOn(api, 'updateSegment').mockImplementation(async (_jobId, segId, patch) => {
+      const seg = useJobStore.getState().activeJob!.segments.find((s) => s.id === segId)!;
+      return { ...seg, ...patch };
+    });
+
+    const view = render(<SubtitleTable />);
+
+    // Click end-time of cue #1 and edit it to overlap cue #2 (4.5s > 4.0s)
+    fireEvent.click(view.getByTestId('end-time-1'));
+    const input = view.getByTestId('end-time-1-input') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '00:00:04,500' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(useJobStore.getState().activeJob?.segments[0].end_time).toBe(4.5);
+    });
+
+    // Both overlapping cues should now show the overlap warning icon
+    const warnings = view.getAllByLabelText('Time overlaps an adjacent subtitle');
+    expect(warnings).toHaveLength(2);
+  });
 });

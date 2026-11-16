@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import os
 import re
+import shutil
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -21,9 +22,25 @@ _UNSAFE_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _UPLOAD_PREFIX = re.compile(r"^[0-9a-f]{8}_")
 _HASH_CHUNK_BYTES = 4 * 1024 * 1024
 
+ALLOWED_MEDIA_EXTENSIONS = frozenset({
+    ".mkv", ".mp4", ".webm", ".avi", ".mov", ".m4v", ".ts", ".m2ts", ".mts",
+    ".mpg", ".mpeg", ".wmv", ".flv", ".ogv", ".3gp", ".vob", ".asf", ".divx",
+    ".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac", ".opus", ".wma", ".ac3", ".eac3",
+})
+
 # Browsers sniff the real container, so MKV/AVI are served as video/mp4 (Chrome plays
 # H.264/AAC in Matroska this way). Only WebM needs its own type.
 _MEDIA_TYPES = {".webm": "video/webm", ".ogv": "video/ogg"}
+
+
+def validate_media_path(path: Path) -> None:
+    """Ensure a local or uploaded file has a supported video/audio extension."""
+    ext = path.suffix.lower()
+    if ext not in ALLOWED_MEDIA_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported media file format: '{ext or path.name}'",
+        )
 
 
 def _sanitize_filename(raw: Optional[str]) -> str:
@@ -121,6 +138,7 @@ async def probe_local_path(req: ProbePathRequest):
     path = Path(file_path)
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"File not found on local disk: {file_path}")
+    validate_media_path(path)
 
     try:
         res = await probe_media_file(str(path))
@@ -162,12 +180,18 @@ async def find_existing_upload(
 async def upload_media_file(file: UploadFile = File(...)):
     """Upload a video file from browser dropzone and probe its streams."""
     clean_name = _sanitize_filename(file.filename)
+    validate_media_path(Path(clean_name))
     safe_name = f"{uuid.uuid4().hex[:8]}_{clean_name}"
     target_dir = uploads_dir()
     upload_dest = (target_dir / safe_name).resolve()
     if upload_dest.parent != target_dir:
         raise HTTPException(status_code=400, detail="Invalid file name")
     upload_dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if shutil.disk_usage(target_dir).free < 100 * 1024 * 1024:
+            raise HTTPException(status_code=507, detail="Not enough free disk space for upload")
+    except OSError:
+        pass
 
     def _save() -> str:
         digest = hashlib.sha256()
@@ -263,6 +287,7 @@ async def stream_video(
     video_path = Path(job.video_path)
     if not video_path.is_file():
         raise HTTPException(status_code=404, detail=f"Video file missing on disk: {job.video_path}")
+    validate_media_path(video_path)
 
     file_size = os.path.getsize(video_path)
     media_type = _MEDIA_TYPES.get(video_path.suffix.lower(), "video/mp4")

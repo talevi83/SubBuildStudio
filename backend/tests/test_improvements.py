@@ -341,6 +341,70 @@ def test_delete_job_removes_unused_upload(client: TestClient):
     assert not upload.exists()
 
 
+def test_security_media_extension_api_key_and_ollama_validation(client: TestClient, tmp_path, monkeypatch):
+    from app.core import config as cfg
+
+    secret_env = tmp_path / "secret.env"
+    secret_env.write_text("GEMINI_API_KEY=topsecret\n", encoding="utf-8")
+    notes_txt = tmp_path / "notes.txt"
+    notes_txt.write_text("hello", encoding="utf-8")
+    db_file = tmp_path / "subbuild.db"
+    db_file.write_bytes(b"SQLite format 3\x00")
+
+    # Non-media local paths must be rejected by probe-path and job creation
+    for bad in (secret_env, notes_txt, db_file):
+        assert client.post("/api/media/probe-path", json={"file_path": str(bad)}).status_code == 400
+        assert client.post("/api/jobs", json={"video_path": str(bad), "enable_translation": False}).status_code == 400
+
+    # Non-media uploads must be rejected before saving
+    assert client.post("/api/media/upload", files={"file": ("secret.env", io.BytesIO(b"KEY=1"))}).status_code == 400
+    assert client.post("/api/media/upload", files={"file": ("notes.txt", io.BytesIO(b"hello"))}).status_code == 400
+
+    # Streaming rejects non-media paths even if already present in DB
+    bad_job_id = f"test_badstream_{uuid.uuid4().hex[:8]}"
+    with Session(engine) as session:
+        session.add(Job(id=bad_job_id, video_path=str(secret_env), file_name="secret.env", status=JobStatus.COMPLETED))
+        session.commit()
+    assert client.get(f"/api/media/stream/{bad_job_id}").status_code == 400
+
+    # API key persistence strips newline/control characters so .env cannot be injected
+    env_target = tmp_path / "written.env"
+    orig_key = settings.gemini_api_key
+    monkeypatch.setattr(cfg, "env_file_path", lambda: env_target)
+    try:
+        res_key = client.put("/api/settings/api-key", json={"api_key": "AIzaGoodKey\r\nHOST=0.0.0.0\n"})
+        assert res_key.status_code == 200
+        written = env_target.read_text(encoding="utf-8")
+        assert written.strip() == "GEMINI_API_KEY=AIzaGoodKeyHOST=0.0.0.0"
+        assert "\nHOST=0.0.0.0" not in written
+    finally:
+        settings.gemini_api_key = orig_key
+
+    # Ollama setup rejects invalid/URL model specs
+    assert client.post("/api/settings/ollama/setup", json={"model": "http://evil.example/model"}).status_code == 400
+    assert client.post("/api/settings/ollama/setup", json={"model": "qwen2.5:7b; rm -rf /"}).status_code == 400
+
+
+def test_update_segment_time_renumbers_indices(client: TestClient):
+    job_id = _job_with_segments(["First cue", "Second cue"])
+    segs = client.get(f"/api/jobs/{job_id}").json()["segments"]
+    seg1, seg2 = segs[0], segs[1]
+    assert seg1["index"] == 1 and seg2["index"] == 2
+
+    # Move seg2 before seg1
+    patched = client.patch(
+        f"/api/jobs/{job_id}/segments/{seg2['id']}",
+        json={"start_time": 0.5, "end_time": 1.5},
+    )
+    assert patched.status_code == 200
+    assert patched.json()["index"] == 1
+
+    updated = client.get(f"/api/jobs/{job_id}").json()["segments"]
+    by_id = {s["id"]: s for s in updated}
+    assert by_id[seg2["id"]]["index"] == 1
+    assert by_id[seg1["id"]]["index"] == 2
+
+
 class SlowTranscriber(BaseTranscriber):
     """Emits segments slowly from a worker thread and honours the cancel flag."""
 

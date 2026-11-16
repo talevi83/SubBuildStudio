@@ -14,6 +14,7 @@ from app.core.database import get_session
 from app.core.glossary_profiles import clean_name, save_profile
 from app.core.housekeeping import delete_upload_if_unused, is_in_uploads
 from app.core.user_settings import load_settings
+from app.api.routes_media import validate_media_path
 from app.models.db_models import Job, JobStatus, SubtitleSegmentRecord
 from app.models.schemas import (
     AudioStreamInfo,
@@ -198,6 +199,7 @@ async def create_job(req: JobCreate, session: Session = Depends(get_session)):
     path = Path(req.video_path.strip().strip('"').strip("'"))
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"Target video file not found: {req.video_path}")
+    validate_media_path(path)
 
     job_id = f"job_{uuid.uuid4().hex[:10]}"
     resolved = path.resolve()
@@ -537,10 +539,14 @@ def quality_check(job_id: str, session: Session = Depends(get_session)):
 def _delete_single_job(session: Session, job: Job) -> Tuple[str, bool]:
     """Delete a job, its cached audio/frames/logs, and (for browser uploads) the uploaded copy."""
     import shutil
+    from app.core import video_embed as ve
     from app.core.job_logging import delete_job_log
 
     job_id = job.id
     PipelineOrchestrator.cancel_job(job_id)
+    running_embed = ve.running_task(job_id)
+    if running_embed is not None:
+        ve.cancel_task(running_embed)
     video_path, is_upload = job.video_path, job.is_upload
 
     try:
@@ -559,6 +565,10 @@ def _delete_single_job(session: Session, job: Job) -> Tuple[str, bool]:
         pass
     try:
         shutil.rmtree(settings.storage_dir / "frames" / job_id, ignore_errors=True)
+    except OSError:
+        pass
+    try:
+        shutil.rmtree(settings.storage_dir / "exports" / f"embed_{job_id}", ignore_errors=True)
     except OSError:
         pass
 
@@ -638,6 +648,14 @@ def update_segment(
 
     _apply_segment_patch(seg, patch)
     session.add(seg)
+    if patch.start_time is not None or patch.end_time is not None:
+        session.flush()
+        rows = session.exec(select(SubtitleSegmentRecord).where(SubtitleSegmentRecord.job_id == job_id)).all()
+        rows.sort(key=lambda r: (r.start_time, r.end_time, r.id or 0))
+        for position, row in enumerate(rows, start=1):
+            if row.index != position:
+                row.index = position
+                session.add(row)
     session.commit()
     session.refresh(seg)
     fields = sorted(patch.model_dump(exclude_unset=True, exclude_none=True))

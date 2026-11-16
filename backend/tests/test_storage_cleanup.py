@@ -97,3 +97,26 @@ def test_old_jobs_removed_with_their_upload_but_not_user_videos(store):
 def test_unknown_category_rejected(store):
     with TestClient(app) as client:
         assert client.post("/api/storage/clean", json={"categories": ["nope"]}).status_code == 400
+
+
+def test_embed_export_directories_reported_cleaned_and_deleted_with_job(store):
+    with TestClient(app) as client:
+        active = _job(JobStatus.TRANSLATING)
+        done = _job()
+        active_embed = _write(store / "exports" / f"embed_{active}" / "clip.he.subs.mkv", 250)
+        done_embed = _write(store / "exports" / f"embed_{done}" / "clip.he.subs.mkv", 400)
+
+        # Only finished job's embed directory is cleanable under 'exports'
+        r = _report(client)
+        assert r["exports"]["bytes"] == 400 and r["exports"]["count"] == 1
+
+        out = client.post("/api/storage/clean", json={"categories": ["exports"]}).json()
+        assert out["freed_bytes"] == 400
+        assert not done_embed.parent.exists()
+        assert active_embed.exists()
+
+        # Deleting a job also removes its embed_{job_id} export folder
+        another = _job()
+        another_embed = _write(store / "exports" / f"embed_{another}" / "out.mp4", 150)
+        assert client.delete(f"/api/jobs/{another}").status_code == 200
+        assert not another_embed.parent.exists()

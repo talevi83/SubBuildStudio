@@ -56,6 +56,22 @@ export const SubtitleTable: React.FC = () => {
     () => [...(activeJob?.segments || [])].sort((a, b) => a.start_time - b.start_time),
     [activeJob?.segments]
   );
+  const overlappedIds = useMemo(() => {
+    const ids = new Set<number>();
+    const scanLane = (lane: SubtitleSegment[]) => {
+      let prev: SubtitleSegment | null = null;
+      for (const cur of lane) {
+        if (prev && cur.start_time < prev.end_time - 0.001) {
+          if (prev.id) ids.add(prev.id);
+          if (cur.id) ids.add(cur.id);
+        }
+        if (!prev || cur.end_time > prev.end_time) prev = cur;
+      }
+    };
+    scanLane(segments.filter((s) => s.segment_type !== 'ON_SCREEN'));
+    scanLane(segments.filter((s) => s.segment_type === 'ON_SCREEN'));
+    return ids;
+  }, [segments]);
   const isRtl = isRtlLanguage(activeJob?.target_language);
   const jobFinished = !!activeJob && !isActiveStatus(activeJob.status);
   // Only promise "Translating…" while a translation is actually running
@@ -357,6 +373,7 @@ export const SubtitleTable: React.FC = () => {
                       onInsertAfter={canInsert ? insertAfter : undefined}
                       onDelete={canInsert ? handleDeleteRow : undefined}
                       onFilterTag={setTagFilter}
+                      overlapsNeighbor={overlappedIds.has(seg.id ?? -1)}
                       canDrag={rowCanDrag}
                       isDragging={rowCanDrag && dragId === seg.id}
                       dropPosition={dropPosition}

@@ -698,10 +698,20 @@ export const useJobStore = create<JobState>((set, get) => {
       const { activeJob } = get();
       if (!activeJob) return;
       const jobId = activeJob.id;
+      const timingChanged = patch.start_time !== undefined || patch.end_time !== undefined;
+
+      const normalizeSegments = (segs: SubtitleSegment[]) => {
+        if (!timingChanged) return segs;
+        return [...segs]
+          .sort((a, b) => a.start_time - b.start_time || a.end_time - b.end_time)
+          .map((s, idx) => ({ ...s, index: idx + 1 }));
+      };
 
       // Optimistic: show the change immediately, the server only confirms derived fields
       patchActiveJob({
-        segments: activeJob.segments.map((s) => (s.id === segmentId ? { ...s, ...patch } : s)),
+        segments: normalizeSegments(
+          activeJob.segments.map((s) => (s.id === segmentId ? { ...s, ...patch } : s))
+        ),
       });
 
       try {
@@ -714,17 +724,19 @@ export const useJobStore = create<JobState>((set, get) => {
         set({
           activeJob: {
             ...current,
-            segments: current.segments.map((s) =>
-              s.id === segmentId
-                ? {
-                    ...s,
-                    // Text may have changed again while the request was in flight — keep local text
-                    cps: saved.cps,
-                    translation_failed: saved.translation_failed,
-                    start_time: patch.start_time !== undefined ? saved.start_time : s.start_time,
-                    end_time: patch.end_time !== undefined ? saved.end_time : s.end_time,
-                  }
-                : s
+            segments: normalizeSegments(
+              current.segments.map((s) =>
+                s.id === segmentId
+                  ? {
+                      ...s,
+                      // Text may have changed again while the request was in flight — keep local text
+                      cps: saved.cps,
+                      translation_failed: saved.translation_failed,
+                      start_time: patch.start_time !== undefined ? saved.start_time : s.start_time,
+                      end_time: patch.end_time !== undefined ? saved.end_time : s.end_time,
+                    }
+                  : s
+              )
             ),
           },
         });
@@ -788,6 +800,7 @@ export const useJobStore = create<JobState>((set, get) => {
     },
 
     replaceAll: async (search, replacement, column, isRegex) => {
+      await flushAllPendingEdits();
       const { activeJob } = get();
       if (!activeJob || !search) return 0;
       let pattern: RegExp;

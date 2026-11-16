@@ -8,6 +8,7 @@ import re
 import shutil
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set
 
@@ -65,6 +66,10 @@ def _job_id_of(name: str) -> str:
     return name.split(".")[0]
 
 
+def _as_utc(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
 def _children(folder: Path) -> Iterable[Path]:
     return sorted(folder.iterdir()) if folder.is_dir() else []
 
@@ -95,10 +100,16 @@ def collect(session: Session, active_ids: Set[str], older_than_days: Optional[fl
         if p.is_file() and re.match(r"^server\.log\.\d+$", p.name):
             out["logs"].add(p, _tree_size(p))
 
-    # exports: subtitle files written for download
+    # exports: subtitle files and embedded video copies written for download
+    from app.core import video_embed as ve
+
     for p in _children(root / "exports"):
         if p.is_file():
             out["exports"].add(p, _tree_size(p))
+        elif p.is_dir() and p.name.startswith("embed_"):
+            jid = p.name[len("embed_"):]
+            if jid not in active_ids and not ve.running_task(jid):
+                out["exports"].add(p, _tree_size(p))
 
     # uploads: copies made by the app that no job points at any more
     jobs = session.exec(select(Job)).all()
@@ -114,7 +125,7 @@ def collect(session: Session, active_ids: Set[str], older_than_days: Optional[fl
             if j.id in active_ids or j.status not in FINISHED:
                 continue
             stamp = (j.updated_at or j.created_at)
-            if stamp is None or stamp.timestamp() > cutoff:
+            if stamp is None or _as_utc(stamp).timestamp() > cutoff:
                 continue
             size = 0
             vp = Path(j.video_path) if j.video_path else None
@@ -140,16 +151,21 @@ def _remove(path: Path) -> None:
 
 
 def _delete_job(session: Session, job: Job) -> None:
+    from app.core import video_embed as ve
     from app.core.housekeeping import delete_upload_if_unused
     from app.core.job_logging import delete_job_log
 
     job_id, video_path, owns = job.id, job.video_path, _owns_upload(job)
+    running_embed = ve.running_task(job_id)
+    if running_embed is not None:
+        ve.cancel_task(running_embed)
     (settings.storage_dir / "audio" / f"{job_id}.wav").unlink(missing_ok=True)
     session.delete(job)
     session.commit()
     delete_job_log(job_id)
     (settings.storage_dir / "regions" / f"{job_id}.json").unlink(missing_ok=True)
     shutil.rmtree(settings.storage_dir / "frames" / job_id, ignore_errors=True)
+    shutil.rmtree(settings.storage_dir / "exports" / f"embed_{job_id}", ignore_errors=True)
     if owns:
         delete_upload_if_unused(video_path)
 

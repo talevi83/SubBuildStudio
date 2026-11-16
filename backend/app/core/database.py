@@ -2,7 +2,7 @@ import logging
 import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Generator
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
 from sqlmodel import create_engine, Session, SQLModel
 from app.core.config import settings
 
@@ -59,6 +59,18 @@ def _adopt_legacy_database() -> None:
 
 _adopt_legacy_database()
 engine = create_engine(settings.database_url, echo=False, connect_args=connect_args)
+
+
+@event.listens_for(engine, "connect")
+def _configure_sqlite(dbapi_connection, _connection_record) -> None:
+    try:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=10000")
+        cursor.close()
+    except Exception:
+        pass
 
 # Columns added after the first release. SQLModel.create_all() never alters existing
 # tables, so older databases get these through a tiny additive migration.
