@@ -8,9 +8,21 @@ import { TARGET_LANGUAGES } from './languages';
 
 const ACCEPT = '.srt,.vtt,.ass,.ssa,.sub,.txt';
 
+const SUBTITLE_ENCODINGS: { value: string; label: string }[] = [
+  { value: 'utf-8', label: 'UTF-8' },
+  { value: 'utf-8-sig', label: 'UTF-8 (BOM)' },
+  { value: 'windows-1255', label: 'Windows-1255 (Hebrew)' },
+  { value: 'windows-1256', label: 'Windows-1256 (Arabic)' },
+  { value: 'windows-1252', label: 'Windows-1252 (Western / French)' },
+  { value: 'windows-1251', label: 'Windows-1251 (Cyrillic)' },
+  { value: 'iso-8859-8', label: 'ISO-8859-8 (Hebrew)' },
+  { value: 'utf-16', label: 'UTF-16' },
+];
+
 /** "Sync my subtitles": the subtitle file whose timing should be fixed. */
 export const SubtitleFilePicker: React.FC = () => {
   const syncFile = useJobStore((s) => s.syncFile);
+  const syncRawFile = useJobStore((s) => s.syncRawFile);
   const setSyncFile = useJobStore((s) => s.setSyncFile);
   const syncLanguage = useJobStore((s) => s.syncLanguage);
   const setSyncLanguage = useJobStore((s) => s.setSyncLanguage);
@@ -20,13 +32,13 @@ export const SubtitleFilePicker: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
 
-  const read = async (file: File) => {
+  const read = async (file: File, encoding?: string) => {
     setBusy(true);
     setError(null);
     try {
-      setSyncFile(await api.parseSubtitles(file));
+      setSyncFile(await api.parseSubtitles(file, encoding), file);
     } catch (e: unknown) {
-      setSyncFile(null);
+      if (!encoding) setSyncFile(null, null);
       setError(e instanceof Error ? e.message : t('syncFile.failed'));
     } finally {
       setBusy(false);
@@ -36,6 +48,11 @@ export const SubtitleFilePicker: React.FC = () => {
   const languages = TARGET_LANGUAGES.some((l) => l.value === syncLanguage) || !syncLanguage
     ? TARGET_LANGUAGES
     : [{ value: syncLanguage, label: syncLanguage }, ...TARGET_LANGUAGES];
+
+  const encodings =
+    syncFile && !SUBTITLE_ENCODINGS.some((e) => e.value === syncFile.encoding)
+      ? [{ value: syncFile.encoding, label: syncFile.encoding }, ...SUBTITLE_ENCODINGS]
+      : SUBTITLE_ENCODINGS;
 
   return (
     <div className="bg-surface border border-line rounded-xl p-5 shadow-lg" data-testid="subtitle-file-picker">
@@ -124,22 +141,47 @@ export const SubtitleFilePicker: React.FC = () => {
             </button>
           </div>
 
-          <div className="flex items-center gap-3 text-xs">
-            <label htmlFor="sync-language" className="text-zinc-400 font-medium whitespace-nowrap">
-              {t('syncFile.language')}
-            </label>
-            <select
-              id="sync-language"
-              value={syncLanguage || syncFile.language}
-              onChange={(e) => setSyncLanguage(e.target.value)}
-              className="bg-sunken border border-line rounded-lg px-3 py-1.5 text-zinc-200 focus:outline-none focus:border-indigo-500"
-            >
-              {languages.map((l) => (
-                <option key={l.value} value={l.value}>
-                  {l.label}
-                </option>
-              ))}
-            </select>
+          <div className="flex flex-wrap items-center gap-4 text-xs">
+            <div className="flex items-center gap-2">
+              <label htmlFor="sync-language" className="text-zinc-400 font-medium whitespace-nowrap">
+                {t('syncFile.language')}
+              </label>
+              <select
+                id="sync-language"
+                value={syncLanguage || syncFile.language}
+                onChange={(e) => setSyncLanguage(e.target.value)}
+                className="bg-sunken border border-line rounded-lg px-3 py-1.5 text-zinc-200 focus:outline-none focus:border-indigo-500"
+              >
+                {languages.map((l) => (
+                  <option key={l.value} value={l.value}>
+                    {l.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {syncRawFile && (
+              <div className="flex items-center gap-2">
+                <label htmlFor="sync-encoding" className="text-zinc-400 font-medium whitespace-nowrap">
+                  {t('syncFile.encodingLabel')}
+                </label>
+                <select
+                  id="sync-encoding"
+                  data-testid="sync-encoding"
+                  dir="ltr"
+                  disabled={busy}
+                  value={syncFile.encoding}
+                  onChange={(e) => void read(syncRawFile, e.target.value)}
+                  className="bg-sunken border border-line rounded-lg px-3 py-1.5 text-zinc-200 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+                >
+                  {encodings.map((enc) => (
+                    <option key={enc.value} value={enc.value}>
+                      {enc.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
           <ul className="rounded-lg bg-sunken border border-line divide-y divide-line text-[11px] text-zinc-300 max-h-28 overflow-y-auto">

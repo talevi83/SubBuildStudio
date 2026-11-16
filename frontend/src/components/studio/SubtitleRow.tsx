@@ -1,5 +1,6 @@
 import React, { memo, useEffect, useRef, useState } from 'react';
 import type { SegmentPatch, SubtitleSegment } from '../../types';
+import { registerPendingFlush } from '../../store/useJobStore';
 import { CpsBadge } from './CpsBadge';
 import { formatTimecode } from '../../utils/time';
 import { useT } from '../../i18n';
@@ -82,8 +83,14 @@ const EditableText: React.FC<{
     }
   };
 
-  // Save pending edits if the row unmounts (e.g. search filter changes)
-  useEffect(() => () => flush(), []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Save pending edits if the row unmounts (e.g. search filter changes) or before Export / Undo
+  useEffect(() => {
+    const unregister = registerPendingFlush(flush);
+    return () => {
+      unregister();
+      flush();
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <textarea

@@ -157,13 +157,25 @@ interface JobState {
   /** New project: make subtitles from the audio, or sync a subtitle file the user already has */
   ingestMode: IngestMode;
   syncFile: ParsedSubtitles | null;
+  /** The raw uploaded File for re-decoding when the user changes the subtitle encoding */
+  syncRawFile: File | null;
   /** Language of the subtitle file (detected; the user may correct it) */
   syncLanguage: string | null;
   syncUseGemini: boolean;
   setIngestMode: (mode: IngestMode) => void;
-  setSyncFile: (file: ParsedSubtitles | null) => void;
+  setSyncFile: (file: ParsedSubtitles | null, rawFile?: File | null) => void;
   setSyncLanguage: (language: string) => void;
   setSyncUseGemini: (value: boolean) => void;
+  /** Flush any debounced inline text edits and wait for all in-flight segment saves to finish */
+  flushPendingEdits: () => Promise<void>;
+  /** Apply global defaults loaded from or saved in Settings */
+  applySettingsDefaults: (
+    defaults: Pick<
+      import('../types').AppSettings,
+      'convert_to_metric' | 'remove_sdh_speakers' | 'skip_end_credits' | 'onscreen_position'
+    >,
+    overwriteSaved?: boolean
+  ) => void;
 
   fetchSystemInfo: () => Promise<void>;
   fetchJobs: () => Promise<void>;
@@ -196,9 +208,27 @@ interface JobState {
 let activeSocket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempts = 0;
-/** Segment saves still on their way: undo waits for them, so a late autosave can't undo the undo */
+/** Segment saves still on their way: undo and export wait for them, so a late autosave can't race */
 const inflightSaves = new Set<Promise<unknown>>();
+const pendingFlushCallbacks = new Set<() => void>();
 let historyRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Register a synchronous flush callback from an EditableText cell so Export / Undo can flush before saving. */
+export const registerPendingFlush = (fn: () => void): (() => void) => {
+  pendingFlushCallbacks.add(fn);
+  return () => {
+    pendingFlushCallbacks.delete(fn);
+  };
+};
+
+const flushAllPendingEdits = async () => {
+  for (const flush of [...pendingFlushCallbacks]) {
+    flush();
+  }
+  if (inflightSaves.size > 0) {
+    await Promise.allSettled([...inflightSaves]);
+  }
+};
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -243,7 +273,7 @@ export const useJobStore = create<JobState>((set, get) => {
     const jobId = activeJob.id;
     set({ historyBusy: true });
     try {
-      await Promise.allSettled([...inflightSaves]);
+      await flushAllPendingEdits();
       const res = await action(jobId);
       if (get().activeJob?.id !== jobId) return;
       patchActiveJob({ segments: res.segments });
@@ -421,6 +451,7 @@ export const useJobStore = create<JobState>((set, get) => {
     },
     ingestMode: savedSyncPrefs.ingestMode,
     syncFile: null,
+    syncRawFile: null,
     syncLanguage: null,
     syncUseGemini: savedSyncPrefs.syncUseGemini,
 
@@ -428,11 +459,41 @@ export const useJobStore = create<JobState>((set, get) => {
       saveSyncPrefs({ ingestMode, syncUseGemini: get().syncUseGemini });
       set({ ingestMode });
     },
-    setSyncFile: (syncFile) => set({ syncFile, syncLanguage: syncFile?.language || null }),
+    setSyncFile: (syncFile, rawFile) =>
+      set((state) => ({
+        syncFile,
+        syncRawFile: syncFile === null ? null : rawFile !== undefined ? rawFile : state.syncRawFile,
+        syncLanguage: syncFile?.language || null,
+      })),
     setSyncLanguage: (syncLanguage) => set({ syncLanguage }),
     setSyncUseGemini: (syncUseGemini) => {
       saveSyncPrefs({ ingestMode: get().ingestMode, syncUseGemini });
       set({ syncUseGemini });
+    },
+    flushPendingEdits: () => flushAllPendingEdits(),
+    applySettingsDefaults: (defaults, overwriteSaved = false) => {
+      const cfg = get().pipelineConfig;
+      const next: JobConfig = {
+        ...cfg,
+        onscreen_position:
+          overwriteSaved || savedConfig.onscreen_position === undefined
+            ? (defaults.onscreen_position ?? cfg.onscreen_position)
+            : cfg.onscreen_position,
+        convert_to_metric:
+          overwriteSaved || savedConfig.convert_to_metric === undefined
+            ? (defaults.convert_to_metric ?? cfg.convert_to_metric)
+            : cfg.convert_to_metric,
+        remove_sdh_speakers:
+          overwriteSaved || savedConfig.remove_sdh_speakers === undefined
+            ? (defaults.remove_sdh_speakers ?? cfg.remove_sdh_speakers)
+            : cfg.remove_sdh_speakers,
+        skip_end_credits:
+          overwriteSaved || savedConfig.skip_end_credits === undefined
+            ? (defaults.skip_end_credits ?? cfg.skip_end_credits)
+            : cfg.skip_end_credits,
+      };
+      if (overwriteSaved) saveConfig(next);
+      set({ pipelineConfig: next });
     },
 
     fetchSystemInfo: async () => {
@@ -503,6 +564,7 @@ export const useJobStore = create<JobState>((set, get) => {
         probeResult: null,
         insertDraft: null,
         syncFile: null,
+        syncRawFile: null,
         syncLanguage: null,
         selectedSegmentIndex: null,
         problemFilter: 'NONE',

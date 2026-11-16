@@ -205,6 +205,7 @@ async def create_job(req: JobCreate, session: Session = Depends(get_session)):
     if syncing and len(req.sync_cues) < 3:
         raise HTTPException(status_code=400, detail="The subtitle file needs at least 3 lines to sync")
 
+    saved_settings = load_settings()
     new_job = Job(
         id=job_id,
         video_path=str(resolved),
@@ -224,13 +225,25 @@ async def create_job(req: JobCreate, session: Session = Depends(get_session)):
         detect_onscreen_text=req.detect_onscreen_text,
         onscreen_sensitivity=req.onscreen_sensitivity,
         allow_onscreen_overlap=req.allow_onscreen_overlap,
-        onscreen_position=req.onscreen_position or getattr(load_settings(), "onscreen_position", "top_center"),
-        convert_to_metric=req.convert_to_metric or getattr(load_settings(), "convert_to_metric", False),
-        remove_sdh_speakers=req.remove_sdh_speakers or getattr(load_settings(), "remove_sdh_speakers", False),
-        skip_end_credits=getattr(req, "skip_end_credits", True),
+        onscreen_position=req.onscreen_position or getattr(saved_settings, "onscreen_position", "top_center"),
+        convert_to_metric=(
+            req.convert_to_metric
+            if req.convert_to_metric is not None
+            else getattr(saved_settings, "convert_to_metric", False)
+        ),
+        remove_sdh_speakers=(
+            req.remove_sdh_speakers
+            if req.remove_sdh_speakers is not None
+            else getattr(saved_settings, "remove_sdh_speakers", False)
+        ),
+        skip_end_credits=(
+            req.skip_end_credits
+            if req.skip_end_credits is not None
+            else getattr(saved_settings, "skip_end_credits", True)
+        ),
         enable_translation=req.enable_translation,
         target_language=req.target_language,
-        gemini_model=req.gemini_model or load_settings().translation.model,
+        gemini_model=req.gemini_model or saved_settings.translation.model,
         context_notes=req.context_notes,
         glossary_profile=clean_name(req.glossary_profile) or None,
     )

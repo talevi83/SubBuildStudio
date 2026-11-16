@@ -324,12 +324,15 @@ class PipelineOrchestrator:
         return total.to_dict() if total.has_activity() else None
 
     async def _broadcast(self, payload: Dict[str, Any]) -> None:
-        payload.setdefault("job_id", self.job_id)
-        if "usage" not in payload:
-            u = self._current_usage()
-            if u is not None:
-                payload["usage"] = u
-        await ws_manager.broadcast(self.job_id, payload)
+        try:
+            payload.setdefault("job_id", self.job_id)
+            if "usage" not in payload:
+                u = self._current_usage()
+                if u is not None:
+                    payload["usage"] = u
+            await ws_manager.broadcast(self.job_id, payload)
+        except Exception as exc:
+            logger.warning(f"Could not broadcast WebSocket event for job {self.job_id}: {exc}")
 
     async def _stop_frame_sampling(self, ctx: Optional[PipelineContext]) -> None:
         task = getattr(ctx, "frame_task", None) if ctx is not None else None

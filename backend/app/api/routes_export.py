@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query, Response
 from fastapi.responses import FileResponse
 from sqlmodel import Session
 
+from app.core import edit_history as history
 from app.core.config import settings
 from app.core.database import get_session
 from app.models.db_models import Job
@@ -53,14 +54,18 @@ def _render(job: Job, use_translated: bool, apply_rtl: bool, max_chars_per_line:
 
 def _export(job_id: str, session: Session, use_translated: bool, apply_rtl: bool,
             max_chars_per_line: Optional[int], fmt: str) -> Response:
-    job = session.get(Job, job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-    media_type = "application/x-subrip; charset=utf-8" if fmt == "srt" else "text/vtt; charset=utf-8"
+    with history.job_lock(job_id):
+        session.expire_all()
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        media_type = "application/x-subrip; charset=utf-8" if fmt == "srt" else "text/vtt; charset=utf-8"
+        content = _render(job, use_translated, apply_rtl, max_chars_per_line, fmt)
+        headers = _attachment_headers(_build_filename(job, use_translated, fmt))
     return Response(
-        content=_render(job, use_translated, apply_rtl, max_chars_per_line, fmt),
+        content=content,
         media_type=media_type,
-        headers=_attachment_headers(_build_filename(job, use_translated, fmt)),
+        headers=headers,
     )
 
 
@@ -97,26 +102,28 @@ def save_next_to_video(job_id: str, req: SaveNextToVideoRequest, session: Sessio
     """
     import os
 
-    job = session.get(Job, job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-    if job.is_upload:
-        raise HTTPException(
-            status_code=400,
-            detail="This video was uploaded through the browser, so it has no folder of its own. Download the file instead.",
-        )
-    if not any(seg.translated_text for seg in job.segments) and req.use_translated:
-        raise HTTPException(status_code=400, detail="This project has no translation to save yet.")
-    folder = Path(job.video_path).parent
-    if not folder.is_dir():
-        raise HTTPException(status_code=404, detail=f"The video's folder no longer exists: {folder}")
+    with history.job_lock(job_id):
+        session.expire_all()
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        if job.is_upload:
+            raise HTTPException(
+                status_code=400,
+                detail="This video was uploaded through the browser, so it has no folder of its own. Download the file instead.",
+            )
+        if not any(seg.translated_text for seg in job.segments) and req.use_translated:
+            raise HTTPException(status_code=400, detail="This project has no translation to save yet.")
+        folder = Path(job.video_path).parent
+        if not folder.is_dir():
+            raise HTTPException(status_code=404, detail=f"The video's folder no longer exists: {folder}")
 
-    target = folder / _build_filename(job, req.use_translated, req.format)
-    exists = target.exists()
-    if exists and not req.overwrite:
-        return SaveNextToVideoResponse(saved=False, path=str(target), exists=True)
+        target = folder / _build_filename(job, req.use_translated, req.format)
+        exists = target.exists()
+        if exists and not req.overwrite:
+            return SaveNextToVideoResponse(saved=False, path=str(target), exists=True)
 
-    data = _render(job, req.use_translated, req.apply_rtl, None, req.format)
+        data = _render(job, req.use_translated, req.apply_rtl, None, req.format)
     tmp = target.with_name(f".{target.name}.subbuild-tmp")
     try:
         tmp.write_bytes(data)
@@ -155,54 +162,57 @@ async def start_embed_video(job_id: str, req: EmbedVideoRequest, session: Sessio
     """
     from app.core import video_embed as ve
 
-    job = session.get(Job, job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-    if not any(seg.id for seg in job.segments):
-        raise HTTPException(status_code=400, detail="This project has no subtitles yet.")
-    if req.use_translated and not any(seg.translated_text for seg in job.segments):
-        raise HTTPException(status_code=400, detail="This project has no translation to embed yet.")
-    video = Path(job.video_path)
-    if not video.is_file():
-        raise HTTPException(status_code=404, detail=f"The video file no longer exists: {video}")
-    running = ve.running_task(job_id)
-    if running:
-        raise HTTPException(status_code=409, detail="A video with subtitles is already being made for this project.")
+    with history.job_lock(job_id):
+        session.expire_all()
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        if not any(seg.id for seg in job.segments):
+            raise HTTPException(status_code=400, detail="This project has no subtitles yet.")
+        if req.use_translated and not any(seg.translated_text for seg in job.segments):
+            raise HTTPException(status_code=400, detail="This project has no translation to embed yet.")
+        video = Path(job.video_path)
+        if not video.is_file():
+            raise HTTPException(status_code=404, detail=f"The video file no longer exists: {video}")
+        running = ve.running_task(job_id)
+        if running:
+            raise HTTPException(status_code=409, detail="A video with subtitles is already being made for this project.")
 
-    language = job.target_language if req.use_translated else job.effective_source_language
-    code = _lang_code(language)
-    ext = ve.output_extension(job.video_path, req.mode)
-    name = ve.output_name(job.file_name or video.name, code, req.mode, ext)
-    if job.is_upload:
-        folder = settings.storage_dir.resolve() / "exports" / f"embed_{job.id}"
-        folder.mkdir(parents=True, exist_ok=True)
-        target = folder / name
-    else:
-        target = video.parent / name
-        if target.exists() and not req.overwrite:
-            return EmbedVideoStatus(state="exists", mode=req.mode, path=str(target), file_name=name, next_to_video=True)
+        language = job.target_language if req.use_translated else job.effective_source_language
+        code = _lang_code(language)
+        ext = ve.output_extension(job.video_path, req.mode)
+        name = ve.output_name(job.file_name or video.name, code, req.mode, ext)
+        if job.is_upload:
+            folder = settings.storage_dir.resolve() / "exports" / f"embed_{job.id}"
+            folder.mkdir(parents=True, exist_ok=True)
+            target = folder / name
+        else:
+            target = video.parent / name
+            if target.exists() and not req.overwrite:
+                return EmbedVideoStatus(state="exists", mode=req.mode, path=str(target), file_name=name, next_to_video=True)
 
-    if req.mode == "soft":
-        # The copy is about as big as the original; fail now rather than at 95%
-        import shutil
-        try:
-            free = shutil.disk_usage(target.parent).free
-        except OSError:
-            free = None
-        if free is not None and free < video.stat().st_size * 1.02 + 50_000_000:
-            raise HTTPException(status_code=507, detail=f"Not enough free disk space in {target.parent}")
+        if req.mode == "soft":
+            # The copy is about as big as the original; fail now rather than at 95%
+            import shutil
+            try:
+                free = shutil.disk_usage(target.parent).free
+            except OSError:
+                free = None
+            if free is not None and free < video.stat().st_size * 1.02 + 50_000_000:
+                raise HTTPException(status_code=507, detail=f"Not enough free disk space in {target.parent}")
 
-    text = _render(job, req.use_translated, req.apply_rtl, None, "srt").decode("utf-8").lstrip("\ufeff")
-    opts = ve.EmbedOptions(
-        mode=req.mode,
-        language3=language_code3(language),
-        track_title=f"{language_name(language, 'Subtitles')} (SubBuild Studio)",
-        set_default=req.set_default,
-        font_size=req.font_size,
-        quality=req.quality,
-        audio_stream=job.selected_audio_stream or 0,
-    )
-    task = ve.start_embed(job.id, str(video.resolve()), target, text, opts, in_app_storage=job.is_upload)
+        text = _render(job, req.use_translated, req.apply_rtl, None, "srt").decode("utf-8").lstrip("\ufeff")
+        opts = ve.EmbedOptions(
+            mode=req.mode,
+            language3=language_code3(language),
+            track_title=f"{language_name(language, 'Subtitles')} (SubBuild Studio)",
+            set_default=req.set_default,
+            font_size=req.font_size,
+            quality=req.quality,
+            audio_stream=job.selected_audio_stream or 0,
+        )
+        job_is_upload = job.is_upload
+    task = ve.start_embed(job_id, str(video.resolve()), target, text, opts, in_app_storage=job_is_upload)
     return _embed_status(job_id, task)
 
 

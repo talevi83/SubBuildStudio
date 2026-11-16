@@ -71,6 +71,66 @@ def test_language_detection_by_script():
     assert detect_language([ParsedCue(0, 1, "Where is John?")]) == "English"
 
 
+def test_decodes_arabic_cp1256_and_french_cp1252_and_allows_encoding_override():
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    arabic_srt = "1\r\n00:00:01,000 --> 00:00:02,500\r\nمرحبا بالعالم\r\n".encode("cp1256")
+    parsed_ar = parse_subtitle_file(arabic_srt, "arabic.srt")
+    assert parsed_ar["encoding"] == "windows-1256"
+    assert parsed_ar["language"] == "Arabic"
+    assert parsed_ar["cues"][0]["text"] == "مرحبا بالعالم"
+
+    french_srt = "1\r\n00:00:01,000 --> 00:00:02,500\r\nDéjà été créé à côté\r\n".encode("cp1252")
+    parsed_fr = parse_subtitle_file(french_srt, "french.srt")
+    assert parsed_fr["encoding"] == "windows-1252"
+    assert parsed_fr["language"] == "English"
+    assert parsed_fr["cues"][0]["text"] == "Déjà été créé à côté"
+
+    # Explicit encoding override via API endpoint re-decodes the original bytes
+    with TestClient(app) as client:
+        res_forced = client.post(
+            "/api/media/parse-subtitles?encoding=windows-1256",
+            files={"file": ("arabic.srt", arabic_srt)},
+        )
+        assert res_forced.status_code == 200
+        assert res_forced.json()["encoding"] == "windows-1256"
+        assert res_forced.json()["cues"][0]["text"] == "مرحبا بالعالم"
+
+        res_bad = client.post(
+            "/api/media/parse-subtitles?encoding=not-an-encoding",
+            files={"file": ("arabic.srt", arabic_srt)},
+        )
+        assert res_bad.status_code == 400
+
+
+def test_decodes_cyrillic_cp1251_and_keeps_pointed_hebrew_cp1255():
+    def srt(lines):
+        return "".join(
+            f"{i + 1}\r\n00:00:0{i},000 --> 00:00:0{i},900\r\n{text}\r\n\r\n" for i, text in enumerate(lines)
+        )
+
+    # Russian in Windows-1251 used to be read as Windows-1255 and labelled Hebrew
+    russian = ["Привет, как дела?", "Я не знаю, что сказать.", "Пойдём домой!"]
+    parsed_ru = parse_subtitle_file(srt(russian).encode("cp1251"), "russian.srt")
+    assert parsed_ru["encoding"] == "windows-1251"
+    assert parsed_ru["language"] == "Russian"
+    assert [c["text"] for c in parsed_ru["cues"]] == russian
+
+    # Hebrew with vowel points (nikud) must stay Windows-1255
+    pointed = ["שָׁלוֹם עוֹלָם", "מַה שְּׁלוֹמְךָ?"]
+    parsed_he = parse_subtitle_file(srt(pointed).encode("cp1255"), "pointed.srt")
+    assert parsed_he["encoding"] == "windows-1255"
+    assert parsed_he["language"] == "Hebrew"
+    assert [c["text"] for c in parsed_he["cues"]] == pointed
+
+    # Plain Hebrew and Arabic are not mistaken for Cyrillic
+    hebrew = ["- מה אתה עושה פה?", "- אני מחפש את אבא שלי."]
+    assert parse_subtitle_file(srt(hebrew).encode("cp1255"), "he.srt")["encoding"] == "windows-1255"
+    arabic = ["مرحبا بالعالم", "كيف حالك اليوم؟"]
+    assert parse_subtitle_file(srt(arabic).encode("cp1256"), "ar.srt")["encoding"] == "windows-1256"
+
+
 # --------------------------------------------------------------------------- alignment
 
 def _synthetic(seed=1, n=400, scale=25 / 23.976, offset=2.4, cut_at=None, cut=0.0, noise=0.15):

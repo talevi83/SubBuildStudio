@@ -30,11 +30,14 @@ class ConnectionManager:
 
     async def broadcast(self, job_id: str, payload: Dict[str, Any]) -> None:
         """Broadcast JSON payload to all active WebSockets connected to this job."""
-        if job_id not in self._connections:
+        subscribers = list(self._connections.get(job_id, ()))
+        if not subscribers:
             return
 
         dead_connections = set()
-        for ws in self._connections[job_id]:
+        for ws in subscribers:
+            if ws not in self._connections.get(job_id, ()):
+                continue
             try:
                 await ws.send_json(payload)
             except Exception as e:

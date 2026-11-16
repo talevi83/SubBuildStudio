@@ -1,5 +1,7 @@
 import type { ParsedSubtitles, SegmentCreate, SyncCue, SystemInfo, ProbeResponse, Job, JobConfig, SubtitleSegment, SegmentPatch, SegmentsChange, QAIssue, SpeakerGuess, StorageReport, StorageCleanResult, SaveNextToVideoResult, EmbedVideoOptions, EmbedVideoStatus, EditHistory, HistoryRestoreResult, Glossary, RetranslateOptions, AppSettings, SettingsResponse, CostEstimate, ModelCheckResponse } from '../types';
 
+import { hashBlobSha256 } from '../utils/sha256';
+
 const API_BASE = '/api';
 
 async function request<T>(url: string, init?: RequestInit, fallbackError = 'Request failed'): Promise<T> {
@@ -26,9 +28,17 @@ export const api = {
     return request(`${API_BASE}/media/probe-path`, json('POST', { file_path: filePath }), 'Failed to inspect file path');
   },
 
-  /** Returns the probe of an identical earlier upload (same name + size), or null. */
-  findExistingUpload(file: File): Promise<ProbeResponse | null> {
-    const params = new URLSearchParams({ name: file.name, size: String(file.size) });
+  /** Returns the probe of an identical earlier upload (same name + size + SHA-256 content hash), or null. */
+  async findExistingUpload(file: File): Promise<ProbeResponse | null> {
+    // Hashing reads the whole file, which takes as long as uploading it. Only do it when an
+    // earlier upload with the same name and size exists (if the check fails, hash anyway).
+    const candidates = await request<{ count: number }>(
+      `${API_BASE}/media/upload/candidates?${new URLSearchParams({ name: file.name, size: String(file.size) })}`
+    ).catch(() => null);
+    if (candidates && candidates.count === 0) return null;
+    const sha256 = await hashBlobSha256(file);
+    if (!sha256) return null;
+    const params = new URLSearchParams({ name: file.name, size: String(file.size), sha256 });
     return request<ProbeResponse | null>(`${API_BASE}/media/upload/existing?${params}`).catch(() => null);
   },
 
@@ -58,10 +68,15 @@ export const api = {
   },
 
   /** Parse a subtitle file the user wants synced (SRT / WebVTT / ASS; any encoding). Nothing is stored. */
-  parseSubtitles(file: File): Promise<ParsedSubtitles> {
+  parseSubtitles(file: File, encoding?: string): Promise<ParsedSubtitles> {
     const formData = new FormData();
     formData.append('file', file);
-    return request(`${API_BASE}/media/parse-subtitles`, { method: 'POST', body: formData }, 'Could not read the subtitle file');
+    const query = encoding ? `?${new URLSearchParams({ encoding })}` : '';
+    return request(
+      `${API_BASE}/media/parse-subtitles${query}`,
+      { method: 'POST', body: formData },
+      'Could not read the subtitle file'
+    );
   },
 
   createJob(
