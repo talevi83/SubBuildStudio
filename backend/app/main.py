@@ -14,8 +14,9 @@ from app.core.config import settings
 from app.core.auth import SESSION_TOKEN, TOKEN_GENERATED, SessionTokenGuard, bootstrap_path
 from app.core.request_guard import CrossSiteRequestGuard
 from app.core.security_headers import SecurityHeadersMiddleware
+from app.core.upload_limits import UploadLimitGuard
 from app.core.database import init_db
-from app.core.housekeeping import cleanup_storage
+from app.core.housekeeping import cleanup_storage, uploads_dir
 from app.core.ws_manager import ws_manager
 from app.api import routes_system, routes_media, routes_jobs, routes_export, routes_settings, routes_glossary, routes_storage, routes_history
 from app.pipeline.orchestrator import recover_interrupted_jobs
@@ -57,9 +58,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Innermost: oversized uploads are refused from their Content-Length, before Starlette spools
+# the body to disk (only reached by requests that passed the session and CSRF checks).
+app.add_middleware(UploadLimitGuard, uploads_dir=uploads_dir)
+
 # CSRF: CORS can't stop a website from *sending* simple POSTs / opening a WebSocket to
 # 127.0.0.1, so state-changing requests from untrusted origins are rejected here.
-# Added first = innermost, so CORS preflights and the Host check run before it.
+# Added early = inner, so CORS preflights and the Host check run before it.
 app.add_middleware(CrossSiteRequestGuard, allowed_origins=settings.cors_origins)
 
 # CORS: only allow the local frontend origins (Vite dev server + same-origin prod build).

@@ -60,6 +60,10 @@ def reject_network_path(raw: str) -> None:
         )
 
 
+class _DiskFull(Exception):
+    pass
+
+
 def _sanitize_filename(raw: Optional[str]) -> str:
     """Reduce a client-supplied filename to a safe basename (no directories, no reserved chars)."""
     # Normalize both separator styles before taking the basename
@@ -214,6 +218,7 @@ async def upload_media_file(file: UploadFile = File(...)):
 
     def _save() -> str:
         digest = hashlib.sha256()
+        written = 0
         with open(upload_dest, "wb") as buffer:
             while True:
                 chunk = file.file.read(_HASH_CHUNK_BYTES)
@@ -221,10 +226,20 @@ async def upload_media_file(file: UploadFile = File(...)):
                     break
                 digest.update(chunk)
                 buffer.write(chunk)
+                written += len(chunk)
+                if written % (64 * _HASH_CHUNK_BYTES) < len(chunk):  # every ~256 MB
+                    try:
+                        if shutil.disk_usage(target_dir).free < 100 * 1024 * 1024:
+                            raise _DiskFull()
+                    except OSError:
+                        pass
         return digest.hexdigest()
 
     try:
         sha256 = await asyncio.to_thread(_save)
+    except _DiskFull:
+        upload_dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=507, detail="The disk filled up during the upload")
     except Exception as exc:
         upload_dest.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Failed to save uploaded file: {exc}")
