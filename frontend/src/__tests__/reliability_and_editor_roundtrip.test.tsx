@@ -65,6 +65,9 @@ describe('SubBuild Studio UI reliability & editor round-trip', () => {
       syncFile: null,
       syncRawFile: null,
       syncLanguage: null,
+      selectedSegmentIndex: null,
+      savingCount: 0,
+      lastSavedAt: null,
       error: null,
     });
   });
@@ -409,5 +412,132 @@ describe('SubBuild Studio UI reliability & editor round-trip', () => {
     // Both overlapping cues should now show the overlap warning icon
     const warnings = view.getAllByLabelText('Time overlaps an adjacent subtitle');
     expect(warnings).toHaveLength(2);
+  });
+
+  it('supports autosave status, split/merge/shift controls, search navigation, and bilingual export URL', async () => {
+    const job = makeJob();
+    job.segments = [
+      {
+        ...job.segments[0],
+        id: 101,
+        index: 1,
+        start_time: 1.0,
+        end_time: 5.0,
+        original_text: 'Hello world friend',
+        translated_text: 'שלום עולם חבר',
+      },
+      {
+        ...job.segments[0],
+        id: 102,
+        index: 2,
+        start_time: 6.0,
+        end_time: 8.0,
+        original_text: 'Goodbye world',
+        translated_text: 'להתראות עולם',
+      },
+    ];
+    useJobStore.setState({ activeJob: job, jobs: [job], applyRtlExport: true });
+
+    vi.spyOn(api, 'getHistory').mockResolvedValue({
+      cursor: 1,
+      can_undo: false,
+      can_redo: false,
+      entries: [],
+    });
+
+    let resolvePatch!: (seg: Job['segments'][0]) => void;
+    vi.spyOn(api, 'updateSegment').mockImplementation(
+      () =>
+        new Promise((res) => {
+          resolvePatch = res;
+        })
+    );
+
+    const splitSpy = vi.spyOn(api, 'splitSegment').mockResolvedValue({
+      changed: 2,
+      retimed: true,
+      created_id: 103,
+      segments: [
+        { ...job.segments[0], id: 101, index: 1, end_time: 3.0, original_text: 'Hello', translated_text: 'שלום' },
+        { ...job.segments[0], id: 103, index: 2, start_time: 3.0, end_time: 5.0, original_text: 'world friend', translated_text: 'עולם חבר' },
+        { ...job.segments[1], id: 102, index: 3 },
+      ],
+    });
+    const mergeSpy = vi.spyOn(api, 'mergeSegments').mockResolvedValue({
+      changed: 2,
+      retimed: true,
+      created_id: 101,
+      segments: [
+        { ...job.segments[0], id: 101, index: 1, start_time: 1.0, end_time: 5.0, original_text: 'Hello\nworld friend' },
+        { ...job.segments[1], id: 102, index: 2 },
+      ],
+    });
+    const shiftSpy = vi.spyOn(api, 'shiftSegments').mockResolvedValue({
+      changed: 2,
+      retimed: true,
+      segments: [
+        { ...job.segments[0], id: 101, index: 1, start_time: 2.0, end_time: 6.0 },
+        { ...job.segments[1], id: 102, index: 2, start_time: 7.0, end_time: 9.0 },
+      ],
+    });
+
+    const view = render(
+      <div>
+        <SubtitleTable />
+        <ExportToolbar />
+      </div>
+    );
+
+    // 1. Autosave status indicator transitions from Saving… -> Saved
+    fireEvent.click(view.getAllByTitle('+100ms')[0]);
+    expect(view.getByTestId('autosave-status').textContent).toContain('Saving');
+    resolvePatch({ ...job.segments[0], start_time: 1.1 });
+    await waitFor(() => {
+      expect(view.getByTestId('autosave-status').textContent).toContain('Saved');
+    });
+
+    // 2. Bilingual SRT export button builds URL with bilingual=true
+    const clickedHrefs: string[] = [];
+    const origClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      clickedHrefs.push(this.getAttribute('href') || '');
+    };
+    try {
+      fireEvent.click(view.getByTestId('export-bilingual-srt'));
+      await waitFor(() => expect(clickedHrefs.some((h) => h.includes('bilingual=true'))).toBe(true));
+    } finally {
+      HTMLAnchorElement.prototype.click = origClick;
+    }
+
+    // 3. Split cue #1
+    fireEvent.click(view.getByTestId('split-row-1'));
+    await waitFor(() => expect(splitSpy).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(useJobStore.getState().activeJob?.segments).toHaveLength(3));
+
+    // 4. Select rows #1 and #2 via checkboxes and click Merge
+    const rowCheckboxes = view.getAllByLabelText('Select this subtitle') as HTMLInputElement[];
+    fireEvent.click(rowCheckboxes[0]);
+    fireEvent.click(rowCheckboxes[1]);
+    fireEvent.click(view.getByTestId('rows-merge'));
+    await waitFor(() => expect(mergeSpy).toHaveBeenCalledWith('job_roundtrip_1', [101, 103]));
+    await waitFor(() => expect(useJobStore.getState().activeJob?.segments).toHaveLength(2));
+
+    // 5. Shift times by +1.0s
+    fireEvent.click(view.getByTestId('shift-time-toggle'));
+    fireEvent.change(view.getByTestId('shift-time-input'), { target: { value: '1.0' } });
+    fireEvent.click(view.getByTestId('shift-time-apply'));
+    await waitFor(() => expect(shiftSpy).toHaveBeenCalledWith('job_roundtrip_1', 1, undefined));
+
+    // 6. Search navigation Next / Prev match
+    useJobStore.setState({ selectedSegmentIndex: null });
+    const searchInput = view.getByPlaceholderText('Search subtitle text...') as HTMLInputElement;
+    fireEvent.change(searchInput, { target: { value: 'world' } });
+    await waitFor(() => expect(view.getByTestId('search-next-match')).toBeTruthy());
+    fireEvent.click(view.getByTestId('search-next-match'));
+    expect(useJobStore.getState().selectedSegmentIndex).toBe(1);
+    fireEvent.click(view.getByTestId('search-next-match'));
+    expect(useJobStore.getState().selectedSegmentIndex).toBe(2);
+    fireEvent.click(view.getByTestId('search-prev-match'));
+    expect(useJobStore.getState().selectedSegmentIndex).toBe(1);
   });
 });

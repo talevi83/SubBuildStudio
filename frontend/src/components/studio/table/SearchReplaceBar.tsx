@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Regex, Replace, Search } from 'lucide-react';
+import { ChevronDown, ChevronUp, Regex, Replace, Search } from 'lucide-react';
 import { useJobStore } from '../../../store/useJobStore';
 import { useT } from '../../../i18n';
 
@@ -12,6 +12,10 @@ interface SearchReplaceBarProps {
   isLive: boolean;
   /** Shown for a few seconds in the status line after "Replace all" */
   onResult: (message: string) => void;
+  matchCount?: number;
+  currentMatchIndex?: number;
+  onNextMatch?: () => void;
+  onPrevMatch?: () => void;
 }
 
 /** Top toolbar row: search (plain or regex), replacement text, target column and "Replace all". */
@@ -23,6 +27,10 @@ export const SearchReplaceBar: React.FC<SearchReplaceBarProps> = ({
   regexError,
   isLive,
   onResult,
+  matchCount = 0,
+  currentMatchIndex = 0,
+  onNextMatch,
+  onPrevMatch,
 }) => {
   const replaceAll = useJobStore((s) => s.replaceAll);
   const t = useT();
@@ -39,13 +47,25 @@ export const SearchReplaceBar: React.FC<SearchReplaceBarProps> = ({
     if (e.altKey && e.key.toLowerCase() === 'r') {
       e.preventDefault();
       onToggleRegex();
+    } else if (e.key === 'Enter' && searchTerm.trim()) {
+      e.preventDefault();
+      if (e.shiftKey) onPrevMatch?.();
+      else onNextMatch?.();
     }
   };
 
+  const showMatchNav = searchTerm.trim().length > 0 && matchCount > 0 && (onNextMatch || onPrevMatch);
+
   return (
     <div className="flex items-center gap-2">
-      <div className="relative flex-1">
-        <Search className="w-3.5 h-3.5 absolute start-2.5 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+      <div
+        className={`flex-1 flex items-center bg-surface border rounded-lg px-2 transition-colors ${
+          useRegex && regexError
+            ? 'border-rose-500/80 focus-within:border-rose-500'
+            : 'border-line focus-within:border-indigo-500'
+        }`}
+      >
+        <Search className="w-3.5 h-3.5 text-zinc-500 flex-shrink-0 pointer-events-none" />
         <input
           type="text"
           placeholder={useRegex ? t('table.searchRegex') : t('table.search')}
@@ -53,19 +73,46 @@ export const SearchReplaceBar: React.FC<SearchReplaceBarProps> = ({
           value={searchTerm}
           onChange={(e) => onSearchChange(e.target.value)}
           onKeyDown={handleSearchKeyDown}
-          className={`w-full bg-surface border rounded-lg ps-8 pe-8 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none transition-colors ${
-            useRegex && regexError
-              ? 'border-rose-500/80 focus:border-rose-500 text-rose-200'
-              : 'border-line focus:border-indigo-500'
+          className={`flex-1 min-w-0 bg-transparent px-2 py-1.5 text-xs placeholder-zinc-500 focus:outline-none ${
+            useRegex && regexError ? 'text-rose-200' : 'text-zinc-200'
           }`}
         />
+        {showMatchNav && (
+          <div className="flex items-center gap-0.5 me-1 text-[10px] text-zinc-400 tabular-nums" dir="ltr">
+            <span className="px-1">{`${currentMatchIndex + 1}/${matchCount}`}</span>
+            {onPrevMatch && (
+              <button
+                type="button"
+                onClick={onPrevMatch}
+                title={t('table.prevMatch')}
+                aria-label={t('table.prevMatch')}
+                data-testid="search-prev-match"
+                className="p-0.5 rounded hover:bg-zinc-800 hover:text-white cursor-pointer"
+              >
+                <ChevronUp className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {onNextMatch && (
+              <button
+                type="button"
+                onClick={onNextMatch}
+                title={t('table.nextMatch')}
+                aria-label={t('table.nextMatch')}
+                data-testid="search-next-match"
+                className="p-0.5 rounded hover:bg-zinc-800 hover:text-white cursor-pointer"
+              >
+                <ChevronDown className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        )}
         <button
           type="button"
           onClick={onToggleRegex}
           title={t('table.regexToggle')}
           aria-label={t('table.regexToggle')}
           aria-pressed={useRegex}
-          className={`absolute end-1.5 top-1/2 -translate-y-1/2 p-1 rounded transition-colors cursor-pointer flex items-center justify-center ${
+          className={`p-1 rounded transition-colors cursor-pointer flex items-center justify-center ${
             useRegex
               ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/50 hover:bg-indigo-600/40'
               : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/60'

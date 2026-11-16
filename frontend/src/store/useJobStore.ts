@@ -134,6 +134,8 @@ interface JobState {
   error: string | null;
   timingBusy: boolean;
   timingNote: string | null;
+  savingCount: number;
+  lastSavedAt: number | null;
   /** Edit history of the active job (undo / redo / jump to a step), see GET /jobs/{id}/history */
   history: (EditHistory & { jobId: string }) | null;
   historyBusy: boolean;
@@ -152,6 +154,12 @@ interface JobState {
   deleteSegment: (segmentId: number) => Promise<string | null>;
   /** Delete multiple lines; resolves to an error message, or null when they were deleted */
   deleteSegments: (segmentIds: number[]) => Promise<string | null>;
+  /** Split one line into two consecutive lines */
+  splitSegment: (segmentId: number, splitTime?: number) => Promise<string | null>;
+  /** Merge 2+ lines into one combined line */
+  mergeSegments: (segmentIds: number[]) => Promise<string | null>;
+  /** Shift all or selected lines by offsetSeconds */
+  shiftSegments: (offsetSeconds: number, segmentIds?: number[]) => Promise<string | null>;
   /** Update onscreen_position on the active job and persist it */
   updateJobOnscreenPosition: (pos: import('../types').OnscreenPosition) => Promise<void>;
   /** New project: make subtitles from the audio, or sync a subtitle file the user already has */
@@ -371,6 +379,8 @@ export const useJobStore = create<JobState>((set, get) => {
     error: null,
     timingBusy: false,
     timingNote: null,
+    savingCount: 0,
+    lastSavedAt: null,
     history: null,
     historyBusy: false,
     refreshHistory: async () => {
@@ -428,6 +438,7 @@ export const useJobStore = create<JobState>((set, get) => {
       const job = get().activeJob;
       if (!job || segmentIds.length === 0) return 'No project is open';
       try {
+        await flushAllPendingEdits();
         const res = await api.deleteSegments(job.id, segmentIds);
         if (get().activeJob?.id !== job.id) return null;
         patchActiveJob({ segments: res.segments });
@@ -436,6 +447,58 @@ export const useJobStore = create<JobState>((set, get) => {
         return null;
       } catch (e: unknown) {
         return e instanceof Error ? e.message : String(e);
+      }
+    },
+    splitSegment: async (segmentId, splitTime) => {
+      const job = get().activeJob;
+      if (!job) return 'No project is open';
+      try {
+        await flushAllPendingEdits();
+        const res = await api.splitSegment(job.id, segmentId, splitTime);
+        if (get().activeJob?.id !== job.id) return null;
+        patchActiveJob({ segments: res.segments });
+        const created = res.segments.find((s) => s.id === res.created_id);
+        if (created) set({ selectedSegmentIndex: created.index });
+        scheduleHistoryRefresh();
+        return null;
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        set({ error: msg });
+        return msg;
+      }
+    },
+    mergeSegments: async (segmentIds) => {
+      const job = get().activeJob;
+      if (!job || segmentIds.length < 2) return 'Select at least 2 lines to merge';
+      try {
+        await flushAllPendingEdits();
+        const res = await api.mergeSegments(job.id, segmentIds);
+        if (get().activeJob?.id !== job.id) return null;
+        patchActiveJob({ segments: res.segments });
+        const merged = res.segments.find((s) => s.id === res.created_id);
+        set({ selectedSegmentIndex: merged?.index ?? null });
+        scheduleHistoryRefresh();
+        return null;
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        set({ error: msg });
+        return msg;
+      }
+    },
+    shiftSegments: async (offsetSeconds, segmentIds) => {
+      const job = get().activeJob;
+      if (!job) return 'No project is open';
+      try {
+        await flushAllPendingEdits();
+        const res = await api.shiftSegments(job.id, offsetSeconds, segmentIds);
+        if (get().activeJob?.id !== job.id) return null;
+        patchActiveJob({ segments: res.segments });
+        scheduleHistoryRefresh();
+        return null;
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        set({ error: msg });
+        return msg;
       }
     },
     updateJobOnscreenPosition: async (pos) => {
@@ -537,6 +600,8 @@ export const useJobStore = create<JobState>((set, get) => {
           videoCurrentTime: 0,
           seekRequest: null,
           stageMessage: null,
+          savingCount: 0,
+          lastSavedAt: null,
         });
         get().connectWebSocket(jobId);
         void get().refreshHistory();
@@ -570,6 +635,8 @@ export const useJobStore = create<JobState>((set, get) => {
         problemFilter: 'NONE',
         seekRequest: null,
         stageMessage: null,
+        savingCount: 0,
+        lastSavedAt: null,
       });
     },
 
@@ -714,14 +781,20 @@ export const useJobStore = create<JobState>((set, get) => {
         ),
       });
 
+      set((s) => ({ savingCount: s.savingCount + 1 }));
       try {
         const request = api.updateSegment(jobId, segmentId, patch);
         inflightSaves.add(request);
         const saved = await request.finally(() => inflightSaves.delete(request));
         scheduleHistoryRefresh();
         const current = get().activeJob;
-        if (!current || current.id !== jobId) return;
-        set({
+        if (!current || current.id !== jobId) {
+          set((s) => ({ savingCount: Math.max(0, s.savingCount - 1), lastSavedAt: Date.now() }));
+          return;
+        }
+        set((s) => ({
+          savingCount: Math.max(0, s.savingCount - 1),
+          lastSavedAt: Date.now(),
           activeJob: {
             ...current,
             segments: normalizeSegments(
@@ -739,9 +812,9 @@ export const useJobStore = create<JobState>((set, get) => {
               )
             ),
           },
-        });
+        }));
       } catch (e: any) {
-        set({ error: `Could not save subtitle: ${e.message}` });
+        set((s) => ({ savingCount: Math.max(0, s.savingCount - 1), error: `Could not save subtitle: ${e.message}` }));
         get().refreshActiveJob();
       }
     },
@@ -833,16 +906,18 @@ export const useJobStore = create<JobState>((set, get) => {
         .filter(({ currentText, newText }) => newText !== currentText)
         .map(({ id, newText }) => ({ id, [field]: newText }));
       if (patches.length === 0) return 0;
+      set((s) => ({ savingCount: s.savingCount + 1 }));
       try {
         const saved = await api.updateSegments(activeJob.id, patches);
         const byId = new Map(saved.map((s) => [s.id, s]));
         patchActiveJob({
           segments: activeJob.segments.map((s) => (s.id && byId.has(s.id) ? { ...s, ...byId.get(s.id)! } : s)),
         });
+        set((s) => ({ savingCount: Math.max(0, s.savingCount - 1), lastSavedAt: Date.now() }));
         scheduleHistoryRefresh();
         return patches.length;
       } catch (e: any) {
-        set({ error: e.message });
+        set((s) => ({ savingCount: Math.max(0, s.savingCount - 1), error: e.message }));
         return 0;
       }
     },

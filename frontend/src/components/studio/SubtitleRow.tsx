@@ -4,7 +4,7 @@ import { registerPendingFlush } from '../../store/useJobStore';
 import { CpsBadge } from './CpsBadge';
 import { formatTimecode, parseTimecode } from '../../utils/time';
 import { useT } from '../../i18n';
-import { AlertTriangle, ChevronsDown, GripVertical, Minus, Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, ChevronsDown, GripVertical, Minus, Plus, Scissors, Trash2 } from 'lucide-react';
 
 const SAVE_DELAY_MS = 600;
 
@@ -25,6 +25,8 @@ interface SubtitleRowProps {
   onSelectToEnd?: (segmentId: number) => void;
   /** "+" under the row number: add a line right after this one; omitted while the job runs */
   onInsertAfter?: (seg: SubtitleSegment) => void;
+  /** Split this subtitle line into two parts; omitted while the job runs */
+  onSplit?: (seg: SubtitleSegment) => void;
   /** Delete this subtitle line; omitted while the job runs */
   onDelete?: (seg: SubtitleSegment) => void;
   /** Drag-to-move support (passed as primitive/stable props so React.memo never invalidates) */
@@ -202,6 +204,7 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
   onCheck,
   onSelectToEnd,
   onInsertAfter,
+  onSplit,
   onDelete,
   canDrag,
   isDragging,
@@ -328,6 +331,21 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
               className="flex h-4 w-4 items-center justify-center rounded text-zinc-500 hover:text-white hover:bg-indigo-600 opacity-0 group-hover:opacity-100 focus:opacity-100 cursor-pointer transition-opacity"
             >
               <Plus className="w-3 h-3" />
+            </button>
+          )}
+          {onSplit && seg.id && seg.end_time - seg.start_time >= 0.4 && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSplit(seg);
+              }}
+              title={t('table.splitRow', { index: seg.index })}
+              aria-label={t('table.splitRow', { index: seg.index })}
+              data-testid={`split-row-${seg.index}`}
+              className="flex h-4 w-4 items-center justify-center rounded text-zinc-500 hover:text-indigo-200 hover:bg-indigo-600/30 opacity-0 group-hover:opacity-100 focus:opacity-100 cursor-pointer transition-opacity"
+            >
+              <Scissors className="w-3 h-3" />
             </button>
           )}
           {onSelectToEnd && seg.id && (

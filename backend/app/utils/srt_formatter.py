@@ -131,6 +131,7 @@ def _serialize_blocks(
     format_ts,
     fmt: str = "srt",
     onscreen_position: str = "top_center",
+    bilingual: bool = False,
 ) -> List[str]:
     blocks: List[str] = []
     ordered = sorted(
@@ -141,12 +142,13 @@ def _serialize_blocks(
         ),
     )
 
-    def _append_cue(cue_text: str, start_time: float, end_time: float, is_top: bool) -> None:
+    def _format_part(cue_text: str, is_top: bool) -> str:
         if is_top:
             cue_text = _ensure_brackets(cue_text)
-        formatted_text = split_long_lines(cue_text, max_chars_per_line=max_chars_per_line)
-        if apply_rtl:
-            formatted_text = apply_rtl_fix(formatted_text)
+        formatted = split_long_lines(cue_text, max_chars_per_line=max_chars_per_line)
+        return apply_rtl_fix(formatted) if apply_rtl else formatted
+
+    def _append_formatted(formatted_text: str, start_time: float, end_time: float, is_top: bool) -> None:
         if is_top and fmt == "srt":
             pos_tag = _SRT_POS_MAP.get(onscreen_position, "{\\an8}")
             formatted_text = f"{pos_tag}{formatted_text}"
@@ -155,17 +157,30 @@ def _serialize_blocks(
             f"{len(blocks) + 1}\n{format_ts(start_time)} --> {format_ts(end_time)}{cue_settings}\n{formatted_text}\n"
         )
 
+    def _append_cue(cue_text: str, start_time: float, end_time: float, is_top: bool) -> None:
+        _append_formatted(_format_part(cue_text, is_top), start_time, end_time, is_top)
+
     for seg in ordered:
         translated = _get_seg_attr(seg, "translated_text")
         original = _get_seg_attr(seg, "original_text", "")
+        clean_orig = strip_directional_marks((original or "").strip())
+        clean_trans = strip_directional_marks((translated or "").strip())
+        seg_type = _get_seg_attr(seg, "segment_type") or "DIALOGUE"
+        start_time = float(_get_seg_attr(seg, "start_time", 0.0))
+        end_time = float(_get_seg_attr(seg, "end_time", 0.0))
+
+        if bilingual and clean_orig and clean_trans and clean_orig != clean_trans:
+            is_top = seg_type == "ON_SCREEN"
+            orig_part = _format_part(clean_orig, is_top=is_top)
+            trans_part = _format_part(clean_trans, is_top=is_top)
+            _append_formatted(f"{orig_part}\n{trans_part}", start_time, end_time, is_top=is_top)
+            continue
+
         raw_text = translated if (use_translated and translated) else original
         clean_text = strip_directional_marks((raw_text or "").strip())
         if not clean_text:
             continue
 
-        seg_type = _get_seg_attr(seg, "segment_type") or "DIALOGUE"
-        start_time = float(_get_seg_attr(seg, "start_time", 0.0))
-        end_time = float(_get_seg_attr(seg, "end_time", 0.0))
         raw_lines = [ln.strip() for ln in clean_text.splitlines() if ln.strip()]
 
         if seg_type == "ON_SCREEN" or (raw_lines and all(_is_bracketed_line(ln) for ln in raw_lines)):
@@ -186,6 +201,7 @@ def serialize_to_srt(
     apply_rtl: bool = True,
     max_chars_per_line: int = 42,
     onscreen_position: str = "top_center",
+    bilingual: bool = False,
 ) -> str:
     """Serialize segment dictionaries or models into a standard .srt file string."""
     return "\n".join(
@@ -197,6 +213,7 @@ def serialize_to_srt(
             format_srt_timestamp,
             fmt="srt",
             onscreen_position=onscreen_position,
+            bilingual=bilingual,
         )
     )
 
@@ -207,6 +224,7 @@ def serialize_to_vtt(
     apply_rtl: bool = True,
     max_chars_per_line: int = 42,
     onscreen_position: str = "top_center",
+    bilingual: bool = False,
 ) -> str:
     """Serialize segment dictionaries or models into a WebVTT file string."""
     blocks = ["WEBVTT\n"]
@@ -219,6 +237,7 @@ def serialize_to_vtt(
             format_vtt_timestamp,
             fmt="vtt",
             onscreen_position=onscreen_position,
+            bilingual=bilingual,
         )
     )
     return "\n".join(blocks)

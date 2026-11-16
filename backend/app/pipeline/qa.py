@@ -27,7 +27,7 @@ _MASC_PRON_FEM_VERB = re.compile(_NB + "אתה" + r"\s+(" + "|".join(_FEM_FUT) +
 class QAIssue:
     segment_id: int
     index: int
-    kind: str      # latin | name | term | agreement | missing
+    kind: str      # latin | name | term | agreement | missing | overlap | timing
     message: str
 
 
@@ -72,9 +72,49 @@ def check_segment(seg_id: int, index: int, original: str, translated: Optional[s
     return issues
 
 
+def _has_timing(r) -> bool:
+    return (
+        getattr(r, "start_time", None) is not None
+        and getattr(r, "end_time", None) is not None
+    )
+
+
+def _overlap_issues(rows: List) -> Dict[int, QAIssue]:
+    overlaps: Dict[int, QAIssue] = {}
+    lanes = (
+        [r for r in rows if _has_timing(r) and getattr(r, "segment_type", None) != "ON_SCREEN"],
+        [r for r in rows if _has_timing(r) and getattr(r, "segment_type", None) == "ON_SCREEN"],
+    )
+    for lane in lanes:
+        lane.sort(key=lambda r: (float(r.start_time), int(getattr(r, "index", 0))))
+        prev = None
+        for cur in lane:
+            if prev is not None and float(cur.start_time) < float(prev.end_time) - 0.001:
+                overlap_sec = float(prev.end_time) - float(cur.start_time)
+                overlaps[cur.id] = QAIssue(
+                    cur.id,
+                    cur.index,
+                    "overlap",
+                    f"Overlaps with line #{prev.index} ({overlap_sec:.2f}s)",
+                )
+            if prev is None or float(cur.end_time) > float(prev.end_time):
+                prev = cur
+    return overlaps
+
+
 def check_rows(rows: Iterable, glossary: Optional[Dict]) -> List[QAIssue]:
+    row_list = list(rows)
+    overlap_by_id = _overlap_issues(row_list)
     out: List[QAIssue] = []
-    for r in rows:
+    for r in row_list:
         out.extend(check_segment(r.id, r.index, r.original_text, r.translated_text, r.segment_type,
                                  bool(r.translation_failed), glossary))
+        if r.id in overlap_by_id:
+            out.append(overlap_by_id[r.id])
+        if _has_timing(r):
+            dur = float(r.end_time) - float(r.start_time)
+            if dur < 0.5:
+                out.append(QAIssue(r.id, r.index, "timing", f"Very short duration ({dur:.2f}s < 0.5s)"))
+            elif dur > 8.0:
+                out.append(QAIssue(r.id, r.index, "timing", f"Very long duration ({dur:.1f}s > 8.0s)"))
     return out
