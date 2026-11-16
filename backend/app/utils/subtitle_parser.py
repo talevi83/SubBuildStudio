@@ -1,8 +1,9 @@
 """
 Read a subtitle file the user already has (SRT, WebVTT or ASS/SSA) for "sync existing subtitles".
 
-* Decoding: BOM (UTF-8 / UTF-16), else strict UTF-8, else Windows-1255 (most Hebrew SRTs made on
-  Windows), else Windows-1252.
+* Decoding: BOM (UTF-8 / UTF-16), else strict UTF-8, else the best-scoring legacy code page
+  (Windows-1255 Hebrew, Windows-1256 Arabic, Windows-1251 Cyrillic), else Windows-1252.
+  The setup screen can re-decode the same bytes with an encoding the user picks.
 * Cues come back in file order with formatting removed but line breaks kept. A cue positioned at
   the top of the picture ({\\an8}, ASS alignment 7-9, VTT "line:0") is usually a sign or title, so
   it is marked with position="top" - a hint for matching on-screen text later.
@@ -31,15 +32,66 @@ class ParsedCue:
 
 # --------------------------------------------------------------------------- decoding
 
-_HEBREW = re.compile(r"[֐-׿]")
-_ARABIC = re.compile(r"[؀-ۿ]")
+_HEBREW = re.compile(r"[\u05d0-\u05ea]")
+_HEBREW_NIKUD = re.compile(r"[\u0591-\u05c7]")
+# Points written on a letter belong to the word; points with no letter before them are what
+# Cyrillic capitals (Windows-1251) look like when read as Windows-1255.
+_HEBREW_ATTACHED_NIKUD = re.compile(r"(?<=[\u05d0-\u05ea])[\u0591-\u05c7]+")
+_HEBREW_PURE_WORDS = re.compile(r"(?<![A-Za-z\u00c0-\u00ff])[\u05d0-\u05ea]{2,}(?![A-Za-z\u00c0-\u00ff])")
+_MIXED_LATIN_HEBREW = re.compile(r"[A-Za-z\u00c0-\u00ff][\u05d0-\u05ea]|[\u05d0-\u05ea][A-Za-z\u00c0-\u00ff]")
+
+_ARABIC = re.compile(r"[\u0621-\u063a\u0641-\u064a]")
+_ARABIC_DIACRITICS = re.compile(r"[\u064b-\u065f]")
+_ARABIC_PURE_WORDS = re.compile(r"(?<![A-Za-z\u00c0-\u00ff])[\u0621-\u063a\u0641-\u064a]{2,}(?![A-Za-z\u00c0-\u00ff])")
+_MIXED_LATIN_ARABIC = re.compile(r"[A-Za-z\u00c0-\u00ff][\u0600-\u06ff]|[\u0600-\u06ff][A-Za-z\u00c0-\u00ff]")
+
 _CYRILLIC = re.compile(r"[Ѐ-ӿ]")
+_CYRILLIC_PURE_WORDS = re.compile(r"(?<![A-Za-z\u00c0-\u00ff])[\u0400-\u04ff]{2,}(?![A-Za-z\u00c0-\u00ff])")
+_MIXED_LATIN_CYRILLIC = re.compile(r"[A-Za-z\u00c0-\u00ff][\u0400-\u04ff]|[\u0400-\u04ff][A-Za-z\u00c0-\u00ff]")
+# Lowercase followed by uppercase inside a word ("гСНИЗ") never happens in real Cyrillic text,
+# but it is what Arabic (Windows-1256) bytes look like when read as Windows-1251.
+_CYRILLIC_CASE_FLIP = re.compile(r"[\u0430-\u044f\u0450-\u045f][\u0410-\u042f\u0400-\u040f]")
 _GREEK = re.compile(r"[Ͱ-Ͽ]")
-_LATIN = re.compile(r"[A-Za-z]")
+_LATIN = re.compile(r"[A-Za-z\u00c0-\u00ff]")
+
+_SUPPORTED_ENCODINGS: Dict[str, Tuple[str, str]] = {
+    "utf-8": ("utf-8-sig", "utf-8"),
+    "utf8": ("utf-8-sig", "utf-8"),
+    "utf-8-sig": ("utf-8-sig", "utf-8-sig"),
+    "utf-16": ("utf-16", "utf-16"),
+    "utf-16-le": ("utf-16-le", "utf-16-le"),
+    "utf-16-be": ("utf-16-be", "utf-16-be"),
+    "windows-1255": ("cp1255", "windows-1255"),
+    "cp1255": ("cp1255", "windows-1255"),
+    "iso-8859-8": ("iso-8859-8", "iso-8859-8"),
+    "windows-1256": ("cp1256", "windows-1256"),
+    "cp1256": ("cp1256", "windows-1256"),
+    "windows-1252": ("cp1252", "windows-1252"),
+    "cp1252": ("cp1252", "windows-1252"),
+    "latin-1": ("cp1252", "windows-1252"),
+    "iso-8859-1": ("cp1252", "windows-1252"),
+    "windows-1251": ("cp1251", "windows-1251"),
+    "cp1251": ("cp1251", "windows-1251"),
+    "windows-1250": ("cp1250", "windows-1250"),
+    "cp1250": ("cp1250", "windows-1250"),
+    "windows-1253": ("cp1253", "windows-1253"),
+    "cp1253": ("cp1253", "windows-1253"),
+    "windows-1254": ("cp1254", "windows-1254"),
+    "cp1254": ("cp1254", "windows-1254"),
+}
 
 
-def decode_subtitle_bytes(data: bytes) -> Tuple[str, str]:
-    """Bytes -> (text, encoding name)."""
+def decode_subtitle_bytes(data: bytes, encoding: Optional[str] = None) -> Tuple[str, str]:
+    """Bytes -> (text, encoding name). Honors an explicit encoding when given."""
+    if encoding and encoding.strip().lower() not in ("", "auto"):
+        key = encoding.strip().lower()
+        if key not in _SUPPORTED_ENCODINGS:
+            raise SubtitleParseError(f"Unsupported subtitle encoding: {encoding}")
+        codec, canonical = _SUPPORTED_ENCODINGS[key]
+        if canonical == "utf-8" and data.startswith(b"\xef\xbb\xbf"):
+            return data[3:].decode("utf-8", errors="replace"), "utf-8-sig"
+        return data.decode(codec, errors="replace"), canonical
+
     if data.startswith(b"\xef\xbb\xbf"):
         return data[3:].decode("utf-8", errors="replace"), "utf-8-sig"
     if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
@@ -53,13 +105,58 @@ def decode_subtitle_bytes(data: bytes) -> Tuple[str, str]:
         return data.decode("utf-8"), "utf-8"
     except UnicodeDecodeError:
         pass
+
+    # Legacy single-byte code pages share the 0xC0-0xFF range, so the same bytes read as
+    # plausible letters in several scripts. Score each candidate by how much of the text forms
+    # clean words in its script, minus signs of a wrong guess (replacement characters, letters
+    # glued to Latin, stray Hebrew points / Arabic marks, impossible letter case).
+    # Ties go to the earlier candidate: Hebrew text read as Windows-1251 is valid-looking
+    # lowercase Cyrillic, while Russian read as Windows-1255 breaks on capitals and on letters
+    # Windows-1255 does not have, so Russian always scores strictly higher on Russian files.
+    candidates = []
+
     hebrew = data.decode("cp1255", errors="replace")
-    letters = sum(1 for ch in hebrew if ch.isalpha())
-    if letters and len(_HEBREW.findall(hebrew)) / letters > 0.2:
-        return hebrew, "windows-1255"
+    hebrew_bare = _HEBREW_ATTACHED_NIKUD.sub("", hebrew)
+    candidates.append((
+        hebrew,
+        "windows-1255",
+        sum(1 for ch in hebrew_bare if ch.isalpha()),
+        sum(len(w) for w in _HEBREW_PURE_WORDS.findall(hebrew_bare)),
+        3 * len(_MIXED_LATIN_HEBREW.findall(hebrew_bare))
+        + 2 * len(_HEBREW_NIKUD.findall(hebrew_bare))
+        + 4 * hebrew.count("\ufffd"),
+    ))
+
     arabic = data.decode("cp1256", errors="replace")
-    if letters and len(_ARABIC.findall(arabic)) / max(1, sum(1 for ch in arabic if ch.isalpha())) > 0.2:
-        return arabic, "windows-1256"
+    candidates.append((
+        arabic,
+        "windows-1256",
+        sum(1 for ch in arabic if ch.isalpha()),
+        sum(len(w) for w in _ARABIC_PURE_WORDS.findall(arabic)),
+        3 * len(_MIXED_LATIN_ARABIC.findall(arabic))
+        + 2 * len(_ARABIC_DIACRITICS.findall(arabic))
+        + 4 * arabic.count("\ufffd"),
+    ))
+
+    cyrillic = data.decode("cp1251", errors="replace")
+    candidates.append((
+        cyrillic,
+        "windows-1251",
+        sum(1 for ch in cyrillic if ch.isalpha()),
+        sum(len(w) for w in _CYRILLIC_PURE_WORDS.findall(cyrillic)),
+        3 * len(_MIXED_LATIN_CYRILLIC.findall(cyrillic))
+        + 3 * len(_CYRILLIC_CASE_FLIP.findall(cyrillic))
+        + 4 * cyrillic.count("\ufffd"),
+    ))
+
+    best = None
+    best_score = 0
+    for text, name, letters, pure, penalty in candidates:
+        score = pure - penalty
+        if score > best_score and letters and pure / letters > 0.15:
+            best, best_score = (text, name), score
+    if best is not None:
+        return best
     return data.decode("cp1252", errors="replace"), "windows-1252"
 
 
@@ -200,16 +297,16 @@ def parse_subtitle_text(content: str, file_name: str = "") -> Tuple[List[ParsedC
     return cues, fmt
 
 
-def parse_subtitle_file(data: bytes, file_name: str = "") -> Dict:
+def parse_subtitle_file(data: bytes, file_name: str = "", encoding: Optional[str] = None) -> Dict:
     """Bytes of an uploaded file -> everything the setup screen and the sync job need."""
     if len(data) > 20 * 1024 * 1024:
         raise SubtitleParseError("The subtitle file is too large (over 20 MB).")
-    text, encoding = decode_subtitle_bytes(data)
+    text, used_encoding = decode_subtitle_bytes(data, encoding=encoding)
     cues, fmt = parse_subtitle_text(text, file_name)
     return {
         "file_name": file_name,
         "format": fmt,
-        "encoding": encoding,
+        "encoding": used_encoding,
         "language": detect_language(cues),
         "cue_count": len(cues),
         "first_start": cues[0].start,

@@ -97,6 +97,7 @@ export const he: Messages = {
     reading: 'קורא כתוביות...',
     summary: '{name}: {count} שורות, {from} – {to}',
     encoding: 'קידוד {encoding}',
+    encodingLabel: 'קידוד הקובץ',
     signs: '{count} ממוקמות למעלה (שלטים/כיתובים)',
     sounds: '{count} תיאורי צלילים',
     language: 'שפת הקובץ',

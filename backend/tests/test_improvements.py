@@ -1,6 +1,7 @@
 """API / pipeline behaviour added in the improvement pass."""
 import asyncio
 import io
+import os
 import threading
 import time
 import uuid
@@ -150,25 +151,182 @@ def test_range_parsing():
 
 
 def test_upload_name_and_dedupe(client: TestClient, monkeypatch):
+    import hashlib
+    from pathlib import Path
+
     async def fake_probe(path):
         from app.models.schemas import ProbeResponse
-        from pathlib import Path
         p = Path(path)
         return ProbeResponse(file_path=str(p.resolve()), file_name=p.name, file_size=p.stat().st_size,
                              duration=1.0, format_name="matroska")
 
     monkeypatch.setattr("app.api.routes_media.probe_media_file", fake_probe)
-    data = b"x" * 1234
-    first = client.post("/api/media/upload", files={"file": ("My Show [1080p].mkv", io.BytesIO(data))}).json()
+    data_a = b"x" * 1234
+    hash_a = hashlib.sha256(data_a).hexdigest()
+    data_b = b"y" * 1234
+    hash_b = hashlib.sha256(data_b).hexdigest()
+
+    first = client.post("/api/media/upload", files={"file": ("My Show [1080p].mkv", io.BytesIO(data_a))}).json()
     assert first["file_name"] == "My Show [1080p].mkv"
     assert first["is_upload"] is True
 
-    found = client.get("/api/media/upload/existing", params={"name": "My Show [1080p].mkv", "size": 1234}).json()
+    # Matching name + size + sha256 reuses the existing upload
+    found = client.get(
+        "/api/media/upload/existing",
+        params={"name": "My Show [1080p].mkv", "size": 1234, "sha256": hash_a},
+    ).json()
     assert found["file_path"] == first["file_path"]
 
-    second = client.post("/api/media/upload", files={"file": ("My Show [1080p].mkv", io.BytesIO(data))}).json()
-    assert second["file_path"] == first["file_path"]  # no duplicate copy kept
+    # Same name + size but different content hash (or omitted hash) must NOT reuse the older upload
+    assert client.get(
+        "/api/media/upload/existing",
+        params={"name": "My Show [1080p].mkv", "size": 1234, "sha256": hash_b},
+    ).json() is None
+    assert client.get(
+        "/api/media/upload/existing",
+        params={"name": "My Show [1080p].mkv", "size": 1234},
+    ).json() is None
+
+    # Identical re-upload deduplicates to the first file
+    second = client.post("/api/media/upload", files={"file": ("My Show [1080p].mkv", io.BytesIO(data_a))}).json()
+    assert second["file_path"] == first["file_path"]
+
+    # Different cut with the same name and byte length is preserved as a separate file
+    different = client.post("/api/media/upload", files={"file": ("My Show [1080p].mkv", io.BytesIO(data_b))}).json()
+    assert different["file_path"] != first["file_path"]
+    assert Path(first["file_path"]).read_bytes() == data_a
+    assert Path(different["file_path"]).read_bytes() == data_b
     assert _display_name("1a2b3c4d_Movie.mkv") == "Movie.mkv"
+
+
+def test_upload_candidates_and_hash_cache(client: TestClient, monkeypatch):
+    import hashlib
+    from pathlib import Path
+    import app.api.routes_media as media
+
+    async def fake_probe(path):
+        from app.models.schemas import ProbeResponse
+        p = Path(path)
+        return ProbeResponse(file_path=str(p.resolve()), file_name=p.name, file_size=p.stat().st_size,
+                             duration=1.0, format_name="matroska")
+
+    monkeypatch.setattr("app.api.routes_media.probe_media_file", fake_probe)
+    name = f"cand_{uuid.uuid4().hex[:6]}.mkv"
+    data = b"c" * 2048
+
+    count = lambda size: client.get("/api/media/upload/candidates", params={"name": name, "size": size}).json()["count"]
+    assert count(2048) == 0
+    first = client.post("/api/media/upload", files={"file": (name, io.BytesIO(data))}).json()
+    assert count(2048) == 1
+    assert count(2049) == 0
+
+    # The hash computed while saving is cached, so the lookup does not read the file again
+    reads = []
+    real_open = open
+    monkeypatch.setattr("builtins.open", lambda f, *a, **k: (reads.append(str(f)), real_open(f, *a, **k))[1])
+    found = client.get(
+        "/api/media/upload/existing",
+        params={"name": name, "size": 2048, "sha256": hashlib.sha256(data).hexdigest()},
+    ).json()
+    monkeypatch.setattr("builtins.open", real_open)
+    assert found["file_path"] == first["file_path"]
+    assert not any(Path(r).name.endswith(name) for r in reads)
+
+    # A file changed in place is hashed again rather than trusted from the cache
+    path = Path(first["file_path"])
+    path.write_bytes(b"d" * 2048)
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))  # coarse clocks: force a new mtime
+    assert media._find_existing_upload(name, 2048, hashlib.sha256(data).hexdigest()) is None
+    assert media._find_existing_upload(name, 2048, hashlib.sha256(b"d" * 2048).hexdigest()) == path
+
+
+@pytest.mark.asyncio
+async def test_ws_monitor_disconnect_during_broadcast_does_not_fail_job(client: TestClient, monkeypatch):
+    from app.core.ws_manager import ws_manager
+    from app.pipeline.orchestrator import PipelineOrchestrator
+
+    fake = FakeTranslator()
+    monkeypatch.setattr(TranslateStage, "_make_translator", lambda self, ctx: fake)
+    job_id = _job_with_segments(["Hello world"], target_language="Hebrew")
+
+    received_by_survivor = []
+
+    class DisconnectingMonitor:
+        async def accept(self):
+            pass
+
+        async def send_json(self, payload):
+            # Disconnect during the send while broadcast() is iterating subscribers
+            ws_manager.disconnect(job_id, self)
+            raise RuntimeError("Client closed connection mid-send")
+
+    class SurvivingMonitor:
+        async def accept(self):
+            pass
+
+        async def send_json(self, payload):
+            received_by_survivor.append(payload)
+
+    m1 = DisconnectingMonitor()
+    m2 = SurvivingMonitor()
+    await ws_manager.connect(job_id, m1)
+    await ws_manager.connect(job_id, m2)
+
+    orchestrator = PipelineOrchestrator(job_id=job_id, mode="translate")
+    await orchestrator.run()
+
+    ws_manager.disconnect(job_id, m2)
+    job = client.get(f"/api/jobs/{job_id}").json()
+    assert job["status"] == "COMPLETED"
+    assert any(evt.get("event") == "JOB_COMPLETED" for evt in received_by_survivor)
+
+
+def test_per_job_settings_honor_explicit_false_over_global_true(client: TestClient, monkeypatch):
+    from app.core.user_settings import load_settings, save_settings
+
+    video = settings.storage_dir / "uploads" / f"{uuid.uuid4().hex[:8]}_settings_test.mkv"
+    video.parent.mkdir(parents=True, exist_ok=True)
+    video.write_bytes(b"fake video bytes")
+    monkeypatch.setattr("app.api.routes_jobs.spawn_background", lambda coro: (coro.close(), None)[1])
+
+    original = load_settings()
+    try:
+        updated = original.model_copy(
+            update={"convert_to_metric": True, "remove_sdh_speakers": True, "skip_end_credits": True}
+        )
+        save_settings(updated)
+
+        # Omitted fields inherit the saved global defaults
+        omitted_res = client.post(
+            "/api/jobs",
+            json={"video_path": str(video), "enable_translation": False},
+        )
+        assert omitted_res.status_code == 200
+        omitted_job = omitted_res.json()
+        assert omitted_job["convert_to_metric"] is True
+        assert omitted_job["remove_sdh_speakers"] is True
+        assert omitted_job["skip_end_credits"] is True
+
+        # Explicit False overrides the saved global True
+        explicit_res = client.post(
+            "/api/jobs",
+            json={
+                "video_path": str(video),
+                "enable_translation": False,
+                "convert_to_metric": False,
+                "remove_sdh_speakers": False,
+                "skip_end_credits": False,
+            },
+        )
+        assert explicit_res.status_code == 200
+        explicit_job = explicit_res.json()
+        assert explicit_job["convert_to_metric"] is False
+        assert explicit_job["remove_sdh_speakers"] is False
+        assert explicit_job["skip_end_credits"] is False
+    finally:
+        save_settings(original)
+        video.unlink(missing_ok=True)
 
 
 def test_delete_job_removes_unused_upload(client: TestClient):

@@ -1,10 +1,10 @@
 import asyncio
+import hashlib
 import os
 import re
 import uuid
-import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, UploadFile, File, Header, Depends, Query
 from fastapi.responses import StreamingResponse, FileResponse
 from sqlmodel import Session
@@ -19,6 +19,7 @@ router = APIRouter(prefix="/api/media", tags=["Media"])
 
 _UNSAFE_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _UPLOAD_PREFIX = re.compile(r"^[0-9a-f]{8}_")
+_HASH_CHUNK_BYTES = 4 * 1024 * 1024
 
 # Browsers sniff the real container, so MKV/AVI are served as video/mp4 (Chrome plays
 # H.264/AAC in Matroska this way). Only WebM needs its own type.
@@ -38,8 +39,42 @@ def _display_name(stored_name: str) -> str:
     return _UPLOAD_PREFIX.sub("", stored_name, count=1)
 
 
-def _find_existing_upload(name: str, size: int, exclude: Optional[Path] = None) -> Optional[Path]:
-    """The oldest earlier upload of the same file (same name and size), if still on disk."""
+# Hashes of uploaded files, keyed by path and checked against size + mtime, so a candidate is
+# read from disk once rather than on every drop of a file with the same name and size.
+_hash_cache: Dict[str, Tuple[int, int, str]] = {}
+
+
+def _file_sha256(path: Path) -> str:
+    """Lowercase hex SHA-256 of a file on disk (cached while the file is unchanged)."""
+    st = path.stat()
+    key = str(path.resolve())
+    cached = _hash_cache.get(key)
+    if cached is not None and cached[0] == st.st_size and cached[1] == st.st_mtime_ns:
+        return cached[2]
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(_HASH_CHUNK_BYTES)
+            if not chunk:
+                break
+            digest.update(chunk)
+    value = digest.hexdigest()
+    _hash_cache[key] = (st.st_size, st.st_mtime_ns, value)
+    return value
+
+
+def _remember_sha256(path: Path, sha256: str) -> None:
+    """Record the hash computed while a file was being written, so it is never read again for it."""
+    try:
+        st = path.stat()
+        _hash_cache[str(path.resolve())] = (st.st_size, st.st_mtime_ns, sha256)
+    except OSError:
+        pass
+
+
+def _upload_candidates(name: str, size: int, exclude: Optional[Path] = None) -> List[Path]:
+    """Earlier uploads with the same name and size, oldest first. Name and size only find
+    candidates: different videos can share both, so reuse also needs the content hash."""
     matches = []
     # Plain iteration (not glob): names like "Movie [1080p].mkv" contain glob syntax
     for f in uploads_dir().iterdir():
@@ -50,7 +85,26 @@ def _find_existing_upload(name: str, size: int, exclude: Optional[Path] = None) 
                 matches.append((f.stat().st_mtime, f))
         except OSError:
             continue
-    return min(matches)[1] if matches else None
+    return [f for _, f in sorted(matches, key=lambda item: item[0])]
+
+
+def _find_existing_upload(
+    name: str,
+    size: int,
+    sha256: Optional[str] = None,
+    exclude: Optional[Path] = None,
+) -> Optional[Path]:
+    """The oldest earlier upload of the same file (same name, size, and SHA-256 content hash), if still on disk."""
+    if not sha256:
+        return None
+    expected_hash = sha256.strip().lower()
+    for candidate in _upload_candidates(name, size, exclude=exclude):
+        try:
+            if _file_sha256(candidate) == expected_hash:
+                return candidate
+        except OSError:
+            continue
+    return None
 
 
 async def _probe_upload(path: Path) -> ProbeResponse:
@@ -78,10 +132,24 @@ async def probe_local_path(req: ProbePathRequest):
     return res
 
 
+@router.get("/upload/candidates")
+async def count_upload_candidates(name: str = Query(...), size: int = Query(...)):
+    """How many earlier uploads share this name and size. The browser hashes a dropped file
+    (slow for big videos) only when there is something to compare it with."""
+    found = await asyncio.to_thread(_upload_candidates, _sanitize_filename(name), size)
+    return {"count": len(found)}
+
+
 @router.get("/upload/existing", response_model=Optional[ProbeResponse])
-async def find_existing_upload(name: str = Query(...), size: int = Query(...)):
+async def find_existing_upload(
+    name: str = Query(...),
+    size: int = Query(...),
+    sha256: Optional[str] = Query(None),
+):
     """Return the probe of an identical earlier upload so the browser can skip re-uploading."""
-    existing = _find_existing_upload(_sanitize_filename(name), size)
+    if not sha256:
+        return None
+    existing = await asyncio.to_thread(_find_existing_upload, _sanitize_filename(name), size, sha256)
     if existing is None:
         return None
     try:
@@ -101,22 +169,31 @@ async def upload_media_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Invalid file name")
     upload_dest.parent.mkdir(parents=True, exist_ok=True)
 
-    def _save():
+    def _save() -> str:
+        digest = hashlib.sha256()
         with open(upload_dest, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer, length=4 * 1024 * 1024)
+            while True:
+                chunk = file.file.read(_HASH_CHUNK_BYTES)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                buffer.write(chunk)
+        return digest.hexdigest()
 
     try:
-        await asyncio.to_thread(_save)
+        sha256 = await asyncio.to_thread(_save)
     except Exception as exc:
         upload_dest.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Failed to save uploaded file: {exc}")
 
-    # Same file uploaded before? Keep one copy.
+    # Same file uploaded before? Keep one copy only when the content hash also matches.
     size = upload_dest.stat().st_size
-    existing = _find_existing_upload(clean_name, size, exclude=upload_dest)
+    existing = await asyncio.to_thread(_find_existing_upload, clean_name, size, sha256, exclude=upload_dest)
     if existing is not None:
         upload_dest.unlink(missing_ok=True)
         upload_dest = existing
+    else:
+        _remember_sha256(upload_dest, sha256)
 
     try:
         return await _probe_upload(upload_dest)
@@ -125,13 +202,16 @@ async def upload_media_file(file: UploadFile = File(...)):
 
 
 @router.post("/parse-subtitles", response_model=ParsedSubtitlesResponse)
-async def parse_subtitles(file: UploadFile = File(...)):
+async def parse_subtitles(
+    file: UploadFile = File(...),
+    encoding: Optional[str] = Query(None, description="Optional explicit character encoding to decode the file with"),
+):
     """Read a subtitle file (SRT / WebVTT / ASS) for "sync existing subtitles". Nothing is stored."""
     from app.utils.subtitle_parser import SubtitleParseError, parse_subtitle_file
 
     data = await file.read(20 * 1024 * 1024 + 1)
     try:
-        return parse_subtitle_file(data, _sanitize_filename(file.filename))
+        return parse_subtitle_file(data, _sanitize_filename(file.filename), encoding=encoding)
     except SubtitleParseError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

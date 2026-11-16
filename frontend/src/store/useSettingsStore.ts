@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { api } from '../services/api';
+import { useJobStore } from './useJobStore';
 import type { AppSettings, CatalogModel } from '../types';
 
 interface SettingsState {
@@ -32,6 +33,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
         loaded: true,
         error: null,
       });
+      useJobStore.getState().applySettingsDefaults(res.settings, false);
     } catch (e: any) {
       set({ error: e.message, loaded: true });
     }
@@ -40,6 +42,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     try {
       const res = await api.saveSettings(settings);
       set({ settings: res.settings, catalog: res.catalog, error: null });
+      useJobStore.getState().applySettingsDefaults(res.settings, true);
       return true;
     } catch (e: any) {
       set({ error: e.message });

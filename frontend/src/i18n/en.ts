@@ -95,6 +95,7 @@ export const en = {
     reading: 'Reading subtitles...',
     summary: '{name}: {count} lines, {from} – {to}',
     encoding: 'Encoding {encoding}',
+    encodingLabel: 'File encoding',
     signs: '{count} placed at the top (signs/titles)',
     sounds: '{count} sound descriptions',
     language: 'Language of the file',

@@ -21,6 +21,7 @@ export const ExportToolbar: React.FC = () => {
   const problemFilter = useJobStore((s) => s.problemFilter);
   const setProblemFilter = useJobStore((s) => s.setProblemFilter);
   const setSelectedSegmentIndex = useJobStore((s) => s.setSelectedSegmentIndex);
+  const flushPendingEdits = useJobStore((s) => s.flushPendingEdits);
   const [targetLanguage, setTargetLanguage] = useState<string | null>(null);
   const [glossaryOpen, setGlossaryOpen] = useState(false);
   const [embedOpen, setEmbedOpen] = useState(false);
@@ -41,7 +42,8 @@ export const ExportToolbar: React.FC = () => {
   const canTranslate = !!systemInfo?.is_gemini_configured || !!keyOverride;
   const onscreenPos: OnscreenPosition = activeJob.onscreen_position || 'top_center';
 
-  const downloadFile = (url: string) => {
+  const downloadFile = async (url: string) => {
+    await flushPendingEdits();
     const a = document.createElement('a');
     a.href = url;
     a.download = '';
@@ -58,6 +60,7 @@ export const ExportToolbar: React.FC = () => {
   const saveNextToVideo = async () => {
     setSaving(true);
     try {
+      await flushPendingEdits();
       const options = { format: 'srt' as const, use_translated: true, apply_rtl: applyRtlExport };
       let result = await api.saveNextToVideo(activeJob.id, options);
       if (!result.saved && result.exists) {
@@ -221,8 +224,9 @@ export const ExportToolbar: React.FC = () => {
 
         {hasTranslation && (
           <button
-            onClick={() => downloadFile(api.getExportUrl(activeJob.id, 'srt', true, applyRtlExport))}
+            onClick={() => void downloadFile(api.getExportUrl(activeJob.id, 'srt', true, applyRtlExport))}
             disabled={!hasSegments}
+            data-testid="export-translated-srt"
             className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 disabled:opacity-40 text-white rounded-lg text-xs font-semibold shadow-md shadow-indigo-600/20 transition-all cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" />
@@ -242,7 +246,7 @@ export const ExportToolbar: React.FC = () => {
           </button>
         )}
         <button
-          onClick={() => setEmbedOpen(true)}
+          onClick={() => void flushPendingEdits().then(() => setEmbedOpen(true))}
           disabled={!hasSegments || busy}
           title={t('embed.buttonTitle')}
           data-testid="open-embed"
@@ -263,16 +267,18 @@ export const ExportToolbar: React.FC = () => {
           </span>
         )}
         <button
-          onClick={() => downloadFile(api.getExportUrl(activeJob.id, 'srt', false, false))}
+          onClick={() => void downloadFile(api.getExportUrl(activeJob.id, 'srt', false, false))}
           disabled={!hasSegments}
+          data-testid="export-original-srt"
           className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-200 border border-zinc-700/60 rounded-lg text-xs font-medium transition-colors cursor-pointer"
         >
           <FileText className="w-3.5 h-3.5 text-zinc-400" />
           {t('toolbar.originalSrt')}
         </button>
         <button
-          onClick={() => downloadFile(api.getExportUrl(activeJob.id, 'vtt', hasTranslation, hasTranslation && applyRtlExport))}
+          onClick={() => void downloadFile(api.getExportUrl(activeJob.id, 'vtt', hasTranslation, hasTranslation && applyRtlExport))}
           disabled={!hasSegments}
+          data-testid="export-vtt"
           className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-200 border border-zinc-700/60 rounded-lg text-xs font-medium transition-colors cursor-pointer"
         >
           <FileText className="w-3.5 h-3.5 text-zinc-400" />
