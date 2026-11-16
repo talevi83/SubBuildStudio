@@ -693,7 +693,22 @@ export const SettingsScreen: React.FC = () => {
                     )}
                   </div>
 
-                  {(!ollamaStatus?.running || !ollamaStatus?.selected_model || ollamaStatus?.installing || ollamaBusy) && (
+                  {!ollamaStatus?.installed && !ollamaStatus?.installing && !ollamaBusy && (
+                    // Installing Ollama is the user's step: the app never downloads and runs an installer itself
+                    <a
+                      href={ollamaStatus?.download_url || 'https://ollama.com/download'}
+                      target="_blank"
+                      rel="noreferrer"
+                      data-testid="ollama-install-link"
+                      className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white flex items-center gap-1.5 transition-colors"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>{t('settings.costSaver.installButton')}</span>
+                    </a>
+                  )}
+
+                  {(ollamaStatus?.installed || ollamaStatus?.installing || ollamaBusy) &&
+                    (!ollamaStatus?.running || !ollamaStatus?.selected_model || ollamaStatus?.installing || ollamaBusy) && (
                     <button
                       type="button"
                       onClick={onSetupOllama}
@@ -707,9 +722,7 @@ export const SettingsScreen: React.FC = () => {
                           <span>
                             {t('settings.costSaver.installingStep', {
                               step:
-                                ollamaStatus?.step === 'installing'
-                                  ? t('settings.costSaver.stepInstalling')
-                                  : ollamaStatus?.step === 'starting'
+                                ollamaStatus?.step === 'starting' || ollamaStatus?.step === 'starting_server'
                                   ? t('settings.costSaver.stepStarting')
                                   : t('settings.costSaver.stepPulling'),
                             })}
@@ -719,13 +732,11 @@ export const SettingsScreen: React.FC = () => {
                         <>
                           <Download className="w-3.5 h-3.5" />
                           <span>
-                            {ollamaStatus?.installed
-                              ? ollamaStatus?.running
-                                ? t('settings.costSaver.pullModelButton', {
-                                    model: ollamaStatus.recommended_model || 'qwen2.5:7b',
-                                  })
-                                : t('settings.costSaver.startServerButton')
-                              : t('settings.costSaver.installButton')}
+                            {ollamaStatus?.running
+                              ? t('settings.costSaver.pullModelButton', {
+                                  model: ollamaStatus?.recommended_model || 'qwen2.5:7b',
+                                })
+                              : t('settings.costSaver.startServerButton')}
                           </span>
                         </>
                       )}

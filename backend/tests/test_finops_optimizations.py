@@ -438,3 +438,32 @@ def test_ollama_status_endpoint(monkeypatch):
         assert data["download_url"] == "https://ollama.com/download"
 
 
+
+
+@pytest.mark.asyncio
+async def test_ollama_setup_never_runs_an_installer_when_ollama_is_missing(monkeypatch):
+    """Without Ollama the setup reports how to install it; it must not download and run a script."""
+    import asyncio
+    import subprocess
+
+    import app.core.ollama_setup as ollama_setup
+
+    async def not_running(timeout=1.5):
+        return False, [], None
+
+    async def no_subprocess(*args, **kwargs):
+        raise AssertionError(f"no process may be started: {args}")
+
+    def no_popen(*args, **kwargs):
+        raise AssertionError(f"no process may be started: {args}")
+
+    monkeypatch.setattr(ollama_setup, "find_ollama_bin", lambda: None)
+    monkeypatch.setattr(ollama_setup, "_fetch_running_models", not_running)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", no_subprocess)
+    monkeypatch.setattr(subprocess, "Popen", no_popen)
+    assert not hasattr(ollama_setup, "_install_ollama_cli")
+
+    await ollama_setup._run_setup_workflow("qwen2.5:7b")
+    assert ollama_setup._state["step"] == "failed"
+    assert "https://ollama.com/download" in ollama_setup._state["error"]
+    assert ollama_setup._state["installing"] is False

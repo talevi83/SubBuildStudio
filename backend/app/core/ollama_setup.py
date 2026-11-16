@@ -1,5 +1,5 @@
 """
-Local Ollama status check and one-click setup (CLI installation, server launch, and model pull).
+Local Ollama status check and one-click setup (server launch and model pull; installing Ollama is up to the user).
 """
 import asyncio
 import logging
@@ -95,30 +95,6 @@ async def get_ollama_status() -> Dict[str, Any]:
     }
 
 
-async def _install_ollama_cli() -> None:
-    if sys.platform == "win32":
-        cmd = [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            "irm https://ollama.com/install.ps1 | iex",
-        ]
-    else:
-        cmd = ["sh", "-c", "curl -fsSL https://ollama.com/install.sh | sh"]
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-    if proc.returncode != 0 and not find_ollama_bin():
-        err_text = stderr.decode(errors="ignore").strip()[-400:] if stderr else "Installer exited with error"
-        raise RuntimeError(f"Ollama installation failed: {err_text}")
-
-
 async def _ensure_server_running(binary: str) -> None:
     running, _, _ = await _fetch_running_models(timeout=1.5)
     if running:
@@ -162,14 +138,13 @@ async def _run_setup_workflow(model: str) -> None:
         binary = find_ollama_bin()
         running, _, _ = await _fetch_running_models(timeout=1.5)
         if not binary and not running:
-            _state["step"] = "installing_ollama"
-            logger.info("Installing Ollama CLI...")
-            await _install_ollama_cli()
-            binary = find_ollama_bin()
+            # Installing is left to the user on purpose: the server never downloads and runs an
+            # installer script (irm | iex / curl | sh) it cannot verify.
+            raise RuntimeError(
+                f"Ollama is not installed. Install it from {OLLAMA_DOWNLOAD_URL}, then click the button again."
+            )
 
         if not running:
-            if not binary:
-                raise RuntimeError("Ollama binary not found after installation.")
             _state["step"] = "starting_server"
             logger.info("Starting local Ollama server...")
             await _ensure_server_running(binary)
@@ -191,7 +166,7 @@ async def _run_setup_workflow(model: str) -> None:
 
 
 async def start_ollama_setup(model: str = RECOMMENDED_LOCAL_MODEL) -> Dict[str, Any]:
-    """Trigger background Ollama installation + server start + model pull and return current status."""
+    """Start the installed Ollama server and pull the model in the background; return the current status."""
     global _setup_task
     if not _state["installing"]:
         _state["installing"] = True

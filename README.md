@@ -86,7 +86,7 @@
     - **Local frame pre-filtering:** Pillow-based edge detection and 64-bit difference hashing (`dHash`) filter out blank/textless frames and merge consecutive identical title cards before calling Gemini Vision, saving ~75–80% of Vision image tokens.
     - **GPU VRAM unloading:** Unloads Faster-Whisper from GPU memory right after transcription completes so 8GB GPUs have free VRAM for local LLMs or system tasks.
     - **Zero-config local gender pre-tagging (Ollama):** Auto-detects local Ollama (e.g. `qwen2.5:7b`), pre-tags ambiguous pronoun lines (`you`, `I am`) with `[Speaker: M/F, To: M/F]` hints locally for Hebrew/Arabic translation, cutting cloud token overhead. Silently skips with zero delay if Ollama is not installed.
-    - **One-click Ollama setup:** Settings screen includes live Ollama status, one-click automatic installation / daemon startup / model pull (`POST /api/settings/ollama/setup`), and instructions + download links for advanced users.
+    - **One-click Ollama setup:** Settings screen includes live Ollama status, a link to the official Ollama download (the app never downloads and runs an installer itself), one-click daemon startup / model pull once Ollama is installed (`POST /api/settings/ollama/setup`), and instructions for advanced users.
 
 11. **📊 Live & Post-Run Token & Local AI Savings Summary:**
     - Live monitoring bar in the studio and final run summary shows:
@@ -131,7 +131,7 @@ Open **Settings** (bottom of the sidebar):
   - Pre-filters sampled frames locally using Pillow edge detection and 64-bit dHash perceptual hashing, filtering out ~75–80% of textless frames before calling Gemini Vision.
   - Automatically unloads Faster-Whisper from GPU memory right after transcription to free VRAM for local models.
   - Automatically pre-tags ambiguous pronouns (`you`, `I am`) using a local Ollama model (e.g. `qwen2.5:7b`), eliminating cloud token overhead for gender disambiguation.
-  - Settings screen features a live Ollama service & model status monitor, a one-click automated setup button (`POST /api/settings/ollama/setup` to install/start/pull), and direct manual links for advanced users.
+  - Settings screen features a live Ollama service & model status monitor, a download link to the official installer, a one-click button that starts Ollama and pulls the model (`POST /api/settings/ollama/setup`), and direct manual links for advanced users.
 - **Live & Post-Run Token & Local AI Savings Breakdown**:
   - Live studio monitor bar and final run summary display per-model Gemini token usage (input, output, thinking), Ollama local queries handled, and total frames/tokens saved by local pre-filtering.
 
