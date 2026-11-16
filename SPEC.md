@@ -30,8 +30,10 @@ and frames explicitly sent to Gemini; the video itself is never uploaded anywher
 4. **Zero-copy local files.** Videos are 1–20 GB: the unified `MediaDropzone` lets the user drag & drop a video, browse via the native file dialog, or paste a path on disk. In the desktop window, dragged and browsed files resolve directly to their local path (nothing is copied, and *Save next to video* remains available); only when running inside an external browser (where browser sandboxing hides disk paths) does drag-and-drop fall back to uploading a copy into `storage/uploads` (owned by the app and deleted with its project).
 5. **Official Gemini SDK (`google-genai`) and typed configuration.** Defaults come from `backend/.env` via `pydantic-settings`;
    the Settings screen overrides them in `storage/settings.json` (and can persist `GEMINI_API_KEY` to `.env` via `PUT /api/settings/api-key`). Per-job API key overrides typed in the Ingest screen are used in memory for that run only.
-6. **Safe by default for a local server.** The API can read any path on the PC, so it binds to `127.0.0.1`, uses an explicit
-   CORS allow-list, a trusted-host check (against DNS rebinding) and a cross-site request guard (against CSRF).
+6. **Safe by default for a local server.** The API can read any path on the PC, so it binds to `127.0.0.1`, requires a
+   per-launch session token (`app/core/auth.py`: HttpOnly cookie or `X-SubBuild-Token` header), uses an explicit
+   CORS allow-list, a trusted-host check (against DNS rebinding), a cross-site request guard (against CSRF) and
+   anti-framing headers on every response (`app/core/security_headers.py`, against clickjacking).
 7. **Nothing is lost.** Results are saved as soon as they exist (after refinement and after every translated batch); failures
    are flagged on the line, never silently dropped; jobs interrupted by a restart are recovered.
 

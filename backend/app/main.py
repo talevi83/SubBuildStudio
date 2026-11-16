@@ -13,6 +13,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from app.core.config import settings
 from app.core.auth import SESSION_TOKEN, TOKEN_GENERATED, SessionTokenGuard, bootstrap_path
 from app.core.request_guard import CrossSiteRequestGuard
+from app.core.security_headers import SecurityHeadersMiddleware
 from app.core.database import init_db
 from app.core.housekeeping import cleanup_storage
 from app.core.ws_manager import ws_manager
@@ -79,6 +80,10 @@ app.add_middleware(SessionTokenGuard)
 # Reject requests whose Host header isn't this machine. Without this, a malicious website
 # could use DNS rebinding to reach the API (which can read any local file) via the browser.
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+
+# Outermost: every response, including 400/401/403 refusals, gets the anti-framing and
+# no-sniff headers (clickjacking protection for the browser mode).
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Register API routers
 app.include_router(routes_system.router)
