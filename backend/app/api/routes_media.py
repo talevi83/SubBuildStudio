@@ -43,6 +43,23 @@ def validate_media_path(path: Path) -> None:
         )
 
 
+_LOCAL_DEVICE_PREFIX = re.compile(r"^[\\/]{2}[?.][\\/][A-Za-z]:[\\/]")  # \\?\C:\... long paths
+
+
+def reject_network_path(raw: str) -> None:
+    """Refuse UNC / network paths (\\\\server\\share, //server/share) before anything touches them.
+
+    On Windows even checking such a path opens an SMB connection to that server, which can hand
+    the user's NTLM hash to whoever runs it. Videos are opened from local or mapped drives.
+    """
+    value = (raw or "").strip()
+    if value[:2] in ("\\\\", "//", "\\/", "/\\") and not _LOCAL_DEVICE_PREFIX.match(value):
+        raise HTTPException(
+            status_code=400,
+            detail="Network paths (\\\\server\\share) are not supported. Copy the file or map the share to a drive letter.",
+        )
+
+
 def _sanitize_filename(raw: Optional[str]) -> str:
     """Reduce a client-supplied filename to a safe basename (no directories, no reserved chars)."""
     # Normalize both separator styles before taking the basename
@@ -135,10 +152,12 @@ async def _probe_upload(path: Path) -> ProbeResponse:
 async def probe_local_path(req: ProbePathRequest):
     """Inspect and probe media streams of a file directly from the local filesystem."""
     file_path = req.file_path.strip().strip('"').strip("'")
+    reject_network_path(file_path)
     path = Path(file_path)
+    # Extension first: a non-media path is refused without revealing whether it exists
+    validate_media_path(path)
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"File not found on local disk: {file_path}")
-    validate_media_path(path)
 
     try:
         res = await probe_media_file(str(path))

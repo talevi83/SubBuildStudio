@@ -269,3 +269,42 @@ def test_pick_media_file_uses_native_dialog(launcher, monkeypatch):
     window.create_file_dialog = lambda *a, **kw: None
     assert api.pick_media_file() == ""
 
+
+
+def test_window_opens_with_the_session_token_and_launcher_calls_send_it(launcher, monkeypatch, tmp_path):
+    import os
+
+    monkeypatch.delenv("SUBBUILD_TOKEN", raising=False)
+    token = launcher.new_session_token(tmp_path)
+    monkeypatch.setattr(launcher, "SESSION_TOKEN", token)
+    try:
+        assert os.environ["SUBBUILD_TOKEN"] == token and len(token) >= 40
+        assert launcher.read_saved_token(tmp_path) == token          # a second launch can find it
+        assert launcher.studio_url("http://localhost:8000") == f"http://localhost:8000/?token={token}"
+
+        web, *_ = _setup(monkeypatch, launcher, tmp_path, after_start=lambda w: w.user_closes())
+        launcher.run_window(FakeServer(), "http://localhost:8000", tmp_path, tmp_path / ".env")
+        assert ("load_url", f"http://localhost:8000/?token={token}") in web.window.calls
+
+        sent = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b"{}"
+
+        def fake_open(req, timeout=None):
+            sent.update({k.lower(): v for k, v in req.header_items()})
+            return FakeResponse()
+
+        monkeypatch.setattr(launcher._no_proxy, "open", fake_open)
+        launcher.get_json("http://localhost:8000/api/system/info")
+        assert sent.get("x-subbuild-token") == token
+    finally:
+        os.environ.pop("SUBBUILD_TOKEN", None)
+        os.environ["SUBBUILD_TOKEN"] = "test-session-token"

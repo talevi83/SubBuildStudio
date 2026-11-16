@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.core.config import settings
+from app.core.auth import SESSION_TOKEN, TOKEN_GENERATED, SessionTokenGuard, bootstrap_path
 from app.core.request_guard import CrossSiteRequestGuard
 from app.core.database import init_db
 from app.core.housekeeping import cleanup_storage
@@ -37,6 +38,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # never block startup on housekeeping
         logger.warning(f"Storage cleanup failed: {e}")
     logger.info(f"SubBuild Studio backend initialized. Gemini configured: {settings.is_gemini_configured}")
+    if TOKEN_GENERATED:
+        # Started without the launcher / run scripts (e.g. plain uvicorn): this link is the only
+        # way into the studio. Printed, not logged, so the token never lands in server.log.
+        host = "localhost" if settings.host in ("0.0.0.0", "127.0.0.1", "::", "[::]") else settings.host
+        print(f"\n  Open SubBuild Studio: http://{host}:{settings.port}{bootstrap_path(SESSION_TOKEN)}\n", flush=True)
     yield
     logger.info("Shutting down SubBuild Studio backend...")
     from app.core.video_embed import shutdown_embeds
@@ -65,6 +71,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Session token: being able to reach 127.0.0.1:8000 is not enough to use the API (any local
+# program, another Windows account, or the LAN with HOST=0.0.0.0). Runs right after the Host check.
+app.add_middleware(SessionTokenGuard)
 
 # Reject requests whose Host header isn't this machine. Without this, a malicious website
 # could use DNS rebinding to reach the API (which can read any local file) via the browser.

@@ -106,8 +106,13 @@ fi
 
 PORT="${PORT:-8000}"
 URL="http://localhost:$PORT"
+# Per-launch session token (backend/app/core/auth.py): the link below signs the browser in.
+SUBBUILD_TOKEN="$("$VENV_PY" -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export SUBBUILD_TOKEN
+OPEN_URL="$URL/?token=$SUBBUILD_TOKEN"
 
 echo "[4/4] Starting SubBuild Studio on $URL ..."
+echo "      Open: $OPEN_URL"
 echo
 echo "==================================================="
 echo "Server is running! Press Ctrl+C in this window to stop."
@@ -119,9 +124,9 @@ if [[ "${1:-}" != "--no-browser" && "${2:-}" != "--no-browser" ]]; then
     (
         sleep 2
         if [[ "$OS" == "Darwin" ]]; then
-            open "$URL" >/dev/null 2>&1 || true
+            open "$OPEN_URL" >/dev/null 2>&1 || true
         elif command -v xdg-open >/dev/null 2>&1; then
-            xdg-open "$URL" >/dev/null 2>&1 || true
+            xdg-open "$OPEN_URL" >/dev/null 2>&1 || true
         fi
     ) &
 fi

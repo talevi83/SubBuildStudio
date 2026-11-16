@@ -85,7 +85,10 @@ start "" "%~dp0backend\.venv\Scripts\pythonw.exe" "%~dp0packaging\launcher.py"
 exit /b 0
 
 :browser_mode
+:: Per-launch session token (backend\app\core\auth.py): the link below signs the browser in.
+for /f "delims=" %%t in ('backend\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(32))"') do set "SUBBUILD_TOKEN=%%t"
 echo [4/4] Starting SubBuild Studio on http://localhost:8000 ...
+echo       Open: http://localhost:8000/?token=%SUBBUILD_TOKEN%
 echo.
 echo ===================================================
 echo Server is running! Press Ctrl+C in this window to stop.
@@ -93,7 +96,7 @@ echo ===================================================
 echo.
 
 :: Launch browser in background after 2 seconds
-start "" cmd /c "timeout /t 2 /nobreak >nul & start http://localhost:8000"
+start "" cmd /c "timeout /t 2 /nobreak >nul & start "" "http://localhost:8000/?token=%SUBBUILD_TOKEN%""
 
 :: Start Uvicorn server
 backend\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
