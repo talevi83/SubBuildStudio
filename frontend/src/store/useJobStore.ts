@@ -615,7 +615,20 @@ export const useJobStore = create<JobState>((set, get) => {
       if (!id) return;
       try {
         const fresh = await api.getJob(id);
-        if (get().activeJob?.id === id) set({ activeJob: fresh });
+        const current = get().activeJob;
+        if (!current || current.id !== id) return;
+        let nextSegments = fresh.segments;
+        if (
+          isActiveStatus(fresh.status) &&
+          current.segments.some((s) => !s.id) &&
+          fresh.segments.every((s) => !s.id) &&
+          fresh.segments.length < current.segments.length
+        ) {
+          const merged = new Map(current.segments.map((s) => [s.index, s]));
+          for (const seg of fresh.segments) merged.set(seg.index, seg);
+          nextSegments = [...merged.values()].sort((a, b) => a.index - b.index);
+        }
+        set({ activeJob: { ...fresh, segments: nextSegments } });
       } catch (e) {
         console.error('Failed to refresh job:', e);
       }
@@ -947,8 +960,11 @@ export const useJobStore = create<JobState>((set, get) => {
       socket.onopen = () => {
         reconnectAttempts = 0;
         set({ wsConnected: true });
-        // Catch up on anything missed while disconnected
-        if (isReconnect) get().refreshActiveJob();
+        // Catch up on anything missed while disconnected or while switching back to a live job
+        const current = get().activeJob;
+        if (isReconnect || (current && current.id === jobId && isActiveStatus(current.status))) {
+          get().refreshActiveJob();
+        }
       };
 
       socket.onmessage = (event) => {

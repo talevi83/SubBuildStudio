@@ -540,4 +540,105 @@ describe('SubBuild Studio UI reliability & editor round-trip', () => {
     fireEvent.click(view.getByTestId('search-prev-match'));
     expect(useJobStore.getState().selectedSegmentIndex).toBe(1);
   });
+
+  it('preserves live Whisper transcribed segments when switching to another project and returning', async () => {
+    const liveJob: Job = {
+      ...makeJob(),
+      id: 'job_live_1',
+      status: 'TRANSCRIBING',
+      current_stage: 'TRANSCRIBING',
+      progress_percent: 35,
+      segments: [
+        {
+          job_id: 'job_live_1',
+          index: 1,
+          start_time: 1.0,
+          end_time: 2.5,
+          original_text: 'Live transcribed line one',
+          translated_text: null,
+          translation_failed: false,
+          segment_type: 'DIALOGUE',
+          confidence: 0.96,
+          cps: 16.0,
+        },
+        {
+          job_id: 'job_live_1',
+          index: 2,
+          start_time: 3.0,
+          end_time: 5.0,
+          original_text: 'Live transcribed line two',
+          translated_text: null,
+          translation_failed: false,
+          segment_type: 'DIALOGUE',
+          confidence: 0.92,
+          cps: 12.5,
+        },
+      ],
+    };
+    const otherJob: Job = {
+      ...makeJob(),
+      id: 'job_other_2',
+      file_name: 'OtherEpisode.mkv',
+      segments: [
+        {
+          id: 501,
+          job_id: 'job_other_2',
+          index: 1,
+          start_time: 0.5,
+          end_time: 2.0,
+          original_text: 'Other completed line',
+          translated_text: 'שורה מפרויקט אחר',
+          translation_failed: false,
+          segment_type: 'DIALOGUE',
+          confidence: 0.99,
+          cps: 10.0,
+        },
+      ],
+    };
+
+    useJobStore.setState({ activeJob: liveJob, jobs: [liveJob, otherJob] });
+    vi.spyOn(useJobStore.getState(), 'connectWebSocket').mockImplementation(() => {});
+    vi.spyOn(api, 'getHistory').mockResolvedValue({
+      cursor: null,
+      can_undo: false,
+      can_redo: false,
+      entries: [],
+    });
+    vi.spyOn(api, 'getJob').mockImplementation(async (jobId: string) => {
+      if (jobId === 'job_other_2') return otherJob;
+      if (jobId === 'job_live_1') return liveJob;
+      throw new Error(`Unexpected job id ${jobId}`);
+    });
+
+    const view = render(<SubtitleTable />);
+    expect(view.getByDisplayValue('Live transcribed line one')).toBeTruthy();
+
+    // Switch to another project
+    await useJobStore.getState().selectJob('job_other_2');
+    await waitFor(() => expect(view.getByDisplayValue('Other completed line')).toBeTruthy());
+
+    // Switch back to the transcribing project
+    await useJobStore.getState().selectJob('job_live_1');
+    await waitFor(() => expect(view.getByDisplayValue('Live transcribed line one')).toBeTruthy());
+    expect(view.getByDisplayValue('Live transcribed line two')).toBeTruthy();
+
+    // Also ensure refreshActiveJob with a slightly lagging response never drops newer live WS segments
+    const newerWsSeg = {
+      job_id: 'job_live_1',
+      index: 3,
+      start_time: 5.5,
+      end_time: 7.0,
+      original_text: 'Third live WS cue',
+      translated_text: null,
+      translation_failed: false,
+      segment_type: 'DIALOGUE' as const,
+      confidence: 0.94,
+      cps: 11.3,
+    };
+    useJobStore.setState({
+      activeJob: { ...liveJob, segments: [...liveJob.segments, newerWsSeg] },
+    });
+    await useJobStore.getState().refreshActiveJob();
+    expect(useJobStore.getState().activeJob?.segments.map((s) => s.index)).toEqual([1, 2, 3]);
+  });
 });

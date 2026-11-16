@@ -605,3 +605,38 @@ def test_extended_qa_flags_overlap_and_extreme_durations():
     assert (3, "overlap") in by_pair
     assert (3, "timing") in by_pair
     assert (4, "overlap") not in by_pair  # ON_SCREEN lane is separate from DIALOGUE lane
+
+
+def test_get_job_returns_live_whisper_segments_while_transcribing(client: TestClient):
+    from app.pipeline.orchestrator import PipelineOrchestrator, active_pipelines
+
+    job_id = f"test_live_{uuid.uuid4().hex[:8]}"
+    with Session(engine) as session:
+        session.add(
+            Job(
+                id=job_id,
+                video_path="live.mkv",
+                file_name="live.mkv",
+                status=JobStatus.TRANSCRIBING,
+                current_stage="TRANSCRIBING",
+                progress_percent=25.0,
+            )
+        )
+        session.commit()
+
+    orchestrator = PipelineOrchestrator(job_id=job_id, mode="full")
+    orchestrator._ctx = PipelineContext(job_id=job_id, video_path="live.mkv", file_name="live.mkv")
+    orchestrator._ctx.raw_segments = [
+        RawSegment(index=1, start_time=0.5, end_time=2.5, text="First live cue", confidence=0.95),
+        RawSegment(index=2, start_time=3.0, end_time=5.0, text="Second live cue", confidence=0.91),
+    ]
+    try:
+        detail = client.get(f"/api/jobs/{job_id}").json()
+        assert len(detail["segments"]) == 2
+        assert [s["original_text"] for s in detail["segments"]] == ["First live cue", "Second live cue"]
+        assert all(s["id"] is None for s in detail["segments"])
+
+        listing = {j["id"]: j for j in client.get("/api/jobs").json()}
+        assert listing[job_id]["segment_count"] == 2
+    finally:
+        active_pipelines.pop(job_id, None)

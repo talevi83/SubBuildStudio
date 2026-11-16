@@ -187,6 +187,34 @@ class PipelineOrchestrator:
     def is_running(cls, job_id: str) -> bool:
         return job_id in active_pipelines
 
+    @classmethod
+    def get_live_segments(cls, job_id: str) -> List[Dict[str, Any]]:
+        """Return in-memory raw segments for a running job before refined segments are saved to DB."""
+        from app.utils.srt_formatter import calculate_cps
+
+        pipeline = active_pipelines.get(job_id)
+        if pipeline is None or pipeline._segments_saved or pipeline.mode == "sync":
+            return []
+        ctx = pipeline._ctx
+        if ctx is None or not ctx.raw_segments:
+            return []
+        return [
+            {
+                "id": None,
+                "job_id": job_id,
+                "index": raw.index,
+                "start_time": raw.start_time,
+                "end_time": raw.end_time,
+                "original_text": raw.text,
+                "translated_text": None,
+                "translation_failed": False,
+                "segment_type": "DIALOGUE",
+                "confidence": raw.confidence,
+                "cps": calculate_cps(raw.text, max(0.1, raw.end_time - raw.start_time)),
+            }
+            for raw in list(ctx.raw_segments)
+        ]
+
     # ------------------------------------------------------------------ helpers
 
     def _build_context(self) -> Optional[PipelineContext]:

@@ -133,11 +133,17 @@ def _job_to_response(
 
     segments: List[SubtitleSegmentSchema] = []
     if include_segments:
-        segments = [_segment_to_schema(s) for s in (job.segments or [])]
+        if job.segments:
+            segments = [_segment_to_schema(s) for s in job.segments]
+        else:
+            live = PipelineOrchestrator.get_live_segments(job.id)
+            segments = [SubtitleSegmentSchema(**s) for s in live]
         segment_count = len(segments)
         failed_count = sum(1 for s in segments if s.translation_failed)
     else:
         segment_count, failed_count = counts or (0, 0)
+        if segment_count == 0:
+            segment_count = len(PipelineOrchestrator.get_live_segments(job.id))
 
     return JobResponse(
         id=job.id,
