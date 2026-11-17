@@ -1,0 +1,176 @@
+# SubBuild Studio — Enterprise QA Architecture & Test Plan
+
+## 1. Executive Summary & QA Strategy
+
+SubBuild Studio is an AI-powered local video subtitling, transcription, synchronization, and translation workbench built on **FastAPI + SQLite (SQLModel)** and **React 19 + TypeScript + Vite 8**. Testing an application that combines local FFmpeg media pipelines, GPU/CPU Whisper models, Google Gemini LLM/Vision calls, and a virtualized interactive studio UI requires a **Multi-Layer Hybrid Test Pyramid** rather than relying solely on slow UI tests or mocked unit tests.
+
+Our QA strategy separates deterministic white-box verification from black-box system validation:
+
+- **In-Process Python & Frontend Suites (`pytest` + `vitest`):** Execute fast, isolated unit, API, pipeline, and security tests using deterministic AI provider fakes (`FakeTranslator`, `SlowTranscriber`), temporary SQLite storage (`_TEST_STORAGE`), and controlled FFmpeg clips.
+- **Black-Box Java QA Automation (`qa-automation-java/`):** Treats SubBuild Studio as a live deployed system using **Java 21 + JUnit 5 + Selenium WebDriver 4 (POM) + RestAssured**, validating HTTP security contracts, CORS/CSRF protections, session cookie bootstrap, and end-to-end browser workflows across Chrome/Edge without touching internal Python code or production data.
+
+---
+
+## 2. Hybrid Test Pyramid Architecture
+
+```mermaid
+flowchart TD
+    E2E["Layer 5: Black-Box Browser E2E<br/>Java 21 + Selenium 4 POM (16 UI Tests)<br/>Hybrid API Seeding + Chrome/Edge"]
+    BAPI["Layer 4: Black-Box REST & Security Contracts<br/>Java 21 + RestAssured (31 API Tests)<br/>Session Token, CSRF, UNC Guard, Job Lifecycle, Edge Cases"]
+    FE["Layer 3: Frontend Component & Store<br/>Vitest + React Testing Library (9 Tests)<br/>TypeScript tsc -b + oxlint"]
+    PIPE["Layer 2: Backend API, Pipeline & Security<br/>Pytest (336 Tests: 103 API + 170 Pipeline + 63 Security)<br/>FastAPI TestClient, SQLite, AI Fakes, 24 FFmpeg Tests"]
+    UNIT["Layer 1: Pure Unit & Domain Rules<br/>Pytest (96 Tests)<br/>RTL BiDi, SRT/VTT, Segmentation, Credits, QA Rules"]
+
+    E2E --> BAPI
+    BAPI --> FE
+    FE --> PIPE
+    PIPE --> UNIT
+```
+
+### Why Hybrid API + UI Automation?
+Running full Whisper transcription and Gemini translation through a browser UI for every UI test would take minutes per test and introduce GPU/network flakiness. Instead, `StudioEditorUiTest` uses a **Hybrid API + UI pattern**:
+1. A deterministic 4-second synthetic `.mkv` containing an embedded SRT track is generated once per session via `ffmpeg`.
+2. `SubBuildApiClient` (RestAssured) creates and polls a job to `COMPLETED` via `use_embedded_subtitles=true` in under 2 seconds.
+3. Selenium WebDriver opens the browser via the one-time `/?token=...` bootstrap link, selects the completed project, and tests real DOM interactions (inline editing, segment insertion, search/replace, undo/redo history, QA panel, export toolbar).
+
+---
+
+## 3. Suite Breakdown & Directory Layout
+
+### 3.1 Python Backend Test Suite (`backend/tests/`) — 432 Tests
+Configured in [`backend/pytest.ini`](../backend/pytest.ini) with `pythonpath = .` and automated directory-based tagging in [`backend/tests/conftest.py`](../backend/tests/conftest.py).
+
+| Layer / Marker | Directory | Files | Collected Tests | Scope & Isolation |
+|---|---|---:|---:|---|
+| `@pytest.mark.unit` | `backend/tests/unit/` | 11 | 96 | Pure logic with zero DB or FFmpeg: RTL BiDi (`test_rtl_fixer.py`), SRT/VTT serialization & timestamp carry (`test_srt_formatter.py`), segmentation & orphan-word healing (`test_refine_stage.py`, `test_refine_quality.py`), end-credits detection (`test_credits_detect.py`), speaker split & SDH (`test_speaker_split.py`), missing speech (`test_missing_speech.py`), QA rules (`test_qa.py`), desktop launcher & shortcuts (`test_desktop_launcher.py`, `test_create_shortcut.py`), DB migration (`test_legacy_rename.py`). |
+| `@pytest.mark.api` | `backend/tests/api/` | 11 | 103 | FastAPI `TestClient` + isolated SQLite: job lifecycle & live segments (`test_api_and_pipeline.py`), segment CRUD (`test_insert_segment.py`), undo/redo edit history (`test_edit_history.py`), upload deduplication & SHA-256 cache (`test_media_upload.py`), row-scoped retranslation (`test_row_translate.py`), glossary profiles (`test_glossary_profiles.py`), speaker detection (`test_speaker_detect.py`), retime/reorder (`test_retime.py`), settings/pricing (`test_settings_pricing.py`), save next to video (`test_save_next_to_video.py`), storage cleanup (`test_storage_cleanup.py`). |
+| `@pytest.mark.pipeline` | `backend/tests/pipeline/` | 13 | 170 | Pipeline orchestration & AI adapters: full E2E clip (`test_pipeline_e2e.py`), Whisper threading/OOM/cancel (`test_whisper_provider.py`), Gemini retries/glossary/truncation (`test_gemini_provider.py`), Flex tier fallback (`test_flex.py`), FinOps dHash prefilter & Ollama pre-tagging (`test_finops_optimizations.py`), OCR & tactical comms (`test_comms_onscreen.py`), foreign speech (`test_foreign_speech.py`), sync alignment & burned-in detection (`test_sync.py`), gap recovery (`test_gap_recovery.py`), word snapping (`test_word_snap.py`), video embedding (`test_embed_video.py`), embedded tracks (`test_embedded_subtitles.py`), per-job logging (`test_logs.py`). |
+| `@pytest.mark.security` | `backend/tests/security/` | 5 | 63 | Defense-in-depth verification: `X-SubBuild-Token` & cookie bootstrap + UNC path refusal (`test_session_auth.py`), Origin/Fetch-Metadata CSRF guard & `TrustedHostMiddleware` (`test_request_guard.py`), CSP & anti-framing headers (`test_security_headers.py`), FFmpeg `-protocol_whitelist file` & AST bare `-i` audit (`test_ffmpeg_safety.py`), `Content-Length` upload limits & filename sanitization (`test_upload_limits.py`). |
+| Shared Fixtures | `backend/tests/fixtures/` | 3 | — | `builders.py` (`insert_job`, `create_job_with_segments`, `wait_for_job`) and `fakes.py` (`FakeTranslator`, `SlowTranscriber`). |
+
+Additional cross-cutting Pytest markers:
+- `@pytest.mark.smoke` (**53 tests**): Critical-path sanity checks across auth, core API, pipeline E2E, RTL, and SRT/VTT formatting.
+- `@pytest.mark.ffmpeg` (**24 tests**): Tests invoking real `ffmpeg`/`ffprobe` binaries.
+- `@pytest.mark.regression` (**432 tests**): Full regression coverage.
+
+### 3.2 Frontend Test & Static Analysis Suite (`frontend/`) — 9 Tests
+- **Static Checks:** `oxlint` (`npm run lint`) and TypeScript compiler (`tsc -b`).
+- **Component & Store Round-Trip (`frontend/src/__tests__/reliability_and_editor_roundtrip.test.tsx`):** 9 Vitest + React Testing Library tests validating autosave state, split/merge/shift controls, search navigation, and bilingual export URL generation.
+
+### 3.3 Java Enterprise Black-Box Automation (`qa-automation-java/`) — 47 Tests
+Standard Maven project built with **Java 21**, **JUnit 5**, **Selenium WebDriver 4.27**, **RestAssured 5.5**, and **ExtentReports 5** (`9 @Tag("smoke")` + `38` additional `@Tag("regression")` tests; every `smoke` test also carries `@Tag("regression")` so `-Pregression` runs the complete 47-test suite).
+
+```text
+qa-automation-java/
+├── pom.xml                                   # Maven profiles: -Psmoke (9) & -Pregression (47)
+└── src/
+    ├── main/java/com/subbuild/qa/
+    │   ├── api/
+    │   │   └── SubBuildApiClient.java        # RestAssured client with X-SubBuild-Token & job seeding
+    │   ├── config/
+    │   │   └── TestConfig.java               # System property & env configuration
+    │   ├── driver/
+    │   │   └── DriverFactory.java            # Chrome/Edge factory (headless/headed, implicitWait=0)
+    │   └── pages/
+    │       ├── BasePage.java                 # Explicit WebDriverWait primitives (zero Thread.sleep)
+    │       ├── HelpPage.java                 # Help & Q&A guide view, FAQ accordion & back navigation
+    │       ├── IngestPage.java               # Bootstrap login, mode switch, media probe, presets, launch
+    │       ├── StudioEditorPage.java         # SubtitleTable, Insert/Glossary/Shift-Time, Search, Undo/Redo, QA
+    │       ├── ExportToolbarComponent.java   # Live onscreen position, SRT/VTT/Log/Glossary/Embed controls
+    │       ├── SettingsPage.java             # RTL/LTR toggle, Dark/Light theme, toggles, Flex, estimator
+    │       └── SidebarComponent.java         # Project navigation, Clear All & bulk selection
+    └── test/java/com/subbuild/qa/
+        ├── base/
+        │   ├── BaseApiTest.java              # Injects isolated server & SubBuildApiClient
+        │   └── BaseTest.java                 # WebDriver per-test lifecycle & studio bootstrap
+        ├── extensions/
+        │   ├── SubBuildServerExtension.java  # Isolated uvicorn launcher + temp STORAGE_DIR + FFmpeg fixture
+        │   └── ExtentReportExtension.java    # ExtentReports HTML dashboard + auto-screenshot on failure
+        └── tests/
+            ├── api/
+            │   ├── SystemAndSecurityApiTest.java  # 14 tests (Auth 401, CSRF 403, UNC 400, headers, estimates)
+            │   ├── JobLifecycleApiTest.java       # 2 tests (Embedded pipeline E2E, CRUD/history/QA/exports)
+            │   └── RegressionApiTest.java         # 15 tests (Split/Merge/Shift, Glossary, RTL export, 409/422/400/404, Embed)
+            └── ui/
+                ├── IngestAndPresetsUiTest.java    # 6 tests (Modal, ModeSwitch, Probe, 4 Genre Presets, Launch)
+                ├── StudioEditorUiTest.java        # 2 tests (Hybrid seeded workspace, Insert/Replace/Undo/QA/Clear)
+                ├── SettingsUiTest.java            # 2 tests (RTL/LTR, Dark/Light, Metric/Cost-Saver/Flex persistence)
+                └── RegressionUiTest.java          # 6 tests (Invalid path, Sync SRT, Overlap guard, Glossary, Shift, Help)
+```
+
+---
+
+## 4. Test Data & Environment Isolation
+
+All automated test suites strictly protect real user data (`backend/storage/subbuild.db`) and credentials (`backend/.env`):
+- **Pytest (`backend/tests/conftest.py`):** Points `STORAGE_DIR` and `DATABASE_URL` to a fresh `tempfile.mkdtemp(prefix="subbuild_test_")` before importing any `app.*` module, sets `GEMINI_API_KEY=""`, and removes the directory on `pytest_sessionfinish`.
+- **Java Automation (`SubBuildServerExtension`):** Automatically launches an isolated `uvicorn app.main:app` instance on a free dynamic loopback port (`127.0.0.1:<port>`) with a dedicated `subbuild_qa_java_*` temp `STORAGE_DIR`, isolated SQLite DB, ephemeral `SUBBUILD_TOKEN`, and `GEMINI_API_KEY=""`. On suite teardown (`CloseableResource`), the server process tree and temp directory are cleaned up automatically.
+
+---
+
+## 5. Execution Guide
+
+### Backend (`backend/`)
+```powershell
+cd "backend"
+
+# Full regression suite (432 tests)
+.\.venv\Scripts\python.exe -m pytest -q
+
+# Fast targeted layers
+.\.venv\Scripts\python.exe -m pytest -m smoke -q
+.\.venv\Scripts\python.exe -m pytest -m unit -q
+.\.venv\Scripts\python.exe -m pytest -m security -q
+.\.venv\Scripts\python.exe -m pytest -m api -q
+.\.venv\Scripts\python.exe -m pytest -m pipeline -q
+.\.venv\Scripts\python.exe -m pytest -m "pipeline and not ffmpeg" -q
+```
+
+### Frontend (`frontend/`)
+```powershell
+cd "frontend"
+npm run lint
+npm test
+npm run build
+```
+
+### Java Black-Box E2E & API (`qa-automation-java/`)
+```powershell
+cd "qa-automation-java"
+
+# Full regression suite (47 tests, headless Chrome, auto-starts isolated backend)
+mvn clean test -Pregression
+
+# Fast smoke suite (9 critical-path tests)
+mvn test -Psmoke
+
+# Direct JUnit 5 @Tag filtering also works
+mvn test -Dgroups=regression   # All 47 regression tests (includes the 9 smoke tests)
+mvn test -Dgroups=smoke        # 9 critical-path smoke tests
+
+# Run headed on Microsoft Edge or against an existing server
+mvn test -Dsubbuild.browser=edge -Dsubbuild.headless=false
+mvn test -Dsubbuild.baseUrl=http://127.0.0.1:8000 -Dsubbuild.token=your-token
+```
+
+### Visual Test Reports
+After running `mvn test`, open the generated ExtentReports dashboard:
+- `qa-automation-java/target/reports/subbuild-qa-report.html` (includes category filters for `smoke`, `regression`, `api`, `ui`, `security`, execution timings, and embedded PNG failure screenshots under `target/reports/screenshots/`).
+- Standard JUnit XML reports for CI/CD integration are written to `qa-automation-java/target/surefire-reports/`.
+
+---
+
+## 6. Risk-Based Test Matrix (`smoke` vs `regression`)
+
+| Risk Area | Python Verification | Java Black-Box Verification | Tag |
+|---|---|---|---|
+| Session Token & Cookie Auth | `test_session_auth.py` | `SystemAndSecurityApiTest#protectedEndpointsRequireSessionToken` | `smoke` |
+| Security Headers & CSRF Origin Guard | `test_security_headers.py`, `test_request_guard.py` | `SystemAndSecurityApiTest#systemInfoReturnsCatalogAndSecurityHeaders`, `#crossOriginStateChangesAreBlocked` | `smoke` / `regression` |
+| UNC / Path Traversal / FFmpeg SSRF | `test_session_auth.py`, `test_ffmpeg_safety.py`, `test_upload_limits.py` | `SystemAndSecurityApiTest#networkPathsAreRejected` | `regression` |
+| Media Probe & Embedded Pipeline E2E | `test_pipeline_e2e.py`, `test_embedded_subtitles.py` | `JobLifecycleApiTest#embeddedJobLifecycleAndExport`, `IngestAndPresetsUiTest#launchEmbeddedJobFromUi` | `smoke` / `regression` |
+| Genre Presets & Cost Estimation | `test_settings_pricing.py`, `test_finops_optimizations.py` | `IngestAndPresetsUiTest#genrePresetsUpdateActiveBadge`, `SystemAndSecurityApiTest#costEstimateCalculation` | `regression` |
+| Studio Editing, Undo/Redo, QA & Exports | `test_edit_history.py`, `test_insert_segment.py`, `test_qa.py` | `StudioEditorUiTest#openSeededJobAndUpdateOnscreenPosition`, `#insertReplaceUndoRedoQaAndSidebarCleanup` | `smoke` / `regression` |
+| RTL Localization, Theme & Settings Persistence | `test_rtl_fixer.py`, `test_settings_pricing.py`, `test_flex.py` | `SettingsUiTest#languageThemeAndTogglesPersist`, `#flexAndOnscreenPositionPersist` | `smoke` / `regression` |
+| Split/Merge/Shift, Glossary Profiles & Bilingual Export | `test_retime.py`, `test_glossary_profiles.py`, `test_srt_formatter.py` | `RegressionApiTest#splitMergeAndShiftSegmentsWithHistory`, `#glossaryUpdateAndSeriesProfilePersistence`, `#bilingualAndRtlExportContract`, `RegressionUiTest#glossaryDialogSavesCharacterAndProfile`, `#shiftTimePopoverPersistsTimingChange` | `regression` |
+| Negative Input Validation, Overlap Guard & Soft Video Embed | `test_insert_segment.py`, `test_embed_video.py`, `test_upload_limits.py` | `RegressionApiTest#negativeSegmentValidationAndOverlaps`, `#negativeJobAndSettingsErrors`, `#negativeNonMediaPathsRejected`, `#jobLogExportAndSoftEmbed`, `RegressionUiTest#invalidMediaPathShowsErrorBanner`, `#insertDialogBlocksOverlappingSegment` | `regression` |
+| Sync SRT Upload & Help FAQ Flow | `test_sync.py`, `test_logs.py` | `RegressionUiTest#syncModeSubtitleUploadAndEncodingSelector`, `#helpScreenAndFaqAccordion` | `regression` |
