@@ -1,7 +1,13 @@
 from datetime import datetime
 from typing import List, Literal, Optional, Any, Dict
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from app.models.db_models import JobStatus
+
+
+class RequestModel(BaseModel):
+    """Base for request bodies: NaN / Infinity are refused (JSON from Python clients can carry them,
+    and every time comparison is False for NaN, so it would slip past the range checks)."""
+    model_config = ConfigDict(allow_inf_nan=False)
 
 
 class AudioStreamInfo(BaseModel):
@@ -34,7 +40,7 @@ class SubtitleStreamInfo(BaseModel):
         return any(k in title for k in ("sdh", "hearing", "deaf", "(cc)", "[cc]"))
 
 
-class ProbePathRequest(BaseModel):
+class ProbePathRequest(RequestModel):
     file_path: str = Field(description="Direct absolute path on the local filesystem")
 
 
@@ -51,7 +57,7 @@ class ProbeResponse(BaseModel):
     chapters: List[Dict[str, Any]] = []
 
 
-class JobConfig(BaseModel):
+class JobConfig(RequestModel):
     selected_audio_stream: int = 0
     whisper_model: str = "medium"
     source_language: Optional[str] = "auto"
@@ -78,7 +84,7 @@ class JobConfig(BaseModel):
     glossary_profile: Optional[str] = None
 
 
-class SyncCue(BaseModel):
+class SyncCue(RequestModel):
     start: float
     end: float
     text: str
@@ -109,7 +115,7 @@ class JobCreate(JobConfig):
     sync_use_gemini: bool = True
 
 
-class RetranslateRequest(BaseModel):
+class RetranslateRequest(RequestModel):
     only_failed: bool = False
     target_language: Optional[str] = None
     gemini_model: Optional[str] = None
@@ -125,20 +131,20 @@ class RetranslateRequest(BaseModel):
     thinking: Optional[str] = Field(default=None, description="Thinking level for this run (default, off, minimal, low, medium, high)")
 
 
-class GlossaryCharacterEdit(BaseModel):
+class GlossaryCharacterEdit(RequestModel):
     name: str
     target_name: str = ""
     gender: str = "unknown"
     notes: str = ""
 
 
-class GlossaryTermEdit(BaseModel):
+class GlossaryTermEdit(RequestModel):
     source: str
     translation: str = ""
     notes: str = ""
 
 
-class GlossaryUpdate(BaseModel):
+class GlossaryUpdate(RequestModel):
     summary: str = ""
     characters: List[GlossaryCharacterEdit] = []
     terms: List[GlossaryTermEdit] = []
@@ -147,7 +153,7 @@ class GlossaryUpdate(BaseModel):
     profile: Optional[str] = None
 
 
-class JobSettingsUpdate(BaseModel):
+class JobSettingsUpdate(RequestModel):
     onscreen_position: Optional[str] = Field(
         default=None,
         description="Position for on-screen/bracketed subtitles: top_center, middle_right, middle_left, top_right, top_left",
@@ -168,7 +174,7 @@ class SubtitleSegmentSchema(BaseModel):
     cps: Optional[float] = 0.0
 
 
-class SegmentUpdate(BaseModel):
+class SegmentUpdate(RequestModel):
     start_time: Optional[float] = None
     end_time: Optional[float] = None
     original_text: Optional[str] = None
@@ -179,13 +185,13 @@ class BulkSegmentUpdate(SegmentUpdate):
     id: int
 
 
-class RetimeRequest(BaseModel):
+class RetimeRequest(RequestModel):
     """Optional window (seconds); omitted = the whole video."""
     start: Optional[float] = None
     end: Optional[float] = None
 
 
-class SegmentCreate(BaseModel):
+class SegmentCreate(RequestModel):
     """A subtitle line the user adds by hand (between existing lines)."""
     start_time: float
     end_time: float
@@ -194,20 +200,20 @@ class SegmentCreate(BaseModel):
     segment_type: str = "DIALOGUE"
 
 
-class MoveSegmentRequest(BaseModel):
+class MoveSegmentRequest(RequestModel):
     segment_id: int
     to_position: int = Field(description="0-based position in time order to drop the row at")
 
 
-class SplitSegmentRequest(BaseModel):
+class SplitSegmentRequest(RequestModel):
     split_time: Optional[float] = Field(default=None, description="Optional split timestamp in seconds")
 
 
-class MergeSegmentsRequest(BaseModel):
+class MergeSegmentsRequest(RequestModel):
     segment_ids: List[int] = Field(min_length=2, description="IDs of 2 or more segments to merge")
 
 
-class ShiftSegmentsRequest(BaseModel):
+class ShiftSegmentsRequest(RequestModel):
     offset_seconds: float = Field(description="Seconds to shift timestamps by (+/-)")
     segment_ids: Optional[List[int]] = Field(default=None, description="Optional segment IDs to shift; None shifts all")
 
@@ -220,7 +226,7 @@ class SegmentsChangeResponse(BaseModel):
     segments: List["SubtitleSegmentSchema"] = []
 
 
-class BulkDeleteJobsRequest(BaseModel):
+class BulkDeleteJobsRequest(RequestModel):
     job_ids: Optional[List[str]] = Field(default=None, description="Job IDs to delete; None or empty with delete_all=True deletes all jobs")
     delete_all: bool = False
 
@@ -230,7 +236,7 @@ class BulkDeleteJobsResponse(BaseModel):
     deleted_ids: List[str]
 
 
-class DetectSpeakersRequest(BaseModel):
+class DetectSpeakersRequest(RequestModel):
     segment_ids: List[int]
     gemini_model: Optional[str] = None
     thinking: Optional[str] = None
@@ -325,7 +331,7 @@ class SystemInfoResponse(BaseModel):
     hardware: Dict[str, Any]
 
 
-class SaveNextToVideoRequest(BaseModel):
+class SaveNextToVideoRequest(RequestModel):
     """Write the subtitles into the folder of the job's video (Movie.he.srt next to Movie.mkv)."""
     format: Literal["srt", "vtt"] = "srt"
     use_translated: bool = True
@@ -341,7 +347,7 @@ class SaveNextToVideoResponse(BaseModel):
     exists: bool
 
 
-class EmbedVideoRequest(BaseModel):
+class EmbedVideoRequest(RequestModel):
     """Make a copy of the job's video with its subtitles inside (a track, or burned into the picture)."""
     # soft: extra subtitle track, no re-encode (MKV/MP4). burn: drawn on the picture, H.264 MP4
     mode: Literal["soft", "burn"] = "soft"

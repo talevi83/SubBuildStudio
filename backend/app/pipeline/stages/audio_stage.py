@@ -1,11 +1,11 @@
 import asyncio
 import logging
-import shutil
 from pathlib import Path
 from typing import Awaitable, Callable, List, Optional
 from app.core.config import settings
 from app.pipeline.context import PipelineContext, PipelineCancelled
 from app.pipeline.stages.base import PipelineStage, ProgressCallback
+from app.core.executables import executable
 from app.core.ffmpeg_safety import safe_input
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ COMMS_AUDIO_FILTER = (
 
 def get_ffmpeg_bin() -> str:
     """Return path to ffmpeg executable."""
-    return shutil.which("ffmpeg") or "ffmpeg"
+    return executable("ffmpeg")
 
 
 def build_audio_filter(dialogue_mix: bool, comms_boost: bool) -> Optional[str]:

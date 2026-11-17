@@ -4,6 +4,7 @@ Only ever touches files inside `storage/` that the app created itself. Videos th
 selected by path are never deleted, and nothing belonging to a running job is touched.
 """
 import logging
+import os
 import re
 import shutil
 import time
@@ -44,6 +45,20 @@ class Report:
         self.items.append(Item(path, size))
         self.bytes += size
         self.count += 1
+
+
+# An upload has no job until the user presses Start; don't count it as unused before then
+UPLOAD_GRACE_SECONDS = 30 * 60
+
+
+def _arrived_at(path: Path) -> float:
+    try:
+        st = path.stat()
+    except OSError:
+        return 0.0
+    if os.name == "nt":
+        return max(st.st_mtime, st.st_ctime)  # on Windows st_ctime is when the file arrived here
+    return max(st.st_mtime, getattr(st, "st_birthtime", 0.0))  # POSIX st_ctime is a metadata change
 
 
 def _tree_size(path: Path) -> int:
@@ -114,8 +129,11 @@ def collect(session: Session, active_ids: Set[str], older_than_days: Optional[fl
     # uploads: copies made by the app that no job points at any more
     jobs = session.exec(select(Job)).all()
     referenced = {str(Path(j.video_path).resolve()) for j in jobs if j.video_path}
+    fresh_cutoff = time.time() - UPLOAD_GRACE_SECONDS
     for p in _children(root / "uploads"):
         if p.is_file() and _APP_UPLOAD.match(p.name) and str(p.resolve()) not in referenced:
+            if _arrived_at(p) > fresh_cutoff:
+                continue  # just uploaded: the user is most likely setting up its job right now
             out["uploads"].add(p, _tree_size(p))
 
     # jobs: finished jobs older than N days (with their uploaded copy, if no other job uses it)

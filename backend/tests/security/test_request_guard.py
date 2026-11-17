@@ -85,8 +85,26 @@ def test_other_unsafe_methods_are_blocked(client, method):
     assert resp.status_code == 403
 
 
-def test_frontend_dev_origin_is_allowed(client):
-    resp = client.post("/api/settings/ollama/setup", headers={"Origin": "http://localhost:5173"})
+@pytest.mark.parametrize("origin", ["http://localhost:5173", "http://127.0.0.1:5173"])
+def test_dev_server_origin_is_refused_outside_dev_mode(client, origin):
+    """Any program on port 5173 (another project's Vite server) must not drive the installed app."""
+    resp = client.post("/api/settings/ollama/setup", headers={"Origin": origin})
+    assert resp.status_code == 403
+    assert client.setup_calls == []
+
+
+def test_dev_server_origins_are_trusted_only_in_dev_mode():
+    from app.core.config import Settings
+
+    prod = Settings(subbuild_dev=False)
+    dev = Settings(subbuild_dev=True)
+    assert "http://localhost:5173" not in prod.trusted_origins
+    assert "http://localhost:8000" in prod.trusted_origins
+    assert {"http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8000"} <= set(dev.trusted_origins)
+
+
+def test_studio_origin_is_allowed(client):
+    resp = client.post("/api/settings/ollama/setup", headers={"Origin": "http://localhost:8000"})
     assert resp.status_code == 200
     assert client.setup_calls == ["qwen2.5:7b"]
 
@@ -115,10 +133,10 @@ def test_cross_site_get_is_not_blocked(client):
 def test_cors_preflight_still_works_for_frontend(client):
     resp = client.options(
         "/api/jobs",
-        headers={"Origin": "http://localhost:5173", "Access-Control-Request-Method": "DELETE"},
+        headers={"Origin": "http://127.0.0.1:8000", "Access-Control-Request-Method": "DELETE"},
     )
     assert resp.status_code == 200
-    assert resp.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert resp.headers["access-control-allow-origin"] == "http://127.0.0.1:8000"
 
 
 # ----------------------------------------------------------------------------- WebSocket
@@ -131,7 +149,7 @@ def test_cross_site_websocket_is_rejected(client):
 
 
 def test_trusted_websocket_connects(client):
-    with client.websocket_connect("/ws/jobs/job_any", headers={"Origin": "http://localhost:5173"}) as ws:
+    with client.websocket_connect("/ws/jobs/job_any", headers={"Origin": "http://localhost:8000"}) as ws:
         ws.send_text("ping")
 
 

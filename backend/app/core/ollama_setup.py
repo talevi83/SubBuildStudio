@@ -4,7 +4,6 @@ Local Ollama status check and one-click setup (server launch and model pull; ins
 import asyncio
 import logging
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -12,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from app.core.executables import find_executable
 from app.pipeline.gender_pretag import OLLAMA_BASE_URL, OLLAMA_TAGS_URL, pick_ollama_model
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ _setup_task: Optional[asyncio.Task] = None
 
 def find_ollama_bin() -> Optional[str]:
     """Locate the `ollama` executable on PATH or in standard OS install directories."""
-    found = shutil.which("ollama")
+    found = find_executable("ollama")
     if found:
         return found
     if sys.platform == "win32":
@@ -130,6 +130,18 @@ async def _pull_model(model: str) -> None:
             raise RuntimeError(f"Could not pull model {model}: HTTP {resp.status_code}")
 
 
+def _with_tag(name: str) -> str:
+    name = name.strip().lower()
+    return name if ":" in name else f"{name}:latest"
+
+
+def has_model(installed: List[str], model: str) -> bool:
+    """Whether exactly this model (and tag) is installed. Another size of the same family
+    ("qwen2.5:0.5b" for "qwen2.5:7b") or a related model ("qwen2.5-coder") doesn't count."""
+    want = _with_tag(model)
+    return any(_with_tag(m) == want for m in installed)
+
+
 async def _run_setup_workflow(model: str) -> None:
     try:
         _state["installing"] = True
@@ -149,8 +161,8 @@ async def _run_setup_workflow(model: str) -> None:
             logger.info("Starting local Ollama server...")
             await _ensure_server_running(binary)
 
-        _, models, selected = await _fetch_running_models(timeout=2.0)
-        if not selected or (model not in models and not any(m.startswith(model.split(":")[0]) for m in models)):
+        _, models, _selected = await _fetch_running_models(timeout=2.0)
+        if not has_model(models, model):
             _state["step"] = "pulling_model"
             logger.info(f"Pulling recommended Ollama model '{model}'...")
             await _pull_model(model)

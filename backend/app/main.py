@@ -5,7 +5,12 @@ from pathlib import Path
 
 from app.core import compat as _compat  # noqa: F401  (applies PyAV/faster-whisper compatibility shim)
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import math
+
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -58,6 +63,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+def _json_safe(value):
+    """NaN / Infinity can't be written as JSON; show them as text (e.g. the rejected input)."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    # FastAPI's own handler echoes the rejected input, which fails to serialize for NaN/Infinity (500)
+    return JSONResponse(status_code=422, content={"detail": _json_safe(jsonable_encoder(exc.errors()))})
+
+
 # Innermost: oversized uploads are refused from their Content-Length, before Starlette spools
 # the body to disk (only reached by requests that passed the session and CSRF checks).
 app.add_middleware(UploadLimitGuard, uploads_dir=uploads_dir)
@@ -65,14 +87,14 @@ app.add_middleware(UploadLimitGuard, uploads_dir=uploads_dir)
 # CSRF: CORS can't stop a website from *sending* simple POSTs / opening a WebSocket to
 # 127.0.0.1, so state-changing requests from untrusted origins are rejected here.
 # Added early = inner, so CORS preflights and the Host check run before it.
-app.add_middleware(CrossSiteRequestGuard, allowed_origins=settings.cors_origins)
+app.add_middleware(CrossSiteRequestGuard, allowed_origins=settings.trusted_origins)
 
-# CORS: only allow the local frontend origins (Vite dev server + same-origin prod build).
+# CORS: only allow the studio's own origin (plus the Vite dev server with SUBBUILD_DEV=1).
 # A wildcard origin would let any website the user visits drive this API, which can read
 # arbitrary local files via job creation + streaming.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=settings.trusted_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

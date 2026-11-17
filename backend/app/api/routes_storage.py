@@ -1,7 +1,7 @@
 from typing import Dict, List, Optional, Set
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session, select
 
 from app.core import storage_cleanup as sc
@@ -24,6 +24,8 @@ class StorageReport(BaseModel):
 
 
 class CleanRequest(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+
     categories: List[str] = Field(min_length=1)
     older_than_days: Optional[float] = Field(default=None, ge=0, description="Only for 'jobs'")
 
@@ -39,7 +41,7 @@ def _active_ids(session: Session) -> Set[str]:
 
 
 @router.get("", response_model=StorageReport)
-def storage_report(older_than_days: float = 30, session: Session = Depends(get_session)):
+def storage_report(older_than_days: float = Query(30, ge=0, allow_inf_nan=False), session: Session = Depends(get_session)):
     """What the storage folder holds, per cleanable category (nothing is deleted)."""
     report = sc.collect(session, _active_ids(session), older_than_days)
     return StorageReport(

@@ -292,7 +292,8 @@ Optional settings (defaults shown):
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | Server address. Keep `127.0.0.1` unless you really want LAN access: the API can read any file path on this PC. |
 | `SYNC_DETECT_BURNED_IN` / `SYNC_BURNED_IN_FPS` | `true` / `5` | *Sync my subtitles*: look for subtitles burned into the picture (local), and how many frames per second to check. |
 | `ALLOWED_HOSTS` | `["localhost","127.0.0.1","[::1]"]` | Host names the server answers to (blocks DNS-rebinding attacks). Add your PC's LAN name/IP if you set `HOST=0.0.0.0`. |
-| `CORS_ORIGINS` | `["http://localhost:5173", …:8000]` | Browser origins allowed to use the API. State-changing requests and WebSockets from any other website are rejected (CSRF guard); the studio's own page is always allowed. |
+| `CORS_ORIGINS` | `["http://localhost:8000", "http://127.0.0.1:8000"]` | Browser origins allowed to use the API. State-changing requests and WebSockets from any other website are rejected (CSRF guard); the studio's own page is always allowed. |
+| `SUBBUILD_DEV` | `false` | Development only: also trust the Vite dev server (`http://localhost:5173`, `http://127.0.0.1:5173`). Off by default, so another program on port 5173 can't drive the installed app. |
 | `SUBBUILD_TOKEN` | random per launch | Session token. Every `/api` and `/ws` request needs it (as an HttpOnly cookie set by opening `/?token=<token>` once, or an `X-SubBuild-Token` header), so other programs, other Windows accounts and the LAN can't use the API. The desktop app and `run.bat` / `run.sh` set it for you; set it yourself only for development. |
 
 An API key saved in Settings (or the first-run dialog) is stored in `.env`. A key typed on the Ingest screen for a single job is used for that run only and is never written to disk.
@@ -351,6 +352,7 @@ cd frontend
 npm run dev
 ```
 With `--reload` the token would change on every reload, so give the backend a fixed one for development (PowerShell: `$env:SUBBUILD_TOKEN = "dev-token"`, bash: `export SUBBUILD_TOKEN=dev-token`) before starting it.
+Also turn on dev mode so the backend trusts the Vite dev server's origin (PowerShell: `$env:SUBBUILD_DEV = "1"`, bash: `export SUBBUILD_DEV=1`); without it every change made from `:5173` is refused with 403.
 Then open **`http://localhost:5173/api/session?token=dev-token`** once: it signs the browser in and lands on the studio (API requests & WebSockets proxy to `:8000`).
 
 ---

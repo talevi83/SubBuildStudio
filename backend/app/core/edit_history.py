@@ -35,17 +35,29 @@ SNAPSHOT_FIELDS = (
     "translation_failed", "segment_type", "confidence", "cps",
 )
 
-_locks: Dict[str, threading.Lock] = {}
+# job id -> [lock, number of holders + waiters]; an entry is dropped when nobody uses it, so ids of
+# deleted (or never existing) jobs don't pile up for the life of the process
+_locks: Dict[str, List[Any]] = {}
 _locks_guard = threading.Lock()
 
 
 @contextmanager
 def job_lock(job_id: str) -> Iterator[None]:
-    """Serialise history-changing requests of one job (autosaves can overlap)."""
+    """Serialise history-changing requests of one job (autosaves can overlap).
+
+    A threading.Lock: never wait for it on the event loop (use asyncio.to_thread from async code).
+    """
     with _locks_guard:
-        lock = _locks.setdefault(job_id, threading.Lock())
-    with lock:
-        yield
+        entry = _locks.setdefault(job_id, [threading.Lock(), 0])
+        entry[1] += 1
+    try:
+        with entry[0]:
+            yield
+    finally:
+        with _locks_guard:
+            entry[1] -= 1
+            if entry[1] == 0 and _locks.get(job_id) is entry:
+                del _locks[job_id]
 
 
 class HistoryError(Exception):

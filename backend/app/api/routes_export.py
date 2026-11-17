@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -10,6 +11,7 @@ from app.core.config import settings
 from app.core.database import get_session
 from app.models.db_models import Job
 from app.models.schemas import EmbedVideoRequest, EmbedVideoStatus, SaveNextToVideoRequest, SaveNextToVideoResponse
+from app.utils.filenames import safe_basename
 from app.utils.languages import language_code, language_code3, language_name
 from app.utils.srt_formatter import serialize_to_srt, serialize_to_vtt
 
@@ -27,7 +29,7 @@ def _build_filename(job: Job, use_translated: bool, ext: str, bilingual: bool = 
         suffix = f".{code}.dual.{ext}" if code else f".dual.{ext}"
     else:
         suffix = f".{code}.{ext}" if code else f".{ext}"
-    return f"{Path(job.file_name).stem}{suffix}"
+    return f"{safe_basename(Path(job.file_name).stem, fallback='subtitles')}{suffix}"
 
 
 def _attachment_headers(filename: str) -> dict:
@@ -182,56 +184,70 @@ async def start_embed_video(job_id: str, req: EmbedVideoRequest, session: Sessio
     """
     from app.core import video_embed as ve
 
-    with history.job_lock(job_id):
-        session.expire_all()
-        job = session.get(Job, job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-        if not any(seg.id for seg in job.segments):
-            raise HTTPException(status_code=400, detail="This project has no subtitles yet.")
-        if req.use_translated and not any(seg.translated_text for seg in job.segments):
-            raise HTTPException(status_code=400, detail="This project has no translation to embed yet.")
-        video = Path(job.video_path)
-        if not video.is_file():
-            raise HTTPException(status_code=404, detail=f"The video file no longer exists: {video}")
-        running = ve.running_task(job_id)
-        if running:
-            raise HTTPException(status_code=409, detail="A video with subtitles is already being made for this project.")
+    def prepare():
+        # In a worker thread: job_lock is a threading.Lock (a long /retime may hold it), and
+        # waiting for it on the event loop would freeze the whole server.
+        with history.job_lock(job_id):
+            session.expire_all()
+            job = session.get(Job, job_id)
+            if not job:
+                raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+            if not any(seg.id for seg in job.segments):
+                raise HTTPException(status_code=400, detail="This project has no subtitles yet.")
+            if req.use_translated and not any(seg.translated_text for seg in job.segments):
+                raise HTTPException(status_code=400, detail="This project has no translation to embed yet.")
+            video = Path(job.video_path)
+            if not video.is_file():
+                raise HTTPException(status_code=404, detail=f"The video file no longer exists: {video}")
+            if ve.running_task(job_id):
+                raise HTTPException(status_code=409, detail="A video with subtitles is already being made for this project.")
 
-        language = job.target_language if req.use_translated else job.effective_source_language
-        code = _lang_code(language)
-        ext = ve.output_extension(job.video_path, req.mode)
-        name = ve.output_name(job.file_name or video.name, code, req.mode, ext)
-        if job.is_upload:
-            folder = settings.storage_dir.resolve() / "exports" / f"embed_{job.id}"
-            folder.mkdir(parents=True, exist_ok=True)
-            target = folder / name
-        else:
-            target = video.parent / name
-            if target.exists() and not req.overwrite:
-                return EmbedVideoStatus(state="exists", mode=req.mode, path=str(target), file_name=name, next_to_video=True)
+            language = job.target_language if req.use_translated else job.effective_source_language
+            code = _lang_code(language)
+            ext = ve.output_extension(job.video_path, req.mode)
+            name = ve.output_name(job.file_name or video.name, code, req.mode, ext)
+            if job.is_upload:
+                folder = settings.storage_dir.resolve() / "exports" / f"embed_{job.id}"
+                folder.mkdir(parents=True, exist_ok=True)
+                target = folder / name
+            else:
+                target = video.parent / name
+                if target.exists() and not req.overwrite:
+                    return EmbedVideoStatus(state="exists", mode=req.mode, path=str(target), file_name=name,
+                                            next_to_video=True)
 
-        if req.mode == "soft":
-            # The copy is about as big as the original; fail now rather than at 95%
-            import shutil
-            try:
-                free = shutil.disk_usage(target.parent).free
-            except OSError:
-                free = None
-            if free is not None and free < video.stat().st_size * 1.02 + 50_000_000:
-                raise HTTPException(status_code=507, detail=f"Not enough free disk space in {target.parent}")
+            if req.mode == "soft":
+                # The copy is about as big as the original; fail now rather than at 95%
+                import shutil
+                try:
+                    free = shutil.disk_usage(target.parent).free
+                except OSError:
+                    free = None
+                if free is not None and free < video.stat().st_size * 1.02 + 50_000_000:
+                    raise HTTPException(status_code=507, detail=f"Not enough free disk space in {target.parent}")
 
-        text = _render(job, req.use_translated, req.apply_rtl, None, "srt").decode("utf-8").lstrip("\ufeff")
-        opts = ve.EmbedOptions(
-            mode=req.mode,
-            language3=language_code3(language),
-            track_title=f"{language_name(language, 'Subtitles')} (SubBuild Studio)",
-            set_default=req.set_default,
-            font_size=req.font_size,
-            quality=req.quality,
-            audio_stream=job.selected_audio_stream or 0,
-        )
-        job_is_upload = job.is_upload
+            text = _render(job, req.use_translated, req.apply_rtl, None, "srt").decode("utf-8").lstrip("\ufeff")
+            opts = ve.EmbedOptions(
+                mode=req.mode,
+                language3=language_code3(language),
+                track_title=f"{language_name(language, 'Subtitles')} (SubBuild Studio)",
+                set_default=req.set_default,
+                font_size=req.font_size,
+                quality=req.quality,
+                audio_stream=job.selected_audio_stream or 0,
+            )
+            return video, target, text, opts, job.is_upload
+
+    prepared = await asyncio.to_thread(prepare)
+    if isinstance(prepared, EmbedVideoStatus):
+        return prepared
+    video, target, text, opts, job_is_upload = prepared
+    # Checked again on the event loop (where tasks are registered), so two requests can't both start;
+    # another project on the same video writing the same file is refused too.
+    if ve.running_task(job_id):
+        raise HTTPException(status_code=409, detail="A video with subtitles is already being made for this project.")
+    if ve.running_task_for_target(target):
+        raise HTTPException(status_code=409, detail=f"Another project is already writing {target.name}.")
     task = ve.start_embed(job_id, str(video.resolve()), target, text, opts, in_app_storage=job_is_upload)
     return _embed_status(job_id, task)
 

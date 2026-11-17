@@ -28,6 +28,7 @@ from typing import Dict, List, Optional, Set
 from app.pipeline.stages.audio_stage import get_ffmpeg_bin
 from app.pipeline.stages.probe_stage import TEXT_SUBTITLE_CODECS, get_ffprobe_bin
 from app.core.ffmpeg_safety import safe_input, safe_probe_input
+from app.utils.filenames import safe_basename
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ def output_extension(video_path: str, mode: str) -> str:
 
 def output_name(video_name: str, lang_code: Optional[str], mode: str, ext: str) -> str:
     """Movie.mkv -> Movie.he.subs.mkv (soft) / Movie.he.burned.mp4 (burn)."""
-    stem = Path(video_name).stem
+    stem = safe_basename(Path(video_name).stem, fallback="video")
     tag = "subs" if mode == "soft" else "burned"
     return f"{stem}.{lang_code}.{tag}{ext}" if lang_code else f"{stem}.{tag}{ext}"
 
@@ -346,9 +347,21 @@ async def _execute(task: EmbedTask, video_path: str, subtitle_text: str, opts: E
         task.finished_at = time.time()
 
 
+# Finished task records are kept this long (the dialog polls them), then forgotten
+_FINISHED_TTL_SECONDS = 6 * 3600
+
+
+def _prune_finished(now: Optional[float] = None) -> None:
+    now = time.time() if now is None else now
+    for task_id, t in list(_tasks.items()):
+        if t.state != "running" and t.finished_at is not None and now - t.finished_at > _FINISHED_TTL_SECONDS:
+            _tasks.pop(task_id, None)
+
+
 def start_embed(job_id: str, video_path: str, target: Path, subtitle_text: str, opts: EmbedOptions,
                 in_app_storage: bool) -> EmbedTask:
     """Start the background run (needs a running event loop) and return its task record."""
+    _prune_finished()
     task = EmbedTask(id=uuid.uuid4().hex[:12], job_id=job_id, mode=opts.mode, target=target,
                      in_app_storage=in_app_storage)
     _tasks[task.id] = task
@@ -367,6 +380,20 @@ def latest_task(job_id: str) -> Optional[EmbedTask]:
 
 def running_task(job_id: str) -> Optional[EmbedTask]:
     return next((t for t in _tasks.values() if t.job_id == job_id and t.state == "running"), None)
+
+
+def running_task_for_target(target: Path) -> Optional[EmbedTask]:
+    """A running task (of any project) that writes this same file: both would use one temp file."""
+    key = _path_key(target)
+    return next((t for t in _tasks.values() if t.state == "running" and _path_key(t.target) == key), None)
+
+
+def _path_key(path: Path) -> str:
+    try:
+        resolved = str(Path(path).resolve())
+    except OSError:
+        resolved = str(path)
+    return os.path.normcase(resolved)
 
 
 def cancel_task(task: EmbedTask) -> None:

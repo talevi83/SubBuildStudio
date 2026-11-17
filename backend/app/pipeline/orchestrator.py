@@ -167,6 +167,7 @@ class PipelineOrchestrator:
         self.cancel_flag = threading.Event()
         self._gpu_held = False
         self._segments_saved = False
+        self._history_recorded = False
         self._prior_usage_dict: Optional[Dict[str, Any]] = None
         self._ctx: Optional[PipelineContext] = None
         active_pipelines[job_id] = self
@@ -430,6 +431,11 @@ class PipelineOrchestrator:
     def _save_segments(self, segments: List[Dict[str, Any]]) -> None:
         """Replace the job's segments and write the new DB ids back into the dicts."""
         with Session(engine) as session:
+            if session.get(Job, self.job_id) is None:
+                # Deleted while running (cancelling only raises a flag): writing now would leave
+                # subtitle rows that belong to no project.
+                self.cancel_flag.set()
+                raise PipelineCancelled()
             for seg in session.exec(select(SubtitleSegmentRecord).where(SubtitleSegmentRecord.job_id == self.job_id)).all():
                 session.delete(seg)
             records = []
@@ -458,23 +464,44 @@ class PipelineOrchestrator:
         if not batch:
             return
         by_index = {b.index: b for b in batch}
+        # Rows are found by their database id, not their number: the numbers change when lines are
+        # retimed, inserted or deleted, and a batch must never land on a different line.
+        known_ids = {
+            s["index"]: s.get("id")
+            for s in (self._ctx.refined_segments if self._ctx is not None else []) or []
+            if s.get("index") in by_index
+        }
+        id_to_index = {seg_id: idx for idx, seg_id in known_ids.items() if seg_id is not None}
+        without_id = [idx for idx in by_index if known_ids.get(idx) is None]
         with Session(engine) as session:
-            rows = session.exec(
-                select(SubtitleSegmentRecord).where(
-                    SubtitleSegmentRecord.job_id == self.job_id,
-                    SubtitleSegmentRecord.index.in_(list(by_index.keys())),
-                )
-            ).all()
             from app.utils.srt_formatter import calculate_cps
 
-            for row in rows:
-                b = by_index[row.index]
+            matched = []
+            if id_to_index:
+                for row in session.exec(
+                    select(SubtitleSegmentRecord).where(
+                        SubtitleSegmentRecord.job_id == self.job_id,
+                        SubtitleSegmentRecord.id.in_(list(id_to_index.keys())),
+                    )
+                ).all():
+                    matched.append((id_to_index[row.id], row))
+            if without_id:
+                for row in session.exec(
+                    select(SubtitleSegmentRecord).where(
+                        SubtitleSegmentRecord.job_id == self.job_id,
+                        SubtitleSegmentRecord.index.in_(without_id),
+                    )
+                ).all():
+                    matched.append((row.index, row))
+
+            for idx, row in matched:
+                b = by_index[idx]
                 row.translated_text = b.translated_text
                 row.translation_failed = b.translation_failed
                 row.cps = calculate_cps(b.translated_text or row.original_text, max(0.1, row.end_time - row.start_time))
                 session.add(row)
             session.commit()
-            ids = {row.index: row.id for row in rows}
+            ids = {idx: row.id for idx, row in matched}
         await self._broadcast({
             "event": "BATCH_TRANSLATED",
             "segments_batch": [
@@ -614,6 +641,9 @@ class PipelineOrchestrator:
                 )
             warning = " ".join(warnings) or None
             self._persist_usage(ctx)
+            # Before the final status: from that moment the job may be started again, and the
+            # history step (a thread hop) must not leave a window where it still counts as running
+            await self._record_history()
             self._update_job(
                 status=JobStatus.COMPLETED,
                 current_stage="COMPLETED",
@@ -622,7 +652,6 @@ class PipelineOrchestrator:
                 eta_seconds=None,
                 warning_message=warning,
             )
-            self._record_history()  # before the event, so the studio's history refresh sees the step
             await self._broadcast({
                 "event": "JOB_COMPLETED",
                 "stage": "COMPLETED",
@@ -632,8 +661,10 @@ class PipelineOrchestrator:
             })
 
         except PipelineCancelled:
+            await self._record_history()  # a cancelled run still keeps what it translated
             await self._handle_cancellation()
         except Exception as exc:
+            await self._record_history()  # so does a failed one
             if self.cancel_flag.is_set():
                 await self._handle_cancellation()
             else:
@@ -645,14 +676,19 @@ class PipelineOrchestrator:
             await self._stop_frame_sampling(ctx)
             await self._stop_burned_detection(ctx)
             self._persist_usage(ctx)
-            self._record_history()  # a failed / cancelled run still keeps what it translated
+            await self._record_history()  # no-op unless an unexpected exit skipped it above
             log_job_summary(self.job_id, ctx)
             active_pipelines.pop(self.job_id, None)
 
-    def _record_history(self) -> None:
-        """A (re)translation of a finished project becomes one step of its edit history."""
-        if self.mode != "translate":
+    async def _record_history(self) -> None:
+        """A (re)translation of a finished project becomes one step of its edit history.
+
+        record_job takes the job's threading.Lock, which a request (e.g. a long /retime) may hold:
+        it runs in a worker thread so the event loop never waits on it.
+        """
+        if self.mode != "translate" or self._history_recorded:
             return
+        self._history_recorded = True
         from app.core.edit_history import record_job
 
         if self.only_indices:
@@ -660,7 +696,7 @@ class PipelineOrchestrator:
         else:
             details = {"scope": "failed" if self.only_failed else "all"}
         try:
-            record_job(self.job_id, engine, "translate", details)
+            await asyncio.to_thread(record_job, self.job_id, engine, "translate", details)
         except Exception as e:  # history must never break the pipeline
             logger.warning(f"Could not record edit history for {self.job_id}: {e}")
 

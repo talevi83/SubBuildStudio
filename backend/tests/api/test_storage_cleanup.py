@@ -70,12 +70,27 @@ def test_report_and_clean_file_categories(store):
 def test_unreferenced_app_uploads_only(store):
     kept = _write(store / "uploads" / "1a2b3c4d_kept.mkv", 70)
     orphan = _write(store / "uploads" / "5e6f7a8b_orphan.mkv", 90)
+    hour_ago = time.time() - 3600
+    os.utime(orphan, (hour_ago, hour_ago))
     manual = _write(store / "uploads" / "my_own_file.mkv", 60)   # not made by the app
     _job(video=str(kept), is_upload=True)
     with TestClient(app) as client:
         assert _report(client)["uploads"]["bytes"] == 90
         client.post("/api/storage/clean", json={"categories": ["uploads"]})
     assert kept.exists() and manual.exists() and not orphan.exists()
+
+
+def test_fresh_upload_without_a_job_yet_is_kept(store, monkeypatch):
+    """Uploaded a minute ago, its job not started yet: cleaning must not pull it away."""
+    from app.core import storage_cleanup as sc
+
+    fresh = _write(store / "uploads" / "9a8b7c6d_just_dropped.mkv", 40)
+    old = _write(store / "uploads" / "0a1b2c3d_forgotten.mkv", 30)
+    monkeypatch.setattr(sc, "_arrived_at", lambda p: time.time() - (10 if p == fresh else 7200))
+    with TestClient(app) as client:
+        assert _report(client)["uploads"]["bytes"] == 30
+        client.post("/api/storage/clean", json={"categories": ["uploads"]})
+    assert fresh.exists() and not old.exists()
 
 
 def test_old_jobs_removed_with_their_upload_but_not_user_videos(store):
