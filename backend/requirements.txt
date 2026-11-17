@@ -5,7 +5,7 @@ faster-whisper>=1.2.1,<2
 google-genai>=3.3.0,<4
 pydantic-settings>=2.16.3,<3
 python-multipart>=0.0.33
-pytest>=8.3.0
+pytest>=9.2.0
 pytest-asyncio>=1.5.0
 httpx>=0.28.1
 # 13.0.0 fixes CVE-2026-112900 and the TIFF/JPEG memory-safety bugs (needs Python 3.11+)
