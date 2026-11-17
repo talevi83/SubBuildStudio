@@ -86,7 +86,7 @@
     - **Local frame pre-filtering:** Pillow-based edge detection and 64-bit difference hashing (`dHash`) filter out blank/textless frames and merge consecutive identical title cards before calling Gemini Vision, saving ~75–80% of Vision image tokens.
     - **GPU VRAM unloading:** Unloads Faster-Whisper from GPU memory right after transcription completes so 8GB GPUs have free VRAM for local LLMs or system tasks.
     - **Zero-config local gender pre-tagging (Ollama):** Auto-detects local Ollama (e.g. `qwen2.5:7b`), pre-tags ambiguous pronoun lines (`you`, `I am`) with `[Speaker: M/F, To: M/F]` hints locally for Hebrew/Arabic translation, cutting cloud token overhead. Silently skips with zero delay if Ollama is not installed.
-    - **One-click Ollama setup:** Settings screen includes live Ollama status, one-click automatic installation / daemon startup / model pull (`POST /api/settings/ollama/setup`), and instructions + download links for advanced users.
+    - **One-click Ollama setup:** Settings screen includes live Ollama status, a link to the official Ollama download (the app never downloads and runs an installer itself), one-click daemon startup / model pull once Ollama is installed (`POST /api/settings/ollama/setup`), and instructions for advanced users.
 
 11. **📊 Live & Post-Run Token & Local AI Savings Summary:**
     - Live monitoring bar in the studio and final run summary shows:
@@ -131,7 +131,7 @@ Open **Settings** (bottom of the sidebar):
   - Pre-filters sampled frames locally using Pillow edge detection and 64-bit dHash perceptual hashing, filtering out ~75–80% of textless frames before calling Gemini Vision.
   - Automatically unloads Faster-Whisper from GPU memory right after transcription to free VRAM for local models.
   - Automatically pre-tags ambiguous pronouns (`you`, `I am`) using a local Ollama model (e.g. `qwen2.5:7b`), eliminating cloud token overhead for gender disambiguation.
-  - Settings screen features a live Ollama service & model status monitor, a one-click automated setup button (`POST /api/settings/ollama/setup` to install/start/pull), and direct manual links for advanced users.
+  - Settings screen features a live Ollama service & model status monitor, a download link to the official installer, a one-click button that starts Ollama and pulls the model (`POST /api/settings/ollama/setup`), and direct manual links for advanced users.
 - **Live & Post-Run Token & Local AI Savings Breakdown**:
   - Live studio monitor bar and final run summary display per-model Gemini token usage (input, output, thinking), Ollama local queries handled, and total frames/tokens saved by local pre-filtering.
 
@@ -184,7 +184,8 @@ SubBuild Studio/
 │   │   │   └── context.py                     # Job context passed between stages
 │   │   ├── providers/          # faster-whisper transcription; Gemini (+ Flex wrapper) and Noop translation
 │   │   └── utils/              # SRT/VTT formatter, subtitle file parser, RTL fixer, speaker split/SDH cleaner, languages, text rules
-│   └── tests/                  # pytest suites
+│   ├── pytest.ini              # Pytest markers (unit, api, pipeline, ffmpeg, security, smoke, regression)
+│   └── tests/                  # Layered pytest suites (unit/, api/, pipeline/, security/, fixtures/)
 ├── frontend/                   # React 19 + TypeScript + Vite 8 + Tailwind 4 + Zustand
 │   ├── vite.config.ts          # Build & dev proxy to the backend
 │   └── src/
@@ -193,7 +194,11 @@ SubBuild Studio/
 │       ├── services/api.ts     # Typed REST client
 │       ├── hooks/              # Cost estimate
 │       ├── i18n/               # English & Hebrew UI strings
-│       └── types/              # TypeScript data contracts
+│       ├── types/              # TypeScript data contracts
+│       └── __tests__/          # Vitest + React Testing Library component/store tests
+├── qa-automation-java/         # Java 21 + JUnit 5 + Selenium 4 POM + RestAssured black-box E2E & API suite
+├── docs/
+│   └── QA_TEST_PLAN.md         # Multi-layer QA architecture, test pyramid & execution guide
 └── storage/                    # Created at runtime, git-ignored
     ├── subbuild.db             # Projects and subtitles (SQLite)
     ├── settings.json           # Choices from the Settings screen
@@ -287,6 +292,7 @@ Optional settings (defaults shown):
 | `SYNC_DETECT_BURNED_IN` / `SYNC_BURNED_IN_FPS` | `true` / `5` | *Sync my subtitles*: look for subtitles burned into the picture (local), and how many frames per second to check. |
 | `ALLOWED_HOSTS` | `["localhost","127.0.0.1","[::1]"]` | Host names the server answers to (blocks DNS-rebinding attacks). Add your PC's LAN name/IP if you set `HOST=0.0.0.0`. |
 | `CORS_ORIGINS` | `["http://localhost:5173", …:8000]` | Browser origins allowed to use the API. State-changing requests and WebSockets from any other website are rejected (CSRF guard); the studio's own page is always allowed. |
+| `SUBBUILD_TOKEN` | random per launch | Session token. Every `/api` and `/ws` request needs it (as an HttpOnly cookie set by opening `/?token=<token>` once, or an `X-SubBuild-Token` header), so other programs, other Windows accounts and the LAN can't use the API. The desktop app and `run.bat` / `run.sh` set it for you; set it yourself only for development. |
 
 An API key saved in Settings (or the first-run dialog) is stored in `.env`. A key typed on the Ingest screen for a single job is used for that run only and is never written to disk.
 
@@ -329,7 +335,7 @@ Run the backend server, which automatically serves the compiled frontend on port
 backend\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 Use `--host 0.0.0.0` only for LAN access, together with `ALLOWED_HOSTS` (see the table above).
-Open your browser at: **`http://localhost:8000`**
+The server prints the link to open, **`http://localhost:8000/?token=…`**: the token is new on every start, and the page refuses to load without it (see `SUBBUILD_TOKEN` above).
 
 ### Option C: Development Mode (Hot Reloading)
 **Terminal 1 — Backend:**
@@ -343,7 +349,8 @@ cd backend
 cd frontend
 npm run dev
 ```
-Open your browser at: **`http://localhost:5173`** (API requests & WebSockets proxy to `:8000`).
+With `--reload` the token would change on every reload, so give the backend a fixed one for development (PowerShell: `$env:SUBBUILD_TOKEN = "dev-token"`, bash: `export SUBBUILD_TOKEN=dev-token`) before starting it.
+Then open **`http://localhost:5173/api/session?token=dev-token`** once: it signs the browser in and lands on the studio (API requests & WebSockets proxy to `:8000`).
 
 ---
 
@@ -376,42 +383,66 @@ To change the icon, edit and run `packaging/make_icon.py` (it writes `packaging/
 
 ---
 
-## 🧪 Running Unit Tests
+## 🧪 QA Architecture & Running Tests
 
-Run the backend test suite with `pytest`:
-```bash
-# From project root:
-$env:PYTHONPATH = "backend"
-backend\.venv\Scripts\pytest.exe backend/tests
+SubBuild Studio uses a **Multi-Layer Hybrid Test Pyramid** combining fast in-process Python/React tests with an external black-box Java automation framework. See **[docs/QA_TEST_PLAN.md](docs/QA_TEST_PLAN.md)** for the full architecture, risk matrix, and reporting guide.
+
+```mermaid
+flowchart TD
+    E2E["Black-Box UI E2E — Java 21 + Selenium 4 POM (16 tests)"]
+    BAPI["Black-Box API & Security — Java 21 + RestAssured (31 tests)"]
+    FE["Frontend UI & Store — Vitest + RTL (9 tests) + oxlint + tsc"]
+    PIPE["Backend API, Pipeline & Security — Pytest (336 tests)"]
+    UNIT["Pure Unit & Domain Rules — Pytest (96 tests)"]
+    E2E --> BAPI --> FE --> PIPE --> UNIT
 ```
 
-The test suite covers:
-- **`test_rtl_fixer.py`**: Hebrew RTL detection, BiDi mark wrapping, dialogue hyphen normalization, and idempotency.
-- **`test_srt_formatter.py`**: Timecode calculations, balanced line splitting at 42 chars, SRT/VTT formatting.
-- **`test_refine_stage.py`** / **`test_refine_quality.py`**: re-joining cut sentences, fragments, no cross-speaker merges, clause-aware splitting, reading-speed timing, gaps, loop removal.
-- **`test_whisper_provider.py`**: threading, real cancellation and batched→sequential fallback (fake model).
-- **`test_gemini_provider.py`**: partial retries, failure flags, invalid-key abort, glossary (fake API client).
-- **`test_improvements.py`**: retranslate flow, uploads, range requests, host check, bulk edits, DB migration.
-- **`test_settings_pricing.py`**: promo price dates, cost math incl. thinking and long-context tiers, thinking config per model family, Settings API validation, estimates, and exact usage accumulating across runs.
-- **`test_foreign_speech.py`**: foreign/untranscribed span detection, tight "cores" vs OCR windows, merge rules, Whisper analysis with a fake model, and an end-to-end run where burned-in subtitles replace garbled text and the scan extends past the window.
-- **`test_comms_onscreen.py`**: timeline merging, OCR de-duplication, frame selection, bracketed RTL titles, forced-track parsing, comms filter/decoding/classification, and two real-ffmpeg end-to-end runs (forced track; frame scan with a fake Gemini Vision).
-- **`test_pipeline_e2e.py`**: the whole pipeline on a generated clip through real ffmpeg (Whisper faked).
-- **`test_api_and_pipeline.py`** / **`test_stage1_fixes.py`**: system info, persistence, exports, recovery, cancel guards.
-- **`test_flex.py`**: Flex pricing, settings, the retry/fallback wrapper and how callers use it.
-- **`test_gap_recovery.py`**: recovering speech the voice detector skipped, hallucination checks, shouted commands.
-- **`test_word_snap.py`**: word starts inside a pause moved to the speech onset.
-- **`test_retime.py`**: "Re-check timing" rules and drag-to-move rows.
-- **`test_row_translate.py`**: re-translating selected rows with speaker/addressee hints, editing the glossary.
-- **`test_glossary_profiles.py`**: series glossary profiles saved, reused and extended across episodes.
-- **`test_speaker_detect.py`**: frame selection and gender detection from video.
-- **`test_qa.py`**: quality check (untranslated words, glossary mismatches, pronoun/verb agreement).
-- **`test_storage_cleanup.py`**: storage report and cleanup never touch active jobs, your own videos or the live server log.
-- **`test_logs.py`**: per-job log capture (including worker threads) and log export.
-- **`test_desktop_launcher.py`**: the exe's window mode with pywebview faked: loading screen, persistent storage and downloads, closing with running projects, tray quit/restart, second launch, fullscreen bridge.
-- **`test_insert_segment.py`**: adding a line by hand: renumbering, overlap rejection naming the line, invalid times and text, clamping to the video end, running jobs.
-- **`test_sync.py`**: subtitle file parsing (formats, encodings, positions, language), alignment (delay, frame rate, cuts, wrong anchors), word and Gemini matching (fake client), burned-in detection, and sync jobs end to end through the API (same language, Hebrew with Gemini, burned-in subtitles).
-- **`test_embedded_subtitles.py`**: embedded text subtitle stream discovery, direct FFmpeg extraction vs. Whisper fallback when `use_embedded_subtitles` is toggled off.
-- **`test_missing_speech.py`**: supplementing embedded or synced subtitles with Whisper speech detection (`supplement_with_whisper`), coverage overlap checks, and hallucination filtering.
-- **`test_speaker_split.py`**: multi-speaker turn splitting (`- ...`), hearing-impaired SDH speaker tag and sound-effect removal (`remove_sdh_speakers`), while preserving `[ON_SCREEN]` titles.
-- **`test_credits_detect.py`**: smart end-credits detection via container chapters, dark visual credit-roll thumbnails, hip-hop/song lyric filtering, and preservation of mid/post-credits dialogue scenes and narrative stinger cards.
-- **`test_finops_optimizations.py`**: local frame edge & dHash pre-filtering (including steady-state retention), dynamic glossary pruning, and local Ollama gender pre-tagging.
+### 1. Backend Pytest Suite (`backend/tests/`, 432 tests)
+Tests are organized into explicit architectural layers with shared builders/fakes (`tests/fixtures/`) and registered markers in `backend/pytest.ini`:
+
+```powershell
+cd backend
+
+# Run the full suite (432 tests)
+.\.venv\Scripts\python.exe -m pytest -q
+
+# Run by architectural layer or execution tag
+.\.venv\Scripts\python.exe -m pytest -m unit -q        # 96 pure unit tests (no DB / no FFmpeg)
+.\.venv\Scripts\python.exe -m pytest -m api -q         # 103 FastAPI + SQLite integration tests
+.\.venv\Scripts\python.exe -m pytest -m pipeline -q    # 170 pipeline, AI provider fake & FFmpeg tests
+.\.venv\Scripts\python.exe -m pytest -m security -q    # 63 auth, CSRF, headers, FFmpeg SSRF & upload tests
+.\.venv\Scripts\python.exe -m pytest -m smoke -q       # 53 critical-path smoke tests
+```
+
+- **`tests/unit/`**: RTL BiDi wrapping, SRT/VTT timecode & formatting, segmentation/orphan-word healing, smart end-credits detection, speaker turn splitting & SDH cleanup, missing speech supplementation, QA rules, DB migration, and desktop launcher/shortcut logic.
+- **`tests/api/`**: System info, job persistence & slim listings, live WebSocket segment streaming, segment CRUD, undo/redo edit history, upload SHA-256 deduplication & Range parsing, row-scoped retranslation, glossary profiles, speaker detection, retime/reorder, settings/pricing, save-next-to-video, and storage cleanup.
+- **`tests/pipeline/`**: End-to-end pipeline on generated FFmpeg clips, Whisper threading/OOM fallback/cancellation, Gemini batching/retries/Flex tier fallback, FinOps dHash pre-filtering & Ollama local pre-tagging, OCR & tactical comms boost, foreign speech, sync alignment/burned-in detection, gap recovery, word snapping, video embedding, and per-job logging.
+- **`tests/security/`**: Per-launch session token (`X-SubBuild-Token` & HttpOnly cookie) and UNC path refusal, CSRF Origin/Fetch-Metadata & Host validation, anti-framing/CSP security headers, FFmpeg `-protocol_whitelist file` & AST audit, and `Content-Length` upload limits.
+
+### 2. Frontend Checks & Tests (`frontend/`, 9 tests)
+```powershell
+cd frontend
+npm run lint    # oxlint
+npm test        # Vitest + React Testing Library (9 tests)
+npm run build   # tsc -b + vitest run + vite build
+```
+
+### 3. Java Black-Box E2E & API Suite (`qa-automation-java/`, 47 tests)
+Built with **Maven + Java 21 + JUnit 5 + Selenium WebDriver 4 (POM) + RestAssured + ExtentReports**. Starts an isolated temporary backend server automatically (never touching `backend/storage` or `backend/.env`), seeds data via RestAssured for fast UI tests, captures screenshots on failure, and writes an interactive HTML report to `qa-automation-java/target/reports/subbuild-qa-report.html`.
+
+```powershell
+cd qa-automation-java
+
+# Full regression suite (47 tests: 31 API/Security + 16 Selenium UI, headless Chrome)
+mvn clean test -Pregression
+
+# Fast critical-path smoke suite (9 tests)
+mvn test -Psmoke
+
+# Direct JUnit 5 @Tag filtering also works
+mvn test -Dgroups=regression   # 47 regression tests (includes the 9 smoke tests)
+mvn test -Dgroups=smoke        # 9 critical-path smoke tests
+
+# Optional browser / target overrides
+mvn test -Dsubbuild.browser=edge -Dsubbuild.headless=false
+```

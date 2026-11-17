@@ -11,9 +11,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.core.config import settings
+from app.core.auth import SESSION_TOKEN, TOKEN_GENERATED, SessionTokenGuard, bootstrap_path
 from app.core.request_guard import CrossSiteRequestGuard
+from app.core.security_headers import SecurityHeadersMiddleware
+from app.core.upload_limits import UploadLimitGuard
 from app.core.database import init_db
-from app.core.housekeeping import cleanup_storage
+from app.core.housekeeping import cleanup_storage, uploads_dir
 from app.core.ws_manager import ws_manager
 from app.api import routes_system, routes_media, routes_jobs, routes_export, routes_settings, routes_glossary, routes_storage, routes_history
 from app.pipeline.orchestrator import recover_interrupted_jobs
@@ -37,6 +40,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # never block startup on housekeeping
         logger.warning(f"Storage cleanup failed: {e}")
     logger.info(f"SubBuild Studio backend initialized. Gemini configured: {settings.is_gemini_configured}")
+    if TOKEN_GENERATED:
+        # Started without the launcher / run scripts (e.g. plain uvicorn): this link is the only
+        # way into the studio. Printed, not logged, so the token never lands in server.log.
+        host = "localhost" if settings.host in ("0.0.0.0", "127.0.0.1", "::", "[::]") else settings.host
+        print(f"\n  Open SubBuild Studio: http://{host}:{settings.port}{bootstrap_path(SESSION_TOKEN)}\n", flush=True)
     yield
     logger.info("Shutting down SubBuild Studio backend...")
     from app.core.video_embed import shutdown_embeds
@@ -50,9 +58,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Innermost: oversized uploads are refused from their Content-Length, before Starlette spools
+# the body to disk (only reached by requests that passed the session and CSRF checks).
+app.add_middleware(UploadLimitGuard, uploads_dir=uploads_dir)
+
 # CSRF: CORS can't stop a website from *sending* simple POSTs / opening a WebSocket to
 # 127.0.0.1, so state-changing requests from untrusted origins are rejected here.
-# Added first = innermost, so CORS preflights and the Host check run before it.
+# Added early = inner, so CORS preflights and the Host check run before it.
 app.add_middleware(CrossSiteRequestGuard, allowed_origins=settings.cors_origins)
 
 # CORS: only allow the local frontend origins (Vite dev server + same-origin prod build).
@@ -66,9 +78,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Session token: being able to reach 127.0.0.1:8000 is not enough to use the API (any local
+# program, another Windows account, or the LAN with HOST=0.0.0.0). Runs right after the Host check.
+app.add_middleware(SessionTokenGuard)
+
 # Reject requests whose Host header isn't this machine. Without this, a malicious website
 # could use DNS rebinding to reach the API (which can read any local file) via the browser.
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+
+# Outermost: every response, including 400/401/403 refusals, gets the anti-framing and
+# no-sniff headers (clickjacking protection for the browser mode).
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Register API routers
 app.include_router(routes_system.router)

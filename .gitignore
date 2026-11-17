@@ -51,4 +51,8 @@ launcher.log
 
 # App window profile (run.bat / exe)
 webview/
+backend/.session-token
+
+# Java QA Automation build & report outputs
+qa-automation-java/target/
 window.json

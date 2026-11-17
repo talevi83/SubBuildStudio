@@ -21,6 +21,7 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 
 from app.pipeline.context import PipelineCancelled
+from app.core.ffmpeg_safety import safe_input
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +144,7 @@ async def detect_burned_subtitles(video_path: str, cancel_flag=None, fps: float 
     from app.pipeline.stages.audio_stage import get_ffmpeg_bin
 
     command = [
-        get_ffmpeg_bin(), "-v", "error", "-nostats", "-hwaccel", "auto", "-i", str(Path(video_path).resolve()),
+        get_ffmpeg_bin(), "-v", "error", "-nostats", "-hwaccel", "auto", *safe_input(str(Path(video_path).resolve())),
         "-map", "0:v:0", "-an", "-sn",
         "-vf", f"fps={fps},crop=iw:ih*0.30:0:ih*0.70,scale={WIDTH}:{HEIGHT},format=gray",
         "-f", "rawvideo", "pipe:1",

@@ -4,8 +4,12 @@ import { hashBlobSha256 } from '../utils/sha256';
 
 const API_BASE = '/api';
 
+const NOT_SIGNED_IN =
+  'This window is not signed in to the running SubBuild Studio. Open the studio from its desktop shortcut or tray icon, or use the link printed in the console that started it.';
+
 async function request<T>(url: string, init?: RequestInit, fallbackError = 'Request failed'): Promise<T> {
   const res = await fetch(url, init);
+  if (res.status === 401) throw new Error(NOT_SIGNED_IN);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: fallbackError }));
     throw new Error(typeof err.detail === 'string' ? err.detail : fallbackError);

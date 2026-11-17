@@ -43,6 +43,27 @@ def validate_media_path(path: Path) -> None:
         )
 
 
+_LOCAL_DEVICE_PREFIX = re.compile(r"^[\\/]{2}[?.][\\/][A-Za-z]:[\\/]")  # \\?\C:\... long paths
+
+
+def reject_network_path(raw: str) -> None:
+    """Refuse UNC / network paths (\\\\server\\share, //server/share) before anything touches them.
+
+    On Windows even checking such a path opens an SMB connection to that server, which can hand
+    the user's NTLM hash to whoever runs it. Videos are opened from local or mapped drives.
+    """
+    value = (raw or "").strip()
+    if value[:2] in ("\\\\", "//", "\\/", "/\\") and not _LOCAL_DEVICE_PREFIX.match(value):
+        raise HTTPException(
+            status_code=400,
+            detail="Network paths (\\\\server\\share) are not supported. Copy the file or map the share to a drive letter.",
+        )
+
+
+class _DiskFull(Exception):
+    pass
+
+
 def _sanitize_filename(raw: Optional[str]) -> str:
     """Reduce a client-supplied filename to a safe basename (no directories, no reserved chars)."""
     # Normalize both separator styles before taking the basename
@@ -135,10 +156,12 @@ async def _probe_upload(path: Path) -> ProbeResponse:
 async def probe_local_path(req: ProbePathRequest):
     """Inspect and probe media streams of a file directly from the local filesystem."""
     file_path = req.file_path.strip().strip('"').strip("'")
+    reject_network_path(file_path)
     path = Path(file_path)
+    # Extension first: a non-media path is refused without revealing whether it exists
+    validate_media_path(path)
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"File not found on local disk: {file_path}")
-    validate_media_path(path)
 
     try:
         res = await probe_media_file(str(path))
@@ -195,6 +218,7 @@ async def upload_media_file(file: UploadFile = File(...)):
 
     def _save() -> str:
         digest = hashlib.sha256()
+        written = 0
         with open(upload_dest, "wb") as buffer:
             while True:
                 chunk = file.file.read(_HASH_CHUNK_BYTES)
@@ -202,10 +226,20 @@ async def upload_media_file(file: UploadFile = File(...)):
                     break
                 digest.update(chunk)
                 buffer.write(chunk)
+                written += len(chunk)
+                if written % (64 * _HASH_CHUNK_BYTES) < len(chunk):  # every ~256 MB
+                    try:
+                        if shutil.disk_usage(target_dir).free < 100 * 1024 * 1024:
+                            raise _DiskFull()
+                    except OSError:
+                        pass
         return digest.hexdigest()
 
     try:
         sha256 = await asyncio.to_thread(_save)
+    except _DiskFull:
+        upload_dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=507, detail="The disk filled up during the upload")
     except Exception as exc:
         upload_dest.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Failed to save uploaded file: {exc}")

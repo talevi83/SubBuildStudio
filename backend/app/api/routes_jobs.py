@@ -14,7 +14,7 @@ from app.core.database import get_session
 from app.core.glossary_profiles import clean_name, save_profile
 from app.core.housekeeping import delete_upload_if_unused, is_in_uploads
 from app.core.user_settings import load_settings
-from app.api.routes_media import validate_media_path
+from app.api.routes_media import reject_network_path, validate_media_path
 from app.models.db_models import Job, JobStatus, SubtitleSegmentRecord
 from app.models.schemas import (
     AudioStreamInfo,
@@ -205,10 +205,12 @@ def _get_job_or_404(session: Session, job_id: str) -> Job:
 @router.post("", response_model=JobResponse)
 async def create_job(req: JobCreate, session: Session = Depends(get_session)):
     """Create a new subtitling job and start the processing pipeline in the background."""
-    path = Path(req.video_path.strip().strip('"').strip("'"))
+    raw_path = req.video_path.strip().strip('"').strip("'")
+    reject_network_path(raw_path)
+    path = Path(raw_path)
+    validate_media_path(path)  # before is_file(): a non-media path is refused without revealing whether it exists
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"Target video file not found: {req.video_path}")
-    validate_media_path(path)
 
     job_id = f"job_{uuid.uuid4().hex[:10]}"
     resolved = path.resolve()

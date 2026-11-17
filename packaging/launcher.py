@@ -22,6 +22,7 @@ import json
 import logging
 import multiprocessing
 import os
+import secrets
 import shutil
 import socket
 import subprocess
@@ -43,6 +44,12 @@ ACTIVE_STATUSES = {"QUEUED", "PROBING", "EXTRACTING_AUDIO", "TRANSCRIBING",
 WINDOW_SIZE = (1440, 900)
 MIN_WINDOW_SIZE = (1024, 640)
 IDYES, IDNO = 6, 7
+
+# The running server's session token (app.core.auth): sent by the launcher's own API calls and
+# put in the address the window / browser opens. Saved in the data folder so a second launch can
+# talk to the copy that is already running.
+SESSION_TOKEN: Optional[str] = None
+TOKEN_FILE_NAME = ".session-token"
 
 # Window mode: brings the window to the front. A second launch of the exe calls it through the
 # local server (POST /api/desktop/show) instead of starting another copy.
@@ -179,6 +186,8 @@ _no_proxy = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 def get_json(url: str, timeout: float = 2.0, post: bool = False):
     req = urllib.request.Request(url, data=b"" if post else None, method="POST" if post else "GET")
+    if SESSION_TOKEN:
+        req.add_header("X-SubBuild-Token", SESSION_TOKEN)
     with _no_proxy.open(req, timeout=timeout) as response:
         return json.loads(response.read())
 
@@ -197,6 +206,30 @@ def show_running_window(url: str) -> bool:
         return bool(get_json(url + "/api/desktop/show", timeout=3, post=True).get("shown"))
     except Exception:
         return False
+
+
+def studio_url(url: str) -> str:
+    """The address that opens the studio and signs the window / browser in to this session."""
+    return f"{url}/?token={SESSION_TOKEN}" if SESSION_TOKEN else url
+
+
+def read_saved_token(home: Path) -> Optional[str]:
+    try:
+        return (home / TOKEN_FILE_NAME).read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def new_session_token(home: Path) -> str:
+    """A fresh token for the server this launch starts (read by app.core.auth at import)."""
+    token = secrets.token_urlsafe(32)
+    os.environ["SUBBUILD_TOKEN"] = token
+    try:
+        # The data folder is the user's own (%LOCALAPPDATA%), like the .env with the API key
+        (home / TOKEN_FILE_NAME).write_text(token, encoding="utf-8")
+    except OSError:
+        pass
+    return token
 
 
 def port_busy(port: int) -> bool:
@@ -306,7 +339,7 @@ def make_tray(url: str, home: Path, env_file: Path, open_label: str, on_open: Ca
 
     items = [pystray.MenuItem(open_label, lambda: on_open(), default=True)]
     if with_browser_item:
-        items.append(pystray.MenuItem("Open in browser", lambda: webbrowser.open(url)))
+        items.append(pystray.MenuItem("Open in browser", lambda: webbrowser.open(studio_url(url))))
     items += [
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Open data folder", lambda: open_path(home)),
@@ -338,7 +371,7 @@ def run_tray(server: ServerThread, url: str, home: Path, env_file: Path, open_br
         spawn_again(["--browser", "--no-browser"])
         icon.stop()
 
-    icon = make_tray(url, home, env_file, "Open SubBuild Studio", lambda: webbrowser.open(url),
+    icon = make_tray(url, home, env_file, "Open SubBuild Studio", lambda: webbrowser.open(studio_url(url)),
                      quit_app, restart, with_browser_item=False)
 
     def setup(icon) -> None:  # type: ignore[no-untyped-def]
@@ -346,7 +379,7 @@ def run_tray(server: ServerThread, url: str, home: Path, env_file: Path, open_br
         if server.wait_ready():
             icon.title = f"{APP_NAME} - {url}"
             if open_browser:
-                webbrowser.open(url)
+                webbrowser.open(studio_url(url))
             else:
                 try:
                     icon.notify("Running in the tray. Click the icon to open the studio.", APP_NAME)
@@ -602,7 +635,7 @@ def run_window(server: ServerThread, url: str, home: Path, env_file: Path) -> No
     def boot() -> None:
         if server.wait_ready():
             icon.title = f"{APP_NAME} - {url}"
-            window.load_url(url)
+            window.load_url(studio_url(url))
         else:
             message(failure_text(server, home))
             state["leaving"] = True
@@ -628,6 +661,7 @@ def run_window(server: ServerThread, url: str, home: Path, env_file: Path) -> No
 # ----------------------------------------------------------------------------- main
 
 def main() -> int:
+    global SESSION_TOKEN
     multiprocessing.freeze_support()
     parser = argparse.ArgumentParser(prog=APP_NAME)
     parser.add_argument("--browser", action="store_true", help="open the studio in the browser, not in its own window")
@@ -648,6 +682,7 @@ def main() -> int:
     browse_host = "localhost" if host in ("0.0.0.0", "127.0.0.1", "::", "[::]") else host
     url = f"http://{browse_host}:{port}"
 
+    SESSION_TOKEN = read_saved_token(home)  # the token of a copy that may already be running
     if is_our_server(url):  # already running: bring up its window
         if show_running_window(url):
             return 0
@@ -666,13 +701,14 @@ def main() -> int:
                 "No - do nothing", "yesno")
             if answer != IDYES:
                 return 0
-        webbrowser.open(url)
+        webbrowser.open(studio_url(url))
         return 0
     if port_busy(port):
         message(f"Port {port} is already used by another program.\n"
                 f"Close it, or set PORT=... in:\n{env_file}")
         return 1
 
+    SESSION_TOKEN = new_session_token(home)  # before the server thread imports the app
     server = ServerThread(host, port)
     server.start()
 
@@ -680,9 +716,9 @@ def main() -> int:
         if not server.wait_ready():
             message(failure_text(server, home))
             exit_now(1)
-        print(f"{APP_NAME} is running at {url} (data: {home}). Press Ctrl+C to stop.", flush=True)
+        print(f"{APP_NAME} is running at {studio_url(url)} (data: {home}). Press Ctrl+C to stop.", flush=True)
         if not args.no_browser:
-            webbrowser.open(url)
+            webbrowser.open(studio_url(url))
         try:
             while server.is_alive():
                 server.join(0.5)
