@@ -1,4 +1,4 @@
-fastapi>=0.115.0,<1
+fastapi>=0.163.0,<1
 uvicorn[standard]>=0.32.0
 sqlmodel>=0.0.22,<0.1
 faster-whisper>=1.2.1,<2
