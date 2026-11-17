@@ -452,7 +452,8 @@ mvn test -Pregression "-Dsubbuild.headless=true"
 ```
 
 ### 4. CI/CD Pipeline (`Jenkinsfile` on Raspberry Pi 4 ARM64 & GitHub Actions)
-- **Self-Hosted Jenkins CI (Raspberry Pi 4 8GB, Linux `aarch64`):** Configured via [`Jenkinsfile`](Jenkinsfile) and triggered automatically on pushes to `main` via **GitHub Webhook** (plus manual parameterized runs with `JAVA_PROFILE=regression|smoke`, `RUN_BACKEND_PYTEST`, and `RUN_FRONTEND_CHECKS`).
+- **Branch flow (`staging` → `main`):** feature/fix branches are merged into **`staging`** first; every push there runs the full automation (GitHub Actions + Jenkins: pytest, frontend checks, Java RestAssured/Selenium). Only a green `staging` is merged into `main` (open the PR `staging` → `main`).
+- **Self-Hosted Jenkins CI (Raspberry Pi 4 8GB, Linux `aarch64`):** Configured via [`Jenkinsfile`](Jenkinsfile) and triggered automatically on pushes to `staging` and `main` via **GitHub Webhook** (plus manual parameterized runs with `JAVA_PROFILE=regression|smoke`, `RUN_BACKEND_PYTEST`, and `RUN_FRONTEND_CHECKS`).
   1. **Preflight Check:** Verifies `python3`, `node`, `npm`, `java`, `mvn`, `ffmpeg`, and `chromium`/`chromedriver`.
   2. **Backend Pytest (`432` tests):** Provisions `backend/.venv` (filtering out `nvidia-*` CUDA packages, cached by `requirements.txt` SHA-256) and emits JUnit XML.
   3. **Frontend Checks & Build (`9` Vitest + Vite `dist`):** Runs `npm ci`, `oxlint`, `tsc -b`, `vitest run`, and `vite build` so `backend/app/main.py` serves `frontend/dist` for Selenium tests.
