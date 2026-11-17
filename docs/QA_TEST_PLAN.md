@@ -151,6 +151,11 @@ mvn test -Dgroups=smoke        # 9 critical-path smoke tests
 # Run headed on Microsoft Edge or against an existing server
 mvn test -Dsubbuild.browser=edge -Dsubbuild.headless=false
 mvn test -Dsubbuild.baseUrl=http://127.0.0.1:8000 -Dsubbuild.token=your-token
+
+# Cross-platform / ARM64 explicit overrides (auto-detected on Linux aarch64 by default)
+mvn test -Pregression -Dsubbuild.headless=true -Dsubbuild.timeoutSeconds=30 \
+  -Dsubbuild.chromeBinary=/usr/bin/chromium -Dsubbuild.chromeDriver=/usr/bin/chromedriver \
+  -Dsubbuild.python=/path/to/backend/.venv/bin/python3
 ```
 
 ### Visual Test Reports
@@ -174,3 +179,33 @@ After running `mvn test`, open the generated ExtentReports dashboard:
 | Split/Merge/Shift, Glossary Profiles & Bilingual Export | `test_retime.py`, `test_glossary_profiles.py`, `test_srt_formatter.py` | `RegressionApiTest#splitMergeAndShiftSegmentsWithHistory`, `#glossaryUpdateAndSeriesProfilePersistence`, `#bilingualAndRtlExportContract`, `RegressionUiTest#glossaryDialogSavesCharacterAndProfile`, `#shiftTimePopoverPersistsTimingChange` | `regression` |
 | Negative Input Validation, Overlap Guard & Soft Video Embed | `test_insert_segment.py`, `test_embed_video.py`, `test_upload_limits.py` | `RegressionApiTest#negativeSegmentValidationAndOverlaps`, `#negativeJobAndSettingsErrors`, `#negativeNonMediaPathsRejected`, `#jobLogExportAndSoftEmbed`, `RegressionUiTest#invalidMediaPathShowsErrorBanner`, `#insertDialogBlocksOverlappingSegment` | `regression` |
 | Sync SRT Upload & Help FAQ Flow | `test_sync.py`, `test_logs.py` | `RegressionUiTest#syncModeSubtitleUploadAndEncodingSelector`, `#helpScreenAndFaqAccordion` | `regression` |
+
+---
+
+## 7. CI/CD Architecture (Jenkins on Raspberry Pi 4 ARM64 & GitHub Actions)
+
+SubBuild Studio runs automated verification across both cloud CI (**GitHub Actions**) and a self-hosted **Jenkins** controller running on a **Raspberry Pi 4 (8GB, Debian `aarch64`)** triggered automatically by **GitHub Webhooks** on pushes to `main`.
+
+```mermaid
+flowchart LR
+    GH["GitHub Push (main)"] -->|Webhook| J["Jenkins Pipeline (Jenkinsfile)"]
+    J --> S1["1. Preflight Check<br/>Java 21, Maven, Python3, Node 22, FFmpeg, Chromium"]
+    S1 --> S2["2. Backend Pytest (432)<br/>.venv + CUDA-free reqs + JUnit XML"]
+    S2 --> S3["3. Frontend Build (9 Vitest)<br/>oxlint + tsc + vite build -> frontend/dist"]
+    S3 --> S4["4. Java QA (47 Regression / 9 Smoke)<br/>ARM64 Chromium Headless + RestAssured"]
+    S4 --> R["Unified JUnit Results + ExtentReports HTML & Screenshots"]
+```
+
+### Key Cross-Platform Engineering Decisions
+1. **ARM64 Chromium & ChromeDriver Resolution ([`TestConfig.java`](../qa-automation-java/src/main/java/com/subbuild/qa/config/TestConfig.java), [`DriverFactory.java`](../qa-automation-java/src/main/java/com/subbuild/qa/driver/DriverFactory.java)):**
+   - Google Chrome for Testing does not publish official Linux `aarch64` builds, so Selenium Manager cannot auto-download Chrome/ChromeDriver on Raspberry Pi.
+   - `TestConfig` preserves normal Selenium Manager resolution on Windows and `x86_64` GitHub Actions (`ubuntu-latest` with `/usr/bin/google-chrome`), while automatically detecting OS-packaged `/usr/bin/chromium` (`chromium-browser`) and `/usr/bin/chromedriver` on Linux `aarch64` or Chromium-only containers.
+2. **Automatic Headless Detection:**
+   - Unless `-Dsubbuild.headless=false` is explicitly provided, `TestConfig.headless()` automatically enables `--headless=new` whenever `CI`, `JENKINS_URL`, or `GITHUB_ACTIONS` is set, or on display-less Linux (`DISPLAY` and `WAYLAND_DISPLAY` unset), preventing browser startup failures in headless CI while keeping local headed debugging effortless.
+3. **Frontend Build Ordering before Selenium UI Tests:**
+   - [`backend/app/main.py`](../backend/app/main.py) mounts the React SPA from `frontend/dist` only when that directory exists. [`Jenkinsfile`](../Jenkinsfile) runs `npm ci`, `npm run lint`, and `npm run build` (`tsc -b && vitest run && vite build`) **before** launching the Java suite so Selenium exercises the real production bundle served by FastAPI.
+4. **Raspberry Pi / Debian Agent Prerequisites:**
+   - OS packages (`aarch64` 64-bit Linux): `openjdk-21-jdk`, `maven`, `python3`, `python3-venv`, `ffmpeg`, `chromium`, `chromium-driver`, and **Node.js 22**.
+   - [`Jenkinsfile`](../Jenkinsfile) filters out `^nvidia-` packages into `.venv/requirements-ci.txt` (keyed by SHA-256 of `backend/requirements.txt`) so both ARM64 Raspberry Pi and CPU-only `x86_64` agents avoid downloading CUDA runtimes and reuse the cached virtualenv across builds.
+5. **Artifact & Test Reporting in Jenkins:**
+   - `post { always }` publishes combined JUnit results from `backend/.pytest_cache/pytest-junit.xml` and `qa-automation-java/target/surefire-reports/*.xml`, and archives `qa-automation-java/target/reports/**` (`subbuild-qa-report.html` + failure screenshots).

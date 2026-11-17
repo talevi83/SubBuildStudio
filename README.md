@@ -197,6 +197,7 @@ SubBuild Studio/
 │       ├── types/              # TypeScript data contracts
 │       └── __tests__/          # Vitest + React Testing Library component/store tests
 ├── qa-automation-java/         # Java 21 + JUnit 5 + Selenium 4 POM + RestAssured black-box E2E & API suite
+├── Jenkinsfile                 # Parameterized Jenkins CI/CD pipeline (Pytest + Frontend Build + Java E2E/Regression)
 ├── docs/
 │   └── QA_TEST_PLAN.md         # Multi-layer QA architecture, test pyramid & execution guide
 └── storage/                    # Created at runtime, git-ignored
@@ -443,6 +444,16 @@ mvn test -Psmoke
 mvn test -Dgroups=regression   # 47 regression tests (includes the 9 smoke tests)
 mvn test -Dgroups=smoke        # 9 critical-path smoke tests
 
-# Optional browser / target overrides
+# Optional browser / driver / headless overrides
 mvn test -Dsubbuild.browser=edge -Dsubbuild.headless=false
+mvn test -Pregression "-Dsubbuild.headless=true"
 ```
+
+### 4. CI/CD Pipeline (`Jenkinsfile` on Raspberry Pi 4 ARM64 & GitHub Actions)
+- **Self-Hosted Jenkins CI (Raspberry Pi 4 8GB, Linux `aarch64`):** Configured via [`Jenkinsfile`](Jenkinsfile) and triggered automatically on pushes to `main` via **GitHub Webhook** (plus manual parameterized runs with `JAVA_PROFILE=regression|smoke`, `RUN_BACKEND_PYTEST`, and `RUN_FRONTEND_CHECKS`).
+  1. **Preflight Check:** Verifies `python3`, `node`, `npm`, `java`, `mvn`, `ffmpeg`, and `chromium`/`chromedriver`.
+  2. **Backend Pytest (`432` tests):** Provisions `backend/.venv` (filtering out `nvidia-*` CUDA packages, cached by `requirements.txt` SHA-256) and emits JUnit XML.
+  3. **Frontend Checks & Build (`9` Vitest + Vite `dist`):** Runs `npm ci`, `oxlint`, `tsc -b`, `vitest run`, and `vite build` so `backend/app/main.py` serves `frontend/dist` for Selenium tests.
+  4. **Java Black-Box QA (`47` regression / `9` smoke):** Executes `mvn -B clean test -P"${JAVA_PROFILE}" -Dsubbuild.headless=true -Dsubbuild.timeoutSeconds=30`, then publishes unified JUnit results and archives `ExtentReports` HTML + failure screenshots.
+- **Cross-Platform Driver & Headless Resolution (`TestConfig` + `DriverFactory`):** Auto-enables `--headless=new` in `CI`/`JENKINS_URL`/`GITHUB_ACTIONS` or display-less Linux environments; preserves Selenium Manager on Windows and GitHub Actions (`ubuntu-latest` `x86_64`), and automatically falls back to OS-packaged `/usr/bin/chromium` + `/usr/bin/chromedriver` on Linux ARM64 (`aarch64`).
+- **GitHub Actions ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)):** Runs backend `pytest` + `pip-audit` and frontend `npm audit` + `oxlint` + `vitest` + `vite build` on `ubuntu-latest` (`main`, PRs, and weekly schedule).
