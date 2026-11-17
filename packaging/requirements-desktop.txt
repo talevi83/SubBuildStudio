@@ -2,4 +2,4 @@
 pystray>=0.19.5
 pillow>=13.0
 # Edge WebView2 on Windows (pulls in pythonnet there)
-pywebview>=6.2
+pywebview>=6.2.1
