@@ -7,7 +7,7 @@ pydantic-settings>=2.16.3,<3
 python-multipart>=0.0.33
 pytest>=8.3.0
 pytest-asyncio>=0.24.0
-httpx>=0.27.0
+httpx>=0.28.1
 # 13.0.0 fixes CVE-2026-112900 and the TIFF/JPEG memory-safety bugs (needs Python 3.11+)
 Pillow>=13.0.0
 # CUDA runtime libraries for GPU transcription (loaded by app/core/hardware.py on Windows/Linux x86_64)
