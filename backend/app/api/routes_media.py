@@ -15,10 +15,10 @@ from app.core.housekeeping import uploads_dir
 from app.models.db_models import Job
 from app.models.schemas import ParsedSubtitlesResponse, ProbeResponse, ProbePathRequest
 from app.pipeline.stages.probe_stage import probe_media_file
+from app.utils.filenames import safe_basename
 
 router = APIRouter(prefix="/api/media", tags=["Media"])
 
-_UNSAFE_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _UPLOAD_PREFIX = re.compile(r"^[0-9a-f]{8}_")
 _HASH_CHUNK_BYTES = 4 * 1024 * 1024
 
@@ -66,10 +66,7 @@ class _DiskFull(Exception):
 
 def _sanitize_filename(raw: Optional[str]) -> str:
     """Reduce a client-supplied filename to a safe basename (no directories, no reserved chars)."""
-    # Normalize both separator styles before taking the basename
-    name = (raw or "").replace("\\", "/").split("/")[-1]
-    name = _UNSAFE_FILENAME_CHARS.sub("_", name).strip(" .")
-    return name[:200] or "upload.bin"
+    return safe_basename(raw, fallback="upload.bin")
 
 
 def _display_name(stored_name: str) -> str:
@@ -80,6 +77,14 @@ def _display_name(stored_name: str) -> str:
 # Hashes of uploaded files, keyed by path and checked against size + mtime, so a candidate is
 # read from disk once rather than on every drop of a file with the same name and size.
 _hash_cache: Dict[str, Tuple[int, int, str]] = {}
+_HASH_CACHE_MAX = 512
+
+
+def _cache_hash(key: str, value: Tuple[int, int, str]) -> None:
+    _hash_cache.pop(key, None)
+    _hash_cache[key] = value
+    while len(_hash_cache) > _HASH_CACHE_MAX:  # oldest first (dicts keep insertion order)
+        _hash_cache.pop(next(iter(_hash_cache)))
 
 
 def _file_sha256(path: Path) -> str:
@@ -97,7 +102,7 @@ def _file_sha256(path: Path) -> str:
                 break
             digest.update(chunk)
     value = digest.hexdigest()
-    _hash_cache[key] = (st.st_size, st.st_mtime_ns, value)
+    _cache_hash(key, (st.st_size, st.st_mtime_ns, value))
     return value
 
 
@@ -105,7 +110,7 @@ def _remember_sha256(path: Path, sha256: str) -> None:
     """Record the hash computed while a file was being written, so it is never read again for it."""
     try:
         st = path.stat()
-        _hash_cache[str(path.resolve())] = (st.st_size, st.st_mtime_ns, sha256)
+        _cache_hash(str(path.resolve()), (st.st_size, st.st_mtime_ns, sha256))
     except OSError:
         pass
 
@@ -289,6 +294,8 @@ def _stream_file_range(file_path: Path, start: int, end: int, chunk_size: int = 
 
 def _parse_range(range_header: str, file_size: int) -> Optional[tuple]:
     """Parse a single byte range ("bytes=a-b", "bytes=a-", "bytes=-n"); None if unsatisfiable."""
+    if file_size <= 0:
+        return None  # no byte of an empty file can be served (RFC 7233: 416)
     match = re.fullmatch(r"\s*bytes=(\d*)-(\d*)\s*(?:,.*)?", range_header)
     if not match or (match.group(1) == "" and match.group(2) == ""):
         return None

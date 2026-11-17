@@ -3,7 +3,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.core.config import settings
 from app.core.model_catalog import catalog_payload, estimate_job_cost
@@ -20,11 +20,13 @@ class SettingsResponse(BaseModel):
 
 
 class EstimateRequest(BaseModel):
-    duration_seconds: float
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    duration_seconds: float = Field(ge=0, le=7 * 24 * 3600)
     enable_translation: bool = True
     detect_onscreen_text: bool = False
     has_forced_track: bool = False
-    sync_lines: int = 0          # "sync existing subtitles": lines in the file (Gemini line matching)
+    sync_lines: int = Field(default=0, ge=0)  # "sync existing subtitles": lines in the file (Gemini line matching)
     cost_saver_mode: Optional[bool] = None
     # Preview unsaved choices from the Settings screen
     settings: Optional[AppSettings] = None

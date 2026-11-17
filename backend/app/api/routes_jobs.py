@@ -1,6 +1,8 @@
+import asyncio
 import functools
 import json
 import logging
+import re
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -40,6 +42,7 @@ from app.models.schemas import (
     SubtitleSegmentSchema,
 )
 from app.pipeline.orchestrator import PipelineOrchestrator, spawn_background, ACTIVE_STATUSES, _now
+from app.utils.filenames import safe_basename
 from app.utils.rtl_fixer import strip_directional_marks
 from app.utils.srt_formatter import calculate_cps
 
@@ -195,6 +198,21 @@ def _job_to_response(
     )
 
 
+def _require_not_running(job: Job, what: str) -> None:
+    """Edits while a run changes the subtitles would be overwritten (or shift the rows it writes to)."""
+    if job.status in ACTIVE_STATUSES or PipelineOrchestrator.is_running(job.id):
+        raise HTTPException(status_code=409, detail=f"The job is still running; {what} when it has finished")
+
+
+def _renumber(session: Session, job_id: str) -> None:
+    rows = session.exec(select(SubtitleSegmentRecord).where(SubtitleSegmentRecord.job_id == job_id)).all()
+    rows.sort(key=lambda r: (r.start_time, r.end_time, r.id or 0))
+    for position, row in enumerate(rows, start=1):
+        if row.index != position:
+            row.index = position
+            session.add(row)
+
+
 def _get_job_or_404(session: Session, job_id: str) -> Job:
     job = session.get(Job, job_id)
     if not job:
@@ -202,9 +220,29 @@ def _get_job_or_404(session: Session, job_id: str) -> Job:
     return job
 
 
+_GEMINI_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+
+
+def _validate_whisper_model(name: str) -> None:
+    """Only the offered Whisper models: faster-whisper would otherwise download any HuggingFace
+    repo, or load any local folder, named here."""
+    if name not in settings.whisper_models and name != settings.whisper_default_model:
+        raise HTTPException(status_code=400, detail=f"Unknown Whisper model: {name}")
+
+
+def _validate_gemini_model(name: str) -> None:
+    """Custom Gemini model IDs are allowed (power users), but only as a plain model ID: the SDK puts
+    it into the request URL, so "../" or "?" must never get there."""
+    if not _GEMINI_MODEL_ID.match(name.replace("models/", "", 1)):
+        raise HTTPException(status_code=400, detail=f"Invalid Gemini model name: {name}")
+
+
 @router.post("", response_model=JobResponse)
 async def create_job(req: JobCreate, session: Session = Depends(get_session)):
     """Create a new subtitling job and start the processing pipeline in the background."""
+    _validate_whisper_model(req.whisper_model)
+    if req.gemini_model:
+        _validate_gemini_model(req.gemini_model)
     raw_path = req.video_path.strip().strip('"').strip("'")
     reject_network_path(raw_path)
     path = Path(raw_path)
@@ -222,7 +260,8 @@ async def create_job(req: JobCreate, session: Session = Depends(get_session)):
     new_job = Job(
         id=job_id,
         video_path=str(resolved),
-        file_name=req.file_name or path.name,
+        # Display name from the browser; it also names exported files, so keep it a plain file name
+        file_name=safe_basename(req.file_name, fallback=path.name) if req.file_name else path.name,
         file_size=path.stat().st_size,
         is_upload=is_in_uploads(str(resolved)),
         status=JobStatus.IDLE,
@@ -398,51 +437,61 @@ def build_row_hint(req: RetranslateRequest) -> Optional[str]:
 @router.post("/{job_id}/translate", response_model=JobResponse)
 async def retranslate_job(job_id: str, req: RetranslateRequest, session: Session = Depends(get_session)):
     """(Re)translate an existing job's subtitles — all of them, or only the failed ones."""
-    job = _get_job_or_404(session, job_id)
-    if PipelineOrchestrator.is_running(job_id) or job.status in ACTIVE_STATUSES:
-        raise HTTPException(status_code=409, detail="This job is still running")
-    if not job.segments:
-        raise HTTPException(status_code=400, detail="This job has no subtitles to translate")
-
     thinking = _valid_thinking(req.thinking)  # reject a bad value before touching the job
     row_hint = build_row_hint(req)
-    only_indices: Optional[List[int]] = None
-    if req.segment_ids:
-        wanted = set(req.segment_ids)
-        only_indices = sorted(s.index for s in job.segments if s.id in wanted)
-        if not only_indices:
-            raise HTTPException(status_code=404, detail="None of the selected subtitles were found")
-    if row_hint and req.remember_hint and only_indices:
-        note = f"[#{only_indices[0]}-#{only_indices[-1]}] {row_hint}"
-        job.context_notes = f"{job.context_notes.strip()}\n{note}" if job.context_notes else note
 
-    target_changed = req.target_language and req.target_language != job.target_language
-    if req.target_language:
-        job.target_language = req.target_language
-    # A row-scoped run keeps the project's model unless the user picked another one
-    default_model = job.gemini_model if only_indices and job.gemini_model else load_settings().translation.model
-    job.gemini_model = req.gemini_model or default_model
-    if req.context_notes is not None:
-        job.context_notes = req.context_notes
-    with history.job_lock(job_id):
-        history.begin(session, job)  # the run records its result as one step when it ends
-    job.enable_translation = True
-    job.status = JobStatus.TRANSLATING
-    job.current_stage = "TRANSLATING"
-    job.progress_percent = 0.0
-    job.error_message = None
-    job.warning_message = None
-    job.updated_at = _now()
-    session.add(job)
-    session.commit()
-    session.refresh(job)
+    def prepare() -> Tuple[Job, Optional[List[int]], bool]:
+        # Runs in a worker thread: job_lock is a threading.Lock that a long /retime may hold, and
+        # waiting for it on the event loop would freeze every other request and WebSocket.
+        # The checks run under the same lock, so two concurrent requests can't both start a run.
+        with history.job_lock(job_id):
+            job = _get_job_or_404(session, job_id)
+            if PipelineOrchestrator.is_running(job_id) or job.status in ACTIVE_STATUSES:
+                raise HTTPException(status_code=409, detail="This job is still running")
+            if not job.segments:
+                raise HTTPException(status_code=400, detail="This job has no subtitles to translate")
+            if req.gemini_model:
+                _validate_gemini_model(req.gemini_model)
+
+            only_indices: Optional[List[int]] = None
+            if req.segment_ids:
+                wanted = set(req.segment_ids)
+                only_indices = sorted(s.index for s in job.segments if s.id in wanted)
+                if not only_indices:
+                    raise HTTPException(status_code=404, detail="None of the selected subtitles were found")
+            if row_hint and req.remember_hint and only_indices:
+                note = f"[#{only_indices[0]}-#{only_indices[-1]}] {row_hint}"
+                job.context_notes = f"{job.context_notes.strip()}\n{note}" if job.context_notes else note
+
+            target_changed = bool(req.target_language and req.target_language != job.target_language)
+            if req.target_language:
+                job.target_language = req.target_language
+            # A row-scoped run keeps the project's model unless the user picked another one
+            default_model = job.gemini_model if only_indices and job.gemini_model else load_settings().translation.model
+            job.gemini_model = req.gemini_model or default_model
+            if req.context_notes is not None:
+                job.context_notes = req.context_notes
+            history.begin(session, job)  # the run records its result as one step when it ends
+            job.enable_translation = True
+            job.status = JobStatus.TRANSLATING
+            job.current_stage = "TRANSLATING"
+            job.progress_percent = 0.0
+            job.error_message = None
+            job.warning_message = None
+            job.updated_at = _now()
+            session.add(job)
+            session.commit()
+            session.refresh(job)
+            return job, only_indices, target_changed
+
+    job, only_indices, target_changed = await asyncio.to_thread(prepare)
 
     orchestrator = PipelineOrchestrator(
         job_id=job_id,
         mode="translate",
         api_key=req.gemini_api_key_override,
         only_failed=req.only_failed and not target_changed,
-        rebuild_glossary=req.rebuild_glossary or bool(target_changed),
+        rebuild_glossary=req.rebuild_glossary or target_changed,
         only_indices=only_indices,
         hint=row_hint,
         thinking=thinking,
@@ -492,7 +541,6 @@ def update_glossary(job_id: str, body: GlossaryUpdate, session: Session = Depend
 @router.post("/{job_id}/detect-speakers", response_model=DetectSpeakersResponse)
 async def detect_speakers_from_video(job_id: str, req: DetectSpeakersRequest, session: Session = Depends(get_session)):
     """Ask Gemini, from a few video frames plus the dialogue, who speaks to whom (for he/she 'you')."""
-    import asyncio
     from google import genai
 
     from app.pipeline import speaker_detect as sd
@@ -504,6 +552,8 @@ async def detect_speakers_from_video(job_id: str, req: DetectSpeakersRequest, se
     rows = [r for r in _ordered_rows(session, job_id) if r.id in wanted]
     if not rows:
         raise HTTPException(status_code=400, detail="No matching rows")
+    if req.gemini_model:
+        _validate_gemini_model(req.gemini_model)
     key = (req.gemini_api_key_override or "").strip() or settings.gemini_api_key
     if not key or key == "your_gemini_api_key_here":
         raise HTTPException(status_code=400, detail="GEMINI_API_KEY is missing")
@@ -655,6 +705,9 @@ def update_segment(
     if not seg or seg.job_id != job_id:
         raise HTTPException(status_code=404, detail="Subtitle segment not found")
     job = _get_job_or_404(session, job_id)
+    if patch.start_time is not None or patch.end_time is not None:
+        # Text can be fixed while a translation runs; times can't (they reorder the lines)
+        _require_not_running(job, "change times")
     recording = _history_begin(session, job)
 
     _apply_segment_patch(seg, patch)
@@ -702,10 +755,17 @@ def update_segments_bulk(
     if missing:
         raise HTTPException(status_code=404, detail=f"Subtitle segments not found: {missing}")
     job = _get_job_or_404(session, job_id)
+    times_changed = any(p.start_time is not None or p.end_time is not None for p in patches)
+    if times_changed:
+        _require_not_running(job, "change times")
     recording = _history_begin(session, job)
     for p in patches:
         _apply_segment_patch(rows[p.id], p)
         session.add(rows[p.id])
+    if times_changed:
+        # Times changed: keep the line numbers in time order, like a single edit does
+        session.flush()
+        _renumber(session, job_id)
     session.commit()
     _history_record(session, job, recording, "bulk_edit", {"count": len(patches)})
     return [_segment_to_schema(session.get(SubtitleSegmentRecord, i)) for i in ids]
@@ -928,8 +988,16 @@ def merge_segments(job_id: str, req: MergeSegmentsRequest, session: Session = De
     first.end_time = max(t.end_time for t in targets)
     first.original_text = "\n".join(t.original_text.strip() for t in targets if (t.original_text or "").strip())
     tr_parts = [t.translated_text.strip() for t in targets if (t.translated_text or "").strip()]
+    # A line with text but no translation would vanish from the merged translation: keep the merged
+    # line flagged so "Retranslate failed" picks it up instead of it looking fully translated.
+    untranslated_part = any(
+        (t.original_text or "").strip() and not (t.translated_text or "").strip() for t in targets
+    )
     first.translated_text = "\n".join(tr_parts) if tr_parts else None
-    first.translation_failed = any(t.translation_failed for t in targets) and not bool(first.translated_text)
+    if tr_parts:
+        first.translation_failed = untranslated_part
+    else:
+        first.translation_failed = any(t.translation_failed for t in targets)
     _refresh_cps(first)
     session.add(first)
 
@@ -1078,6 +1146,7 @@ def move_segment(job_id: str, req: MoveSegmentRequest, session: Session = Depend
     then only the affected section is re-checked for timing against the audio.
     """
     job = _get_job_or_404(session, job_id)
+    _require_not_running(job, "move lines")
     rows = _ordered_rows(session, job_id)
     old = next((i for i, r in enumerate(rows) if r.id == req.segment_id), None)
     if old is None:

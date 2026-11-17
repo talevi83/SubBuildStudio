@@ -225,8 +225,11 @@ def new_session_token(home: Path) -> str:
     token = secrets.token_urlsafe(32)
     os.environ["SUBBUILD_TOKEN"] = token
     try:
-        # The data folder is the user's own (%LOCALAPPDATA%), like the .env with the API key
-        (home / TOKEN_FILE_NAME).write_text(token, encoding="utf-8")
+        # Readable by this Windows account only: the portable data folder (or one on another
+        # drive) may otherwise be readable by every user of the PC, who could then use the API.
+        from app.core.private_files import write_private_text
+
+        write_private_text(home / TOKEN_FILE_NAME, token)
     except OSError:
         pass
     return token

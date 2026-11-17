@@ -9,6 +9,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from app.core.config import settings
+from app.utils.filenames import defuse_reserved
 
 _MAX_NAME = 80
 
@@ -19,7 +20,8 @@ def _dir():
 
 def clean_name(name: Optional[str]) -> str:
     """A profile name as the user typed it, trimmed and without path characters."""
-    return re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", (name or "")).strip()[:_MAX_NAME]
+    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", (name or "")).strip()[:_MAX_NAME].rstrip(" .")
+    return defuse_reserved(cleaned)  # "NUL" would name the NUL device on Windows
 
 
 def _path(name: str):

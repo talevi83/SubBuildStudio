@@ -1,9 +1,10 @@
 import os
 import sys
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional
+
+from app.core.executables import find_executable
 
 
 def setup_cuda_dll_paths() -> None:
@@ -84,11 +85,12 @@ def get_hardware_info() -> Dict[str, Any]:
     vram_total_mb: Optional[int] = None
     vram_free_mb: Optional[int] = None
 
-    if shutil.which("nvidia-smi"):
+    nvidia_smi = find_executable("nvidia-smi")
+    if nvidia_smi:
         try:
             res = subprocess.run(
                 [
-                    "nvidia-smi",
+                    nvidia_smi,
                     "--query-gpu=name,memory.total,memory.free",
                     "--format=csv,noheader,nounits",
                 ],

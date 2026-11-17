@@ -71,11 +71,17 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
     cors_origins: List[str] = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
         "http://localhost:8000",
         "http://127.0.0.1:8000",
     ]
+    # Vite dev server origins, trusted only with SUBBUILD_DEV=1. Always trusting them would hand the
+    # whole API (with the session cookie, which is not tied to a port) to any program on port 5173 -
+    # e.g. some other project's dev server.
+    dev_origins: List[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+    subbuild_dev: bool = False
     # Host headers accepted by the server (blocks DNS-rebinding attacks from websites).
     # Add your machine's LAN name/IP here if you set HOST=0.0.0.0.
     allowed_hosts: List[str] = ["localhost", "127.0.0.1", "[::1]"]
@@ -85,6 +91,12 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @property
+    def trusted_origins(self) -> List[str]:
+        """Origins allowed by CORS and the CSRF guard (dev server origins only in dev mode)."""
+        extra = self.dev_origins if self.subbuild_dev else []
+        return list(dict.fromkeys([*self.cors_origins, *extra]))
 
     @property
     def is_gemini_configured(self) -> bool:
@@ -121,6 +133,8 @@ def save_gemini_api_key(api_key: str) -> None:
     """Persist GEMINI_API_KEY to the .env file and update the in-memory settings."""
     import re
 
+    from app.core.private_files import write_private_text
+
     clean = re.sub(r"[\r\n\x00]+", "", api_key or "").strip()
     settings.gemini_api_key = clean or None
 
@@ -140,9 +154,9 @@ def save_gemini_api_key(api_key: str) -> None:
         else:
             sep = "" if content.endswith("\n") or not content else "\n"
             updated = f"{content}{sep}{line}\n"
-        target.write_text(updated, encoding="utf-8")
+        write_private_text(target, updated)
     else:
-        target.write_text(f"{line}\n", encoding="utf-8")
+        write_private_text(target, f"{line}\n")
 
 
 settings = Settings()

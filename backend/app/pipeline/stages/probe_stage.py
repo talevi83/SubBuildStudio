@@ -1,12 +1,12 @@
 import asyncio
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import Optional
 from app.models.schemas import ProbeResponse, AudioStreamInfo, SubtitleStreamInfo
 from app.pipeline.context import PipelineContext
 from app.pipeline.stages.base import PipelineStage, ProgressCallback
+from app.core.executables import executable
 from app.core.ffmpeg_safety import safe_probe_input
 
 
@@ -16,7 +16,7 @@ TEXT_SUBTITLE_CODECS = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "te
 
 def get_ffprobe_bin() -> str:
     """Return path to ffprobe executable."""
-    return shutil.which("ffprobe") or "ffprobe"
+    return executable("ffprobe")
 
 
 async def probe_media_file(file_path: str) -> ProbeResponse:
