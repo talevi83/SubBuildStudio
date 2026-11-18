@@ -20,6 +20,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{(_TEST_STORAGE / 'test.db').as_posix()
 os.environ["ALLOWED_HOSTS"] = '["localhost", "127.0.0.1", "testserver"]'
 # Never call the real Gemini API from tests
 os.environ["GEMINI_API_KEY"] = ""
+os.environ.setdefault("SUBBUILD_OFFLINE_DISCOVERY", "1")
 # Fixed session token (app.core.auth reads it at import); every TestClient sends it by default.
 # Tests that check the guard itself pass headers={"X-SubBuild-Token": ""} to go without it.
 TEST_SESSION_TOKEN = "test-session-token"

@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { useJobStore } from '../../store/useJobStore';
+import { useSettingsStore } from '../../store/useSettingsStore';
+import { inferProviderFromModelId, isAnyAiReady, isProviderReady } from '../settings/labels';
 import { api } from '../../services/api';
 import { isActiveStatus, isRtlLanguage } from '../../types';
 import type { OnscreenPosition } from '../../types';
@@ -22,6 +24,7 @@ export const ExportToolbar: React.FC = () => {
   const setProblemFilter = useJobStore((s) => s.setProblemFilter);
   const setSelectedSegmentIndex = useJobStore((s) => s.setSelectedSegmentIndex);
   const flushPendingEdits = useJobStore((s) => s.flushPendingEdits);
+  const appSettings = useSettingsStore((s) => s.settings);
   const [targetLanguage, setTargetLanguage] = useState<string | null>(null);
   const [glossaryOpen, setGlossaryOpen] = useState(false);
   const [embedOpen, setEmbedOpen] = useState(false);
@@ -39,7 +42,10 @@ export const ExportToolbar: React.FC = () => {
   const untranslatedCount = hasTranslation ? activeJob.segments.filter((s) => !s.translated_text).length : 0;
   const target = targetLanguage ?? activeJob.target_language;
   const isRtl = isRtlLanguage(target);
-  const canTranslate = !!systemInfo?.is_gemini_configured || !!keyOverride;
+  const activeProvider =
+    appSettings?.translation.provider || inferProviderFromModelId(activeJob.gemini_model || appSettings?.translation.model);
+  const canTranslate =
+    isProviderReady(systemInfo, activeProvider, keyOverride) || isAnyAiReady(systemInfo, keyOverride);
   const onscreenPos: OnscreenPosition = activeJob.onscreen_position || 'top_center';
 
   const downloadFile = async (url: string) => {

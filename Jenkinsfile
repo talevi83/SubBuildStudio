@@ -12,17 +12,17 @@ pipeline {
         choice(
             name: 'JAVA_PROFILE',
             choices: ['regression', 'smoke'],
-            description: 'Java QA test profile to run (regression = all 47 tests, smoke = 9 critical-path tests)'
+            description: 'Java QA test profile to run (regression = all 52 tests, smoke = 9 critical-path tests)'
         )
         booleanParam(
             name: 'RUN_BACKEND_PYTEST',
             defaultValue: true,
-            description: 'Run Python backend pytest suite (432 tests)'
+            description: 'Run Python backend pytest suite (495 tests)'
         )
         booleanParam(
             name: 'RUN_FRONTEND_CHECKS',
             defaultValue: true,
-            description: 'Run frontend lint (oxlint), typecheck (tsc), Vitest (9 tests), and Vite build'
+            description: 'Run frontend lint (oxlint), typecheck (tsc), Vitest (11 tests), and Vite build'
         )
     }
 

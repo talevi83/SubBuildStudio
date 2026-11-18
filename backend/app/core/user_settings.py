@@ -6,7 +6,7 @@ Environment variables (.env) provide the initial defaults; once saved from the U
 import json
 import logging
 import threading
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -14,22 +14,32 @@ from app.core.config import settings
 from app.core.model_catalog import (
     CATALOG, RETIRED_MODELS, TASKS, allowed_thinking, resolve_model, validate_flex, validate_thinking,
 )
+from app.core.provider_keys import ProviderName
 
 logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 
 
 class GeminiCallSettings(BaseModel):
+    provider: ProviderName = "google"
     model: str
+    key_id: Optional[str] = None
     thinking: str = "default"
-    # Flex service tier: 50% cheaper, but slower and sheddable (falls back to Standard when busy)
+    # Flex service tier (Google Gemini): 50% cheaper, slower and sheddable
     flex: bool = False
 
     @model_validator(mode="after")
     def _check_thinking(self):
-        validate_thinking(self.model, self.thinking)
-        validate_flex(self.model, self.flex)
+        if self.provider == "google":
+            validate_thinking(self.model, self.thinking)
+            validate_flex(self.model, self.flex)
+        else:
+            if self.flex:
+                raise ValueError(f"Flex service tier is only supported for Google Gemini, not '{self.provider}'")
         return self
+
+
+ModelCallSettings = GeminiCallSettings
 
 
 class AppSettings(BaseModel):
@@ -46,12 +56,13 @@ class AppSettings(BaseModel):
     @model_validator(mode="after")
     def _check_tasks(self):
         for task in TASKS:
-            model = getattr(self, task).model
-            if model in RETIRED_MODELS:
-                raise ValueError(f"{model} is no longer available; use {RETIRED_MODELS[model]}")
-            info = CATALOG.get(model)
-            if info is not None and task not in info.tasks:
-                raise ValueError(f"{info.label} is not offered for {task}")
+            call = getattr(self, task)
+            if call.provider == "google":
+                if call.model in RETIRED_MODELS:
+                    raise ValueError(f"{call.model} is no longer available; use {RETIRED_MODELS[call.model]}")
+                info = CATALOG.get(call.model)
+                if info is not None and task not in info.tasks:
+                    raise ValueError(f"{info.label} is not offered for {task}")
         return self
 
 
@@ -84,11 +95,14 @@ def _defaults() -> AppSettings:
 
 
 def _migrate(raw: dict) -> bool:
-    """Swap retired/unsuitable models in saved settings for working ones. Returns True if changed."""
+    """Swap retired/unsuitable Google models in saved settings for working ones. Returns True if changed."""
     changed = False
     for task in TASKS:
         call = raw.get(task)
         if not isinstance(call, dict):
+            continue
+        provider = (call.get("provider") or "google").strip().lower()
+        if provider != "google":
             continue
         old = call.get("model", "")
         new = resolve_model(old, task)
@@ -98,6 +112,86 @@ def _migrate(raw: dict) -> bool:
             call["thinking"] = _thinking_for(new, task)
             changed = True
     return changed
+
+
+def sync_defaults_with_discovered(catalog: Optional[list] = None) -> AppSettings:
+    """
+    When `settings.json` does not exist yet (or the active task provider has no configured key
+    while live discovery found suitable models), update defaults cleanly without overwriting
+    valid user-selected providers/models.
+    """
+    from app.core.model_discovery import get_merged_catalog, recommend_best_models_by_task
+    from app.core.provider_keys import is_provider_configured
+
+    items = catalog if catalog is not None else get_merged_catalog()
+    live_items = [m for m in items if m.get("available")]
+    if not live_items:
+        return load_settings()
+
+    recs = recommend_best_models_by_task(live_items)
+    if not recs:
+        return load_settings()
+
+    current = load_settings()
+    path = _path()
+    has_saved_file = path.exists()
+    available_pairs = {(m["provider"], m["id"]) for m in live_items}
+
+    updated_tasks = {}
+    changed = False
+    for task in TASKS:
+        cur_call = getattr(current, task)
+        same_prov_live = [
+            m for m in live_items
+            if m["provider"] == cur_call.provider and task in (m.get("tasks") or [])
+        ]
+        # Treat local Ollama as active whenever its local daemon returned live models,
+        # even if the user didn't save an explicit Ollama entry in the key vault.
+        prov_configured = is_provider_configured(cur_call.provider) or (
+            cur_call.provider == "ollama" and any(m["provider"] == "ollama" for m in live_items)
+        )
+        cur_is_available = (cur_call.provider, cur_call.model) in available_pairs
+
+        if has_saved_file:
+            # Never overwrite an explicitly saved provider (e.g. local Ollama) back to Google at startup.
+            # Only swap the model ID within the SAME provider when that provider returned live models
+            # and the saved model ID is unavailable for this task.
+            if not same_prov_live or cur_is_available:
+                continue
+            chosen = same_prov_live[0]
+            updated_tasks[task] = GeminiCallSettings(
+                provider=cur_call.provider,
+                model=chosen["id"],
+                key_id=cur_call.key_id,
+                thinking=_thinking_for(chosen["id"], task) if cur_call.provider == "google" else "default",
+                flex=False,
+            )
+            changed = True
+            continue
+
+        rec = recs.get(task)
+        if not rec:
+            continue
+        if (not prov_configured) or (same_prov_live and not cur_is_available):
+            chosen = same_prov_live[0] if (prov_configured and same_prov_live) else None
+            target_prov = chosen["provider"] if chosen else rec["provider"]
+            target_model = chosen["id"] if chosen else rec["model"]
+            if target_prov != cur_call.provider or target_model != cur_call.model:
+                updated_tasks[task] = GeminiCallSettings(
+                    provider=target_prov,
+                    model=target_model,
+                    key_id=None,
+                    thinking=_thinking_for(target_model, task) if target_prov == "google" else "default",
+                    flex=False,
+                )
+                changed = True
+
+    if not changed:
+        return current
+    new_settings = current.model_copy(update=updated_tasks)
+    if has_saved_file:
+        return save_settings(new_settings)
+    return new_settings
 
 
 def _path():

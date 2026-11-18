@@ -1,6 +1,13 @@
 import React, { useMemo, useState } from 'react';
+import { useJobStore } from '../../store/useJobStore';
 import { useSettingsStore } from '../../store/useSettingsStore';
-import { modelLabel, thinkingLabel } from '../settings/labels';
+import {
+  inferProviderFromModelId,
+  isProviderReady,
+  modelLabel,
+  providerDisplayName,
+  thinkingLabel,
+} from '../settings/labels';
 import { Loader2, Video } from 'lucide-react';
 import type { Gender, SpeakerGuess, ThinkingLevel } from '../../types';
 import { useT } from '../../i18n';
@@ -30,22 +37,46 @@ export const RowTranslateDialog: React.FC<Props> = ({ count, onCancel, onDetect,
   const t = useT();
   const catalog = useSettingsStore((s) => s.catalog);
   const appSettings = useSettingsStore((s) => s.settings);
-  const startModel = defaultModel || appSettings?.translation.model || '';
+  const systemInfo = useJobStore((s) => s.systemInfo);
+  const keyOverride = useJobStore((s) => s.pipelineConfig.gemini_api_key_override);
+
+  const availableModels = useMemo(() => {
+    const candidates = catalog.filter((m) => !m.tasks || m.tasks.includes('translation'));
+    const hasLiveModels = catalog.some((m) => m.available);
+    return candidates.filter((m) => {
+      if (hasLiveModels) {
+        return !!m.available || (m.provider === 'google' && !!keyOverride);
+      }
+      if (systemInfo) {
+        const prov = m.provider || inferProviderFromModelId(m.id) || 'google';
+        return isProviderReady(systemInfo, prov, keyOverride);
+      }
+      return true;
+    });
+  }, [catalog, systemInfo, keyOverride]);
+
+  const modelOptions = useMemo(() => availableModels.map((m) => m.id), [availableModels]);
+  const preferredStart = defaultModel || appSettings?.translation.model || '';
+  const startModel =
+    modelOptions.length === 0 || modelOptions.includes(preferredStart)
+      ? preferredStart
+      : appSettings?.translation.model && modelOptions.includes(appSettings.translation.model)
+        ? appSettings.translation.model
+        : modelOptions[0];
   const startThinking: ThinkingLevel = appSettings?.translation.thinking ?? 'default';
   const [model, setModel] = useState(startModel);
   const [thinking, setThinking] = useState<ThinkingLevel>(startThinking);
-  const modelOptions = useMemo(() => {
-    const ids = catalog.filter((m) => !m.tasks || m.tasks.includes('translation')).map((m) => m.id);
-    return model && !ids.includes(model) ? [model, ...ids] : ids;
-  }, [catalog, model]);
-  const modelInfo = catalog.find((m) => m.id === model);
+  const effectiveModel = modelOptions.length === 0 || modelOptions.includes(model) ? model : modelOptions[0];
+  const modelInfo = catalog.find((m) => m.id === effectiveModel);
+  const selectedProvider = modelInfo?.provider || inferProviderFromModelId(effectiveModel) || 'google';
   const levels: ThinkingLevel[] = modelInfo?.thinking?.length ? modelInfo.thinking : ['default'];
+  const showThinking = selectedProvider === 'google' && levels.length > 1;
   const pickModel = (id: string) => {
     setModel(id);
     const next = catalog.find((m) => m.id === id);
     if (next && !next.thinking.includes(thinking)) setThinking('default');
   };
-  const changedAi = model !== startModel || thinking !== startThinking;
+  const changedAi = effectiveModel !== preferredStart || (showThinking && thinking !== startThinking);
   const [speaker, setSpeaker] = useState<Gender | ''>('');
   const [addressee, setAddressee] = useState<Gender | ''>('');
   const [hint, setHint] = useState('');
@@ -58,7 +89,7 @@ export const RowTranslateDialog: React.FC<Props> = ({ count, onCancel, onDetect,
     setDetecting(true);
     setDetectNote(null);
     try {
-      const g = await onDetect(model, thinking);
+      const g = await onDetect(effectiveModel, showThinking ? thinking : 'default');
       if (g.speaker_gender) setSpeaker(g.speaker_gender);
       if (g.addressee_gender) setAddressee(g.addressee_gender);
       setDetectNote(
@@ -115,33 +146,42 @@ export const RowTranslateDialog: React.FC<Props> = ({ count, onCancel, onDetect,
         </div>
 
         {modelOptions.length > 0 && (
-          <div className="grid grid-cols-2 gap-3">
+          <div className={`grid gap-3 ${showThinking ? 'grid-cols-2' : 'grid-cols-1'}`}>
             <label className="space-y-1 text-[11px] text-zinc-400">
               <span>{t('table.model')}</span>
               <select
-                value={model}
+                value={effectiveModel}
                 onChange={(e) => pickModel(e.target.value)}
                 className={selectClass}
                 data-testid="row-model"
               >
-                {modelOptions.map((id) => (
-                  <option key={id} value={id}>{modelLabel(catalog, id)}</option>
-                ))}
+                {modelOptions.map((id) => {
+                  const info = catalog.find((m) => m.id === id);
+                  const prov = info?.provider || inferProviderFromModelId(id);
+                  const lbl = modelLabel(catalog, id);
+                  return (
+                    <option key={id} value={id}>
+                      {prov ? `${providerDisplayName(prov)} · ${lbl}` : lbl}
+                    </option>
+                  );
+                })}
               </select>
             </label>
-            <label className="space-y-1 text-[11px] text-zinc-400">
-              <span>{t('table.thinking')}</span>
-              <select
-                value={thinking}
-                onChange={(e) => setThinking(e.target.value as ThinkingLevel)}
-                className={selectClass}
-                data-testid="row-thinking"
-              >
-                {levels.map((lv) => (
-                  <option key={lv} value={lv}>{thinkingLabel(t, lv, modelInfo)}</option>
-                ))}
-              </select>
-            </label>
+            {showThinking && (
+              <label className="space-y-1 text-[11px] text-zinc-400">
+                <span>{t('table.thinking')}</span>
+                <select
+                  value={thinking}
+                  onChange={(e) => setThinking(e.target.value as ThinkingLevel)}
+                  className={selectClass}
+                  data-testid="row-thinking"
+                >
+                  {levels.map((lv) => (
+                    <option key={lv} value={lv}>{thinkingLabel(t, lv, modelInfo)}</option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
         )}
 
@@ -190,7 +230,14 @@ export const RowTranslateDialog: React.FC<Props> = ({ count, onCancel, onDetect,
           </button>
           <button
             onClick={() =>
-              onSubmit({ speaker: speaker || null, addressee: addressee || null, hint: hint.trim(), remember, model, thinking })
+              onSubmit({
+                speaker: speaker || null,
+                addressee: addressee || null,
+                hint: hint.trim(),
+                remember,
+                model: effectiveModel,
+                thinking: showThinking ? thinking : 'default',
+              })
             }
             disabled={!speaker && !addressee && !hint.trim() && !changedAi}
             className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white"

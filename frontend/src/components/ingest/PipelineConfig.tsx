@@ -8,7 +8,13 @@ import { useT, formatUsd } from '../../i18n';
 import type { MessageKey } from '../../i18n';
 import { useCostEstimate } from '../../hooks/useCostEstimate';
 import { SOURCE_LANGUAGES, TARGET_LANGUAGES, sameLanguage } from './languages';
-import { thinkingLabel, modelLabel } from '../settings/labels';
+import {
+  inferProviderFromModelId,
+  isProviderReady,
+  modelLabel,
+  providerKeyEnvLabel,
+  thinkingLabel,
+} from '../settings/labels';
 import { SyncOptions } from './SyncOptions';
 import { GenrePresets } from './GenrePresets';
 import { AlertTriangle, Sparkles, Settings, Mic, Key, Play, Loader2, FileText, Coins, Users } from 'lucide-react';
@@ -85,7 +91,20 @@ export const PipelineConfig: React.FC = () => {
   const t = useT();
 
   const [showKeyOverride, setShowKeyOverride] = useState(false);
-  const isGeminiReady = systemInfo?.is_gemini_configured;
+  const activeTranslationProvider =
+    appSettings?.translation.provider || inferProviderFromModelId(appSettings?.translation.model) || 'google';
+  const activeVisionProvider =
+    appSettings?.vision.provider || inferProviderFromModelId(appSettings?.vision.model) || activeTranslationProvider;
+  const isTranslationReady = isProviderReady(
+    systemInfo,
+    activeTranslationProvider,
+    pipelineConfig.gemini_api_key_override,
+  );
+  const isVisionReady = isProviderReady(
+    systemInfo,
+    activeVisionProvider,
+    pipelineConfig.gemini_api_key_override,
+  );
   const whisperModels = systemInfo?.whisper_models?.length
     ? systemInfo.whisper_models
     : ['tiny', 'base', 'small', 'medium', 'large-v3-turbo', 'large-v3'];
@@ -99,8 +118,7 @@ export const PipelineConfig: React.FC = () => {
   );
   const dialogueTrack =
     dialogueTracks.find((s) => s.index === pipelineConfig.selected_subtitle_stream) || dialogueTracks[0];
-  const translationWithoutKey =
-    pipelineConfig.enable_translation && !isGeminiReady && !pipelineConfig.gemini_api_key_override;
+  const translationWithoutKey = pipelineConfig.enable_translation && !isTranslationReady;
 
   // Syncing a file in another language than the speech asks Gemini to match its lines
   const syncGeminiLines =
@@ -125,7 +143,9 @@ export const PipelineConfig: React.FC = () => {
   if (!probeResult) return null;
 
   const translationModel = appSettings?.translation.model;
-  const translationInfo = catalog.find((m) => m.id === translationModel);
+  const translationInfo = catalog.find(
+    (m) => (m.provider || 'google') === activeTranslationProvider && m.id === translationModel
+  );
   const estimateStages = estimate ? Object.entries(estimate.stages) : [];
 
   return (
@@ -360,62 +380,64 @@ export const PipelineConfig: React.FC = () => {
                 </select>
               </div>
 
-              <div className="p-2.5 rounded-lg bg-surface border border-line flex items-center justify-between gap-2">
-                <span className="text-[11px] text-zinc-300 min-w-0 truncate">
-                  {appSettings
-                    ? t('config.modelSummary', {
-                        model: modelLabel(catalog, appSettings.translation.model),
-                        thinking: thinkingLabel(t, appSettings.translation.thinking, translationInfo),
-                      }) + (appSettings.translation.flex ? ` · ${t('settings.flexTag')}` : '')
-                    : t('config.models')}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setView('settings')}
-                  className="text-[11px] text-indigo-400 hover:text-indigo-300 underline cursor-pointer whitespace-nowrap"
-                >
-                  {t('config.changeInSettings')}
-                </button>
-              </div>
-
-              <div className="p-2.5 rounded-lg bg-surface border border-line flex flex-col gap-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5 text-zinc-300">
-                    <Key className="w-3.5 h-3.5 text-zinc-400" />
-                    <span className="text-[11px]" dir="ltr">
-                      {t('config.keyLabel')}
-                    </span>
+              <div className="p-2.5 rounded-lg bg-surface border border-line space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[11px] text-zinc-300 min-w-0 truncate">
+                    {appSettings
+                      ? t('config.modelSummary', {
+                          model: modelLabel(catalog, appSettings.translation.model),
+                          thinking: thinkingLabel(t, appSettings.translation.thinking, translationInfo),
+                        }) + (appSettings.translation.flex ? ` · ${t('settings.flexTag')}` : '')
+                      : t('config.models')}
+                  </span>
+                  <div className="flex items-center gap-2">
                     <span
-                      className={`text-[10px] font-semibold px-1.5 rounded ${
-                        isGeminiReady ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'
+                      className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                        isTranslationReady ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'
                       }`}
+                      title={providerKeyEnvLabel(activeTranslationProvider)}
                     >
-                      {isGeminiReady ? t('config.keyLoaded') : t('config.keyMissing')}
+                      <Key className="w-2.5 h-2.5" />
+                      {isTranslationReady ? t('config.keyLoaded') : t('config.keyMissing')}
                     </span>
+                    <button
+                      type="button"
+                      onClick={() => setView('settings')}
+                      className="text-[11px] text-indigo-400 hover:text-indigo-300 underline cursor-pointer whitespace-nowrap"
+                    >
+                      {t('config.changeInSettings')}
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowKeyOverride(!showKeyOverride)}
-                    className="text-[10px] text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
-                  >
-                    {showKeyOverride ? t('config.hideOverride') : t('config.overrideKey')}
-                  </button>
                 </div>
                 {translationWithoutKey && (
-                  <div className="flex items-start gap-1.5 text-[11px] text-amber-300">
+                  <div className="flex items-start gap-1.5 text-[11px] text-amber-300 pt-1 border-t border-line/60">
                     <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
                     <span>{t('config.noKeyWarning')}</span>
                   </div>
                 )}
-                {(showKeyOverride || translationWithoutKey) && (
-                  <input
-                    type="password"
-                    dir="ltr"
-                    placeholder={t('config.keyPlaceholder')}
-                    value={pipelineConfig.gemini_api_key_override || ''}
-                    onChange={(e) => updatePipelineConfig({ gemini_api_key_override: e.target.value })}
-                    className="w-full bg-sunken border border-line rounded px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-indigo-500 font-mono"
-                  />
+                {activeTranslationProvider === 'google' && (
+                  <div className="pt-1 border-t border-line/60 space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                      <span dir="ltr">{providerKeyEnvLabel(activeTranslationProvider)}</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowKeyOverride(!showKeyOverride)}
+                        className="text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
+                      >
+                        {showKeyOverride ? t('config.hideOverride') : t('config.overrideKey')}
+                      </button>
+                    </div>
+                    {(showKeyOverride || translationWithoutKey) && (
+                      <input
+                        type="password"
+                        dir="ltr"
+                        placeholder={t('config.keyPlaceholder')}
+                        value={pipelineConfig.gemini_api_key_override || ''}
+                        onChange={(e) => updatePipelineConfig({ gemini_api_key_override: e.target.value })}
+                        className="w-full bg-sunken border border-line rounded px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-indigo-500 font-mono"
+                      />
+                    )}
+                  </div>
                 )}
               </div>
 
@@ -537,7 +559,7 @@ export const PipelineConfig: React.FC = () => {
               <span className="text-emerald-400">
                 {t('config.forcedFound', { name: forcedTrack.title || forcedTrack.language || `#${forcedTrack.index}` })}
               </span>
-            ) : !isGeminiReady && !pipelineConfig.gemini_api_key_override ? (
+            ) : !isVisionReady ? (
               <span className="text-amber-300">{t('config.onscreenNeedsKey')}</span>
             ) : null)
           }

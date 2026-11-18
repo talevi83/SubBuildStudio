@@ -56,33 +56,64 @@ async def detect_speakers(
     usage: Any = None,
     flex: bool = False,
     flex_state: Any = None,
+    provider: str = "google",
+    key_id: Optional[str] = None,
 ) -> SpeakerGuess:
-    from google.genai import types
-    from app.core.model_catalog import default_temperature, thinking_config
-    from app.providers import gemini_calls
+    if provider == "google" and key_id is None and client is not None:
+        from google.genai import types
+        from app.core.model_catalog import default_temperature, thinking_config
+        from app.providers import gemini_calls
 
-    contents: List[Any] = ["Subtitle lines (time in seconds):"]
-    contents.append("\n".join(f"[{t:.1f}] {text}" for t, text in lines))
-    for t, data in frames:
-        contents.append(f"Frame at t={t:.1f}s:")
-        contents.append(types.Part.from_bytes(data=data, mime_type="image/jpeg"))
-    response = await gemini_calls.generate_content(
-        client,
-        model=model,
-        contents=contents,
-        config=types.GenerateContentConfig(
+        contents: List[Any] = ["Subtitle lines (time in seconds):"]
+        contents.append("\n".join(f"[{t:.1f}] {text}" for t, text in lines))
+        for t, data in frames:
+            contents.append(f"Frame at t={t:.1f}s:")
+            contents.append(types.Part.from_bytes(data=data, mime_type="image/jpeg"))
+        response = await gemini_calls.generate_content(
+            client,
+            model=model,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=SpeakerGuess,
+                temperature=default_temperature(model, 0.0),
+                thinking_config=thinking_config(model, thinking),
+            ),
+            flex=flex,
+            usage=usage,
+            stage="speaker_detect",
+            flex_state=flex_state,
+        )
+        response_text = response.text
+    else:
+        from app.providers.llm import call_vision_json, resolve_provider_spec
+
+        pieces: List[Any] = ["Subtitle lines (time in seconds):"]
+        pieces.append("\n".join(f"[{t:.1f}] {text}" for t, text in lines))
+        for t, data in frames:
+            pieces.append(f"Frame at t={t:.1f}s:")
+            pieces.append((data, "image/jpeg"))
+        spec = resolve_provider_spec(
+            provider,  # type: ignore[arg-type]
+            model,
+            key_id=key_id,
+            thinking=thinking,
+            flex=flex,
+        )
+        llm_resp = await call_vision_json(
+            spec,
             system_instruction=SYSTEM_PROMPT,
-            response_mime_type="application/json",
-            response_schema=SpeakerGuess,
-            temperature=default_temperature(model, 0.0),
-            thinking_config=thinking_config(model, thinking),
-        ),
-        flex=flex,
-        usage=usage,
-        stage="speaker_detect",
-        flex_state=flex_state,
-    )
-    guess = SpeakerGuess.model_validate_json(response.text)
+            pieces=pieces,
+            schema_cls=SpeakerGuess,
+            temperature=0.0,
+            usage=usage,
+            stage="speaker_detect",
+            flex_state=flex_state,
+        )
+        response_text = llm_resp.text
+
+    guess = SpeakerGuess.model_validate_json(response_text)
     ok = {"male", "female", "group", "unknown"}
     guess.speaker_gender = guess.speaker_gender if guess.speaker_gender in ok else "unknown"
     guess.addressee_gender = guess.addressee_gender if guess.addressee_gender in ok else "unknown"

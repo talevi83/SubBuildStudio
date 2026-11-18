@@ -4,7 +4,13 @@ import { useJobStore } from '../../store/useJobStore';
 import { useUiStore } from '../../store/useUiStore';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useT } from '../../i18n';
-import { thinkingLabel, modelLabel } from '../settings/labels';
+import {
+  inferProviderFromModelId,
+  isAnyAiReady,
+  isProviderReady,
+  modelLabel,
+  thinkingLabel,
+} from '../settings/labels';
 import { sameLanguage } from './languages';
 
 /** "Sync my subtitles": how the lines are matched to the video (replaces the translation card). */
@@ -22,7 +28,11 @@ export const SyncOptions: React.FC = () => {
   const setView = useUiStore((s) => s.setView);
   const t = useT();
 
-  const keyReady = !!systemInfo?.is_gemini_configured || !!pipelineConfig.gemini_api_key_override;
+  const activeTranslationProvider =
+    appSettings?.translation.provider || inferProviderFromModelId(appSettings?.translation.model) || 'google';
+  const keyReady =
+    isProviderReady(systemInfo, activeTranslationProvider, pipelineConfig.gemini_api_key_override) ||
+    isAnyAiReady(systemInfo, pipelineConfig.gemini_api_key_override);
   const same = sameLanguage(syncLanguage || syncFile?.language, pipelineConfig.source_language);
   // Mirrors the backend: a full (not forced) text track in the video is used as a timing reference
   const embedded = (probeResult?.subtitle_streams || []).find(
@@ -88,17 +98,19 @@ export const SyncOptions: React.FC = () => {
                   <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
                   <span>{t('config.syncNeedsKey')}</span>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <Key className="w-3.5 h-3.5 text-zinc-400 flex-shrink-0" />
-                  <input
-                    type="password"
-                    dir="ltr"
-                    placeholder={t('config.keyPlaceholder')}
-                    value={pipelineConfig.gemini_api_key_override || ''}
-                    onChange={(e) => updatePipelineConfig({ gemini_api_key_override: e.target.value })}
-                    className="w-full bg-sunken border border-line rounded px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-indigo-500 font-mono"
-                  />
-                </div>
+                {activeTranslationProvider === 'google' && (
+                  <div className="flex items-center gap-1.5">
+                    <Key className="w-3.5 h-3.5 text-zinc-400 flex-shrink-0" />
+                    <input
+                      type="password"
+                      dir="ltr"
+                      placeholder={t('config.keyPlaceholder')}
+                      value={pipelineConfig.gemini_api_key_override || ''}
+                      onChange={(e) => updatePipelineConfig({ gemini_api_key_override: e.target.value })}
+                      className="w-full bg-sunken border border-line rounded px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-indigo-500 font-mono"
+                    />
+                  </div>
+                )}
               </div>
             )}
           </>

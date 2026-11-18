@@ -336,7 +336,7 @@ def _job_log_header(job: Job) -> str:
     if job.usage_json:
         try:
             usage = json.loads(job.usage_json)
-            lines.append(f"Gemini cost (all runs): {usage.get('total_cost_usd')}")
+            lines.append(f"AI cost (all runs): {usage.get('total_cost_usd')}")
             for name, st in (usage.get("stages") or {}).items():
                 lines.append(
                     f"  {name}: {st.get('model')}, {st.get('requests')} request(s), in {st.get('input_tokens')}, "

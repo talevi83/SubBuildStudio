@@ -1,9 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import { useJobStore } from '../../store/useJobStore';
 import { useUiStore } from '../../store/useUiStore';
+import { useSettingsStore } from '../../store/useSettingsStore';
+import {
+  inferProviderFromModelId,
+  isAnyAiReady,
+  isProviderReady,
+  providerDisplayName,
+} from '../settings/labels';
 import { useT, formatUsd } from '../../i18n';
 import { isActiveStatus } from '../../types';
-import { Film, PlusCircle, Cpu, Trash2, CheckCircle2, AlertCircle, Loader2, Sparkles, Settings, HelpCircle, X } from 'lucide-react';
+import { Film, PlusCircle, Cpu, Trash2, CheckCircle2, AlertCircle, Loader2, Settings, HelpCircle, X } from 'lucide-react';
 
 export const Sidebar: React.FC = () => {
   const jobs = useJobStore((s) => s.jobs);
@@ -112,7 +119,21 @@ export const Sidebar: React.FC = () => {
 
   const hw = systemInfo?.hardware;
   const isCuda = hw?.cuda_available;
-  const isGeminiReady = systemInfo?.is_gemini_configured;
+  const appSettings = useSettingsStore((s) => s.settings);
+  const stageProviders = appSettings
+    ? ([appSettings.translation, appSettings.glossary, appSettings.vision]
+        .map((c) => c.provider || inferProviderFromModelId(c.model))
+        .filter((p): p is NonNullable<typeof p> => !!p))
+    : [];
+  const uniqueProviders = Array.from(new Set(stageProviders));
+  const isAiReady =
+    uniqueProviders.length > 0
+      ? uniqueProviders.every((prov) => isProviderReady(systemInfo, prov))
+      : isAnyAiReady(systemInfo);
+  const aiSummaryLabel =
+    uniqueProviders.length > 0
+      ? uniqueProviders.map((prov) => providerDisplayName(prov)).join(' · ')
+      : t('sidebar.gemini');
 
   return (
     <aside className="w-80 h-screen bg-sunken border-e border-line flex flex-col flex-shrink-0 select-none">
@@ -326,48 +347,31 @@ export const Sidebar: React.FC = () => {
       </div>
 
       <div className="p-3 border-t border-line bg-sunken space-y-2 text-xs">
-        <div className="flex items-center justify-between px-2.5 py-1.5 rounded-md bg-raised border border-line">
-          <div className="flex items-center gap-2 min-w-0">
-            <Cpu className="w-3.5 h-3.5 text-zinc-400 flex-shrink-0" />
-            <span className="text-[11px] font-medium text-zinc-300 truncate">
-              {isCuda ? hw?.gpu_name || t('sidebar.cudaFallback') : t('sidebar.cpuMode')}
-            </span>
-          </div>
-          <span
-            className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
-              isCuda ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' : 'bg-zinc-700/40 text-zinc-400'
-            }`}
-          >
-            {isCuda ? 'CUDA FP16' : 'CPU'}
-          </span>
-        </div>
-
-        <div className="flex items-center justify-between px-2.5 py-1.5 rounded-md bg-raised border border-line">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-            <span className="text-[11px] font-medium text-zinc-300">{t('sidebar.gemini')}</span>
-          </div>
-          <span
-            className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
-              isGeminiReady
-                ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
-            }`}
-          >
-            {isGeminiReady ? t('sidebar.geminiActive') : t('sidebar.geminiNoKey')}
-          </span>
-        </div>
-
         <button
           onClick={() => setView(view === 'settings' ? 'studio' : 'settings')}
-          className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-md border text-[11px] font-medium transition-colors cursor-pointer ${
+          className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-md border text-[11px] font-medium transition-colors cursor-pointer ${
             view === 'settings'
               ? 'bg-indigo-600/15 border-indigo-500/50 text-indigo-300'
               : 'bg-raised border-line text-zinc-300 hover:border-zinc-600'
           }`}
         >
-          <Settings className="w-3.5 h-3.5" />
-          {t('sidebar.settings')}
+          <span className="flex items-center gap-2">
+            <Settings className="w-3.5 h-3.5" />
+            {t('sidebar.settings')}
+          </span>
+          <span
+            data-testid="sidebar-ai-status"
+            className={`inline-flex items-center gap-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded max-w-[140px] ${
+              isAiReady
+                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/25'
+                : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+            }`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isAiReady ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+            <span className="truncate" dir={isAiReady ? 'ltr' : undefined}>
+              {isAiReady ? aiSummaryLabel : t('sidebar.geminiNoKey')}
+            </span>
+          </span>
         </button>
 
         <button
@@ -382,6 +386,18 @@ export const Sidebar: React.FC = () => {
           <HelpCircle className="w-3.5 h-3.5" />
           {t('sidebar.help')}
         </button>
+
+        <div className="flex items-center justify-between gap-2 px-1.5 pt-1 text-[10px] text-zinc-500">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Cpu className="w-3 h-3 text-zinc-500 flex-shrink-0" />
+            <span className="truncate">
+              {isCuda ? hw?.gpu_name || t('sidebar.cudaFallback') : t('sidebar.cpuMode')}
+            </span>
+          </div>
+          <span className={`font-mono font-semibold flex-shrink-0 ${isCuda ? 'text-emerald-400/80' : 'text-zinc-500'}`}>
+            {isCuda ? 'CUDA FP16' : 'CPU'}
+          </span>
+        </div>
       </div>
     </aside>
   );

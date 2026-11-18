@@ -132,14 +132,12 @@ CATALOG: Dict[str, ModelInfo] = {m.id: m for m in [
               ("low", "medium", "high"), "high", tasks=(_TR,), preview=True),
     ModelInfo("gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite", "3",
               (_P(0.30, 2.50),), ("minimal", "low", "medium", "high"), "minimal", tasks=(_TR, _GL, _VI),
-              note="Budget translation: a bit over half the cost of Flash (under a third from January 2027). "
-                   "Fine for plain dialogue; Hebrew gender agreement and idioms are weaker - check the result."),
+              note="Cost-effective Flash-Lite tier recommended for screen-text OCR and fast glossary extraction; "
+                   "Hebrew gender agreement and idioms in full translation are weaker than Flash."),
     ModelInfo("gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite", "3",
               (_P(0.25, 1.50),), (), "minimal", tasks=(_TR, _GL, _VI),
-              note="Cheapest option: under a third of Flash for translation (about a sixth from January 2027). "
-                   "Lowest translation quality - best "
-                   "for drafts or simple dialogue. Thinking levels are not documented for this model; it runs "
-                   "with its default."),
+              note="Cheapest tier suited for fast glossary extraction and screen-text OCR. "
+                   "Weaker for full dialogue translation; runs with default thinking level."),
 ]}
 
 # Models this app used to offer (or that Google retired) -> what to use instead
@@ -265,17 +263,32 @@ def image_tokens(model_id: str, resolution: str = "medium") -> int:
 
 
 def request_cost(model_id: str, input_tokens: int, output_tokens: int, day: Optional[date] = None,
-                 flex: bool = False) -> Optional[float]:
+                 flex: bool = False, provider: Optional[str] = None) -> Optional[float]:
     """USD for one request (output_tokens must include thinking tokens). None if unpriced."""
     info = get_model(model_id)
-    if info is None:
+    if info is not None and (provider in (None, "google")):
+        p = info.price_on(day)
+        long = input_tokens > LONG_CONTEXT_THRESHOLD
+        rate_in = p.input_long if (long and p.input_long) else p.input
+        rate_out = p.output_long if (long and p.output_long) else p.output
+        cost = input_tokens / 1e6 * rate_in + output_tokens / 1e6 * rate_out
+        return cost * FLEX_PRICE_FACTOR if flex else cost
+
+    from app.core.provider_catalog import infer_provider_from_model, pricing_for_model
+
+    prov = provider or infer_provider_from_model(model_id)
+    if prov is None:
         return None
-    p = info.price_on(day)
+    rate_in, rate_out, rate_in_long, rate_out_long, is_local = pricing_for_model(prov, model_id, day=day)
+    if is_local:
+        return 0.0
+    if rate_in is None or rate_out is None:
+        return None
     long = input_tokens > LONG_CONTEXT_THRESHOLD
-    rate_in = p.input_long if (long and p.input_long) else p.input
-    rate_out = p.output_long if (long and p.output_long) else p.output
-    cost = input_tokens / 1e6 * rate_in + output_tokens / 1e6 * rate_out
-    return cost * FLEX_PRICE_FACTOR if flex else cost
+    r_in = rate_in_long if (long and rate_in_long) else rate_in
+    r_out = rate_out_long if (long and rate_out_long) else rate_out
+    cost = input_tokens / 1e6 * r_in + output_tokens / 1e6 * r_out
+    return cost * FLEX_PRICE_FACTOR if (flex and prov == "google") else cost
 
 
 def estimated_thinking_tokens(model_id: str, level: str) -> int:
@@ -286,32 +299,9 @@ def estimated_thinking_tokens(model_id: str, level: str) -> int:
 
 
 def catalog_payload(day: Optional[date] = None) -> List[Dict[str, Any]]:
-    out = []
-    for info in CATALOG.values():
-        p = info.price_on(day)
-        change = info.next_price_change(day)
-        out.append({
-            "id": info.id,
-            "label": info.label,
-            "family": info.family,
-            "preview": info.preview,
-            "thinking": list(allowed_thinking(info.id)),
-            "default_level": info.default_level,
-            "input_per_m": p.input,
-            "output_per_m": p.output,
-            "input_long_per_m": p.input_long,
-            "output_long_per_m": p.output_long,
-            "price_change": (
-                {"after": change[0].isoformat(), "input_per_m": change[1].input, "output_per_m": change[1].output}
-                if change else None
-            ),
-            "supports_media_resolution": info.family != "2.5",
-            "tasks": list(info.tasks),
-            "supports_flex": info.flex,
-            "flex_price_factor": FLEX_PRICE_FACTOR if info.flex else None,
-            "note": info.note,
-        })
-    return out
+    from app.core.provider_catalog import build_model_entry
+
+    return [build_model_entry("google", info.id, day=day) for info in CATALOG.values()]
 
 
 # ---------------------------------------------------------------------------
@@ -379,7 +369,7 @@ class UsageTracker:
         )
 
     def record(self, stage: str, model: str, usage_metadata: Any, flex: bool = False,
-               fell_back: bool = False) -> None:
+               fell_back: bool = False, provider: Optional[str] = None) -> None:
         """Add one API response's usage. Safe to call with a missing usage_metadata.
 
         `flex` says the request was sent on the Flex tier; the response's traffic_type (when the API
@@ -393,10 +383,33 @@ class UsageTracker:
                               getattr(usage_metadata, "traffic_type", None)) or "").upper()
         if traffic and "UNSPECIFIED" not in traffic:
             flex = traffic == "ON_DEMAND_FLEX"
-        cost = request_cost(model, prompt, output + thoughts, flex=flex)
+        self.record_counts(
+            stage=stage,
+            provider=provider or "google",
+            model=model,
+            input_tokens=prompt,
+            output_tokens=output,
+            thinking_tokens=thoughts,
+            flex=flex,
+            fell_back=fell_back,
+        )
+
+    def record_counts(
+        self,
+        stage: str,
+        provider: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        thinking_tokens: int = 0,
+        flex: bool = False,
+        fell_back: bool = False,
+    ) -> None:
+        """Add one API response's raw token counts for any provider."""
+        cost = request_cost(model, input_tokens, output_tokens + thinking_tokens, flex=flex, provider=provider)
         self.stages.setdefault(stage, StageUsage()).add(
-            StageUsage(model=model, requests=1, input_tokens=prompt, output_tokens=output,
-                       thinking_tokens=thoughts, cost_usd=cost, flex_requests=int(flex),
+            StageUsage(model=model, requests=1, input_tokens=input_tokens, output_tokens=output_tokens,
+                       thinking_tokens=thinking_tokens, cost_usd=cost, flex_requests=int(flex),
                        flex_fallbacks=int(fell_back))
         )
 
@@ -508,15 +521,18 @@ _FOREIGN_CROP_TOKENS_2_5 = 258   # a 768px-wide crop is a single tile
 
 
 def _stage_estimate(model: str, thinking: str, requests: int, input_per: int, output_per: int,
-                    flex: bool = False) -> Dict[str, Any]:
-    think = estimated_thinking_tokens(model, thinking)
+                    flex: bool = False, provider: str = "google") -> Dict[str, Any]:
+    from app.core.provider_catalog import estimated_reasoning_tokens
+
+    think = estimated_reasoning_tokens(provider, model, thinking)
     input_tokens = requests * input_per
     output_tokens = requests * (output_per + think)
-    per_request = request_cost(model, input_per, output_per + think, flex=flex)
+    per_request = request_cost(model, input_per, output_per + think, flex=flex, provider=provider)
     return {
+        "provider": provider,
         "model": model,
         "thinking": thinking,
-        "flex": flex,
+        "flex": flex if provider == "google" else False,
         "requests": requests,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
@@ -558,48 +574,60 @@ def estimate_job_cost(
     if enable_translation:
         if glossary_pass:
             g = app_settings.glossary
+            g_prov = getattr(g, "provider", "google")
             stages["glossary"] = _stage_estimate(
                 g.model, g.thinking, 1, 350 + segments * _GLOSSARY_TOKENS_PER_SEGMENT, _GLOSSARY_OUTPUT,
-                flex=getattr(g, "flex", False))
+                flex=getattr(g, "flex", False), provider=g_prov)
         t = app_settings.translation
-        batches = ceil(segments / translation_batch_size)
+        t_prov = getattr(t, "provider", "google")
+        eff_batch = 50 if t_prov in ("openai", "anthropic") else (40 if t_prov == "ollama" else translation_batch_size)
+        batches = ceil(segments / eff_batch)
         per_batch_in = (system_prompt_tokens + (350 if glossary_pass else 0)
-                        + translation_batch_size * _TRANSLATION_TOKENS_PER_SEGMENT_IN + 8 * 40)
+                        + eff_batch * _TRANSLATION_TOKENS_PER_SEGMENT_IN + 8 * 40)
         stages["translation"] = _stage_estimate(
-            t.model, t.thinking, batches, per_batch_in, translation_batch_size * _TRANSLATION_TOKENS_PER_SEGMENT_OUT,
-            flex=getattr(t, "flex", False))
+            t.model, t.thinking, batches, per_batch_in, eff_batch * _TRANSLATION_TOKENS_PER_SEGMENT_OUT,
+            flex=getattr(t, "flex", False), provider=t_prov)
 
     if detect_onscreen_text and not has_forced_track:
+        from app.core.provider_catalog import estimated_image_tokens
+
         v = app_settings.vision
+        v_prov = getattr(v, "provider", "google")
         frames = min(max_frames, int(duration_seconds / frame_interval * _FRAMES_SENT_RATIO))
         if saver and frames:
             frames = max(1, int(frames * 0.25))
         batches = ceil(frames / vision_batch_size) if frames else 0
-        img = image_tokens(v.model, app_settings.vision_media_resolution)
+        img = estimated_image_tokens(v_prov, v.model, app_settings.vision_media_resolution)
         stages["onscreen"] = _stage_estimate(
             v.model, v.thinking, batches, vision_batch_size * img + _VISION_PROMPT, _VISION_OUTPUT,
-            flex=getattr(v, "flex", False))
+            flex=getattr(v, "flex", False), provider=v_prov)
         stages["onscreen"]["frames"] = frames
 
     if detect_onscreen_text and not has_forced_track:
+        from app.core.provider_catalog import estimated_image_tokens
+
         # Burned-in subtitles for foreign-language speech (cropped frames, every 0.5s)
         v = app_settings.vision
+        v_prov = getattr(v, "provider", "google")
         crops = int(duration_seconds * _FOREIGN_SPEECH_SHARE * _FOREIGN_FRAMES_PER_SECOND)
         if crops:
-            img = _FOREIGN_CROP_TOKENS_2_5 if family_of(v.model) == "2.5" else image_tokens(v.model, app_settings.vision_media_resolution)
+            img = _FOREIGN_CROP_TOKENS_2_5 if (v_prov == "google" and family_of(v.model) == "2.5") else (
+                estimated_image_tokens(v_prov, v.model, app_settings.vision_media_resolution)
+            )
             stages["foreign"] = _stage_estimate(
                 v.model, v.thinking, ceil(crops / vision_batch_size), vision_batch_size * img + _VISION_PROMPT, _VISION_OUTPUT,
-                flex=getattr(v, "flex", False))
+                flex=getattr(v, "flex", False), provider=v_prov)
             stages["foreign"]["frames"] = crops
 
     if sync_lines:
-        # Gemini matches a translated subtitle file to the transcript: 40 lines per request,
+        # Matches a translated subtitle file to the transcript: 40 lines per request,
         # with the transcript phrases around them (see pipeline/sync_text.py)
         t = app_settings.translation
+        t_prov = getattr(t, "provider", "google")
         batches = ceil(sync_lines / _SYNC_BATCH)
         stages["sync"] = _stage_estimate(
             t.model, t.thinking, batches, _SYNC_PROMPT + _SYNC_BATCH * _SYNC_TOKENS_PER_LINE_IN,
-            _SYNC_BATCH * _SYNC_TOKENS_PER_LINE_OUT, flex=getattr(t, "flex", False))
+            _SYNC_BATCH * _SYNC_TOKENS_PER_LINE_OUT, flex=getattr(t, "flex", False), provider=t_prov)
 
     costs = [s["cost_usd"] for s in stages.values()]
     return {

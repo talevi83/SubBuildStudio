@@ -198,9 +198,13 @@ def _is_fatal(exc: Exception) -> bool:
     msg = str(exc).lower()
     if code in (401, 403):
         return True
-    if code in (400, 404) and ("api key" in msg or "api_key" in msg or "not found" in msg or "permission" in msg):
+    if any(k in msg for k in ("http 401", "http 403", "invalid_api_key", "incorrect api key", "authentication_error", "api key not valid")):
         return True
-    return "api key not valid" in msg
+    if (code in (400, 404) or "http 404" in msg) and (
+        "api key" in msg or "api_key" in msg or "not found" in msg or "permission" in msg or "does not exist" in msg
+    ):
+        return True
+    return False
 
 
 def _looks_truncated(source: str, translation: str) -> bool:
@@ -267,16 +271,45 @@ class GeminiTranslator(BaseTranslator):
         flex_state: Optional[gemini_calls.FlexState] = None,
         convert_to_metric: bool = False,
         remove_sdh_speakers: bool = False,
+        provider: str = "google",
+        key_id: Optional[str] = None,
+        glossary_provider: Optional[str] = None,
+        glossary_key_id: Optional[str] = None,
     ):
-        resolved_key = (api_key or "").strip() or settings.gemini_api_key
-        if not resolved_key or resolved_key == "your_gemini_api_key_here":
-            raise ValueError(
-                "GEMINI_API_KEY is missing. Set it in backend/.env or provide it in the UI."
-            )
+        from app.core.provider_keys import resolve_secret_key
 
-        self.client = genai.Client(api_key=resolved_key)
+        self.provider = (provider or "google").strip().lower()
+        self.key_id = key_id
+        self.glossary_provider = (glossary_provider or self.provider).strip().lower()
+        self.glossary_key_id = glossary_key_id if glossary_provider else (glossary_key_id or key_id)
+        self.api_key_override = (api_key or "").strip() or None
+
+        self.client: Any = None
+        if self.provider == "google":
+            resolved_key = self.api_key_override
+            if not resolved_key:
+                vault_key = resolve_secret_key("google", key_id=self.key_id)
+                resolved_key = vault_key.api_key if vault_key else settings.gemini_api_key
+            if not resolved_key or resolved_key == "your_gemini_api_key_here":
+                raise ValueError(
+                    "GEMINI_API_KEY is missing. Set it in backend/.env or provide it in the UI."
+                )
+            self.client = genai.Client(api_key=resolved_key)
+        else:
+            # Verify credential exists early for non-Google providers (unless Ollama local fallback)
+            resolved = resolve_secret_key(self.provider, key_id=self.key_id)
+            if resolved is None:
+                raise ValueError(f"No API key configured for provider '{self.provider}'.")
+
         self.model_name = model_name or settings.gemini_model
-        self.batch_size = batch_size or settings.gemini_batch_size
+        if batch_size is not None:
+            self.batch_size = batch_size
+        elif self.provider == "ollama":
+            self.batch_size = min(settings.gemini_batch_size, 30)
+        elif self.provider in ("openai", "anthropic"):
+            self.batch_size = min(settings.gemini_batch_size, 50)
+        else:
+            self.batch_size = settings.gemini_batch_size
         self.prev_context_size = prev_context_size
         self.lookahead_size = lookahead_size
         self.max_chars_per_line = max_chars_per_line or settings.max_chars_per_line
@@ -286,8 +319,8 @@ class GeminiTranslator(BaseTranslator):
         self.glossary_thinking = glossary_thinking
         self.usage = usage
         # Flex service tier: half price, slower, may fall back to Standard when Google is busy
-        self.flex = flex
-        self.glossary_flex = glossary_flex
+        self.flex = flex if self.provider == "google" else False
+        self.glossary_flex = glossary_flex if self.glossary_provider == "google" else False
         self.flex_state = flex_state if flex_state is not None else gemini_calls.FlexState()
         self.convert_to_metric = convert_to_metric
         self.remove_sdh_speakers = remove_sdh_speakers
@@ -303,21 +336,49 @@ class GeminiTranslator(BaseTranslator):
         model: Optional[str] = None,
         thinking: Optional[str] = None,
         flex: Optional[bool] = None,
+        provider: Optional[str] = None,
+        key_id: Optional[str] = None,
     ):
+        target_provider = (provider or (self.glossary_provider if stage == "glossary" else self.provider) or "google").lower()
+        target_key_id = key_id if key_id is not None else (self.glossary_key_id if stage == "glossary" else self.key_id)
         model = model or self.model_name
         thinking = self.thinking if thinking is None else thinking
-        return await gemini_calls.generate_content(
-            self.client,
-            model=model,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                response_mime_type="application/json",
-                response_schema=schema,
-                temperature=default_temperature(model, temperature),
-                thinking_config=thinking_config(model, thinking),
-            ),
-            flex=self.flex if flex is None else flex,
+        use_flex = self.flex if flex is None else flex
+
+        if target_provider == "google" and target_key_id is None and self.client is not None:
+            return await gemini_calls.generate_content(
+                self.client,
+                model=model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    response_mime_type="application/json",
+                    response_schema=schema,
+                    temperature=default_temperature(model, temperature),
+                    thinking_config=thinking_config(model, thinking),
+                ),
+                flex=use_flex,
+                usage=self.usage,
+                stage=stage,
+                flex_state=self.flex_state,
+            )
+
+        from app.providers.llm import call_text_json, resolve_provider_spec
+
+        spec = resolve_provider_spec(
+            target_provider,  # type: ignore[arg-type]
+            model,
+            key_id=target_key_id,
+            api_key_override=self.api_key_override if target_provider == "google" else None,
+            thinking=thinking,
+            flex=use_flex,
+        )
+        return await call_text_json(
+            spec,
+            system_instruction=system_prompt,
+            prompt=contents,
+            schema_cls=schema,
+            temperature=temperature,
             usage=self.usage,
             stage=stage,
             flex_state=self.flex_state,
@@ -408,7 +469,7 @@ class GeminiTranslator(BaseTranslator):
                 saved_chars = max(0, len(format_glossary(glossary)) - len(format_glossary(batch_glossary)))
                 saved_toks = saved_chars // 4
                 if saved_toks > 0:
-                    saved_cost = request_cost(self.model_name, saved_toks, 0, flex=self.flex) or 0.0
+                    saved_cost = request_cost(self.model_name, saved_toks, 0, flex=self.flex, provider=self.provider) or 0.0
                     self.usage.record_local_savings(saved_tokens=saved_toks, saved_cost_usd=saved_cost)
 
             system_prompt = build_subtitle_system_prompt(
@@ -516,6 +577,33 @@ class GeminiTranslator(BaseTranslator):
                 if _is_fatal(exc):
                     raise TranslationAborted(str(exc)) from exc
                 logger.warning(f"Batch translation attempt {attempt}/{self.max_retries} failed: {exc}")
+                err_low = str(exc).lower()
+                is_size_or_timeout = any(
+                    tok in err_low
+                    for tok in (
+                        "eof",
+                        "json_invalid",
+                        "validation error",
+                        "field required",
+                        "max_completion_tokens",
+                        "timeout",
+                        "omitted segment indices",
+                    )
+                )
+                if len(pending) > 15 and (is_size_or_timeout or attempt >= self.max_retries):
+                    mid = len(pending) // 2
+                    left, right = pending[:mid], pending[mid:]
+                    logger.info(
+                        f"Splitting failed batch of {len(pending)} segments into {len(left)} + {len(right)}"
+                    )
+                    await self._translate_single_batch(
+                        left, prev_context, right[:self.lookahead_size], system_prompt, apply_rtl
+                    )
+                    right_prev = (prev_context + left)[-self.prev_context_size:] if self.prev_context_size > 0 else []
+                    await self._translate_single_batch(
+                        right, right_prev, lookahead_context, system_prompt, apply_rtl
+                    )
+                    return
                 if attempt < self.max_retries:
                     delay = 1.5 * (2 ** (attempt - 1))
                     if _is_rate_limit(exc):

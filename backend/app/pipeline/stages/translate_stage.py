@@ -43,15 +43,20 @@ class TranslateStage(PipelineStage):
         return "TRANSLATING"
 
     def _make_translator(self, ctx: PipelineContext) -> BaseTranslator:
+        from app.core.provider_catalog import infer_provider_from_model
         from app.core.user_settings import load_settings
         from app.providers.translation.gemini_provider import GeminiTranslator
 
         app_settings = load_settings()
         # Thinking and Flex are configured for the Settings model; a per-job override uses defaults
-        same_model = ctx.gemini_model in (None, app_settings.translation.model)
+        target_model = ctx.gemini_model or app_settings.translation.model
+        matches_settings_model = (target_model == app_settings.translation.model)
+        inferred = None if matches_settings_model else (infer_provider_from_model(target_model) if ctx.gemini_model else None)
+        target_provider = inferred or app_settings.translation.provider
+        same_model = (target_provider == app_settings.translation.provider and matches_settings_model)
         return GeminiTranslator(
             api_key=ctx.gemini_api_key_override,
-            model_name=ctx.gemini_model or app_settings.translation.model,
+            model_name=target_model,
             thinking=ctx.gemini_thinking or (app_settings.translation.thinking if same_model else "default"),
             glossary_model=app_settings.glossary.model,
             glossary_thinking=app_settings.glossary.thinking,
@@ -61,6 +66,10 @@ class TranslateStage(PipelineStage):
             flex_state=ctx.flex_state,
             convert_to_metric=getattr(ctx, "convert_to_metric", False) or app_settings.convert_to_metric,
             remove_sdh_speakers=getattr(ctx, "remove_sdh_speakers", False) or getattr(app_settings, "remove_sdh_speakers", False),
+            provider=target_provider,
+            key_id=app_settings.translation.key_id if same_model else None,
+            glossary_provider=app_settings.glossary.provider,
+            glossary_key_id=app_settings.glossary.key_id,
         )
 
     async def execute(

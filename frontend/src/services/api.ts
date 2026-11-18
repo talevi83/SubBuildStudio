@@ -257,6 +257,37 @@ export const api = {
     return request(`${API_BASE}/settings/api-key`, json('PUT', { api_key: apiKey }), 'Could not save API key');
   },
 
+  getProviderKeys(provider?: string): Promise<import('../types').ProviderKeysResponse> {
+    const q = provider ? `?provider=${encodeURIComponent(provider)}` : '';
+    return request(`${API_BASE}/settings/keys${q}`, undefined, 'Could not load AI provider keys');
+  },
+
+  addProviderKey(body: {
+    provider: import('../types').AIProvider;
+    api_key?: string;
+    label?: string;
+    base_url?: string;
+    is_default?: boolean;
+    verify?: boolean;
+  }): Promise<import('../types').ProviderKeyMutationResponse> {
+    return request(`${API_BASE}/settings/keys`, json('POST', body), 'Could not add API key');
+  },
+
+  updateProviderKey(
+    keyId: string,
+    body: { label?: string; api_key?: string; base_url?: string; is_default?: boolean }
+  ): Promise<import('../types').ProviderKeyMutationResponse> {
+    return request(`${API_BASE}/settings/keys/${keyId}`, json('PUT', body), 'Could not update API key');
+  },
+
+  deleteProviderKey(keyId: string): Promise<import('../types').ProviderKeyMutationResponse> {
+    return request(`${API_BASE}/settings/keys/${keyId}`, { method: 'DELETE' }, 'Could not delete API key');
+  },
+
+  refreshProviderModels(): Promise<import('../types').RefreshProvidersResponse> {
+    return request(`${API_BASE}/settings/providers/refresh`, json('POST', {}), 'Could not refresh provider models');
+  },
+
   estimateCost(params: {
     duration_seconds: number;
     enable_translation: boolean;

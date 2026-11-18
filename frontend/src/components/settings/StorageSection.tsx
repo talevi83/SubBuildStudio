@@ -88,64 +88,69 @@ export const StorageSection: React.FC = () => {
   };
 
   return (
-    <section className={card} data-testid="storage-section">
-      <div className="border-b border-line pb-3">
-        <h2 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-          <HardDrive className="w-4 h-4 text-indigo-400" />
-          {t('settings.storage')}
-          <button
-            onClick={() => void load()}
-            title={t('settings.storageRefresh')}
-            className="ms-auto text-zinc-400 hover:text-white"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-          </button>
-        </h2>
-        <p className="text-[11px] text-zinc-400 mt-1">{t('settings.storageHint')}</p>
+    <section className={`${card} h-full flex flex-col justify-between`} data-testid="storage-section">
+      <div className="space-y-4">
+        <div className="border-b border-line pb-3">
+          <h2 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+            <HardDrive className="w-4 h-4 text-indigo-400" />
+            {t('settings.storage')}
+            <button
+              onClick={() => void load()}
+              title={t('settings.storageRefresh')}
+              className="ms-auto text-zinc-400 hover:text-white cursor-pointer"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+            </button>
+          </h2>
+          <p className="text-[11px] text-zinc-400 mt-1">{t('settings.storageHint')}</p>
+        </div>
+
+        <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          {(report?.categories ?? []).map((c) => (
+            <li
+              key={c.id}
+              className="flex items-start gap-2.5 p-2.5 rounded-lg bg-sunken/70 border border-line text-xs"
+            >
+              <input
+                type="checkbox"
+                checked={picked.has(c.id)}
+                onChange={() => toggle(c.id)}
+                disabled={c.count === 0}
+                aria-label={t(LABELS[c.id].title)}
+                data-testid={`storage-${c.id}`}
+                className="mt-0.5 w-3.5 h-3.5 rounded border-zinc-700 text-indigo-600 bg-zinc-800"
+              />
+              <div className="flex-1 min-w-0">
+                <div className="text-zinc-200 font-medium">{t(LABELS[c.id].title)}</div>
+                <div className="text-[11px] text-zinc-500 leading-snug">{t(LABELS[c.id].hint)}</div>
+                {c.id === 'jobs' && (
+                  <label className="inline-flex items-center gap-1.5 mt-1.5 text-[11px] text-zinc-400">
+                    {t('settings.storageJobsOlder')}
+                    <input
+                      type="number"
+                      min={0}
+                      value={days}
+                      onChange={(e) => setDays(Math.max(0, Number(e.target.value) || 0))}
+                      className="w-14 bg-surface border border-line rounded px-1.5 py-0.5 text-zinc-200"
+                    />
+                  </label>
+                )}
+              </div>
+              <div className="text-end text-zinc-300 tabular-nums flex-shrink-0">
+                {c.count === 0 ? <span className="text-zinc-500">{t('settings.storageEmpty')}</span> : formatBytes(c.bytes)}
+                {c.count > 0 && <div className="text-[10px] text-zinc-500">{t('settings.storageFiles', { count: c.count })}</div>}
+              </div>
+            </li>
+          ))}
+        </ul>
       </div>
 
-      <ul className="space-y-2">
-        {(report?.categories ?? []).map((c) => (
-          <li key={c.id} className="flex items-start gap-3 text-xs">
-            <input
-              type="checkbox"
-              checked={picked.has(c.id)}
-              onChange={() => toggle(c.id)}
-              disabled={c.count === 0}
-              aria-label={t(LABELS[c.id].title)}
-              data-testid={`storage-${c.id}`}
-              className="mt-0.5 w-3.5 h-3.5 rounded border-zinc-700 text-indigo-600 bg-zinc-800"
-            />
-            <div className="flex-1">
-              <div className="text-zinc-200">{t(LABELS[c.id].title)}</div>
-              <div className="text-[11px] text-zinc-500">{t(LABELS[c.id].hint)}</div>
-              {c.id === 'jobs' && (
-                <label className="inline-flex items-center gap-2 mt-1 text-[11px] text-zinc-400">
-                  {t('settings.storageJobsOlder')}
-                  <input
-                    type="number"
-                    min={0}
-                    value={days}
-                    onChange={(e) => setDays(Math.max(0, Number(e.target.value) || 0))}
-                    className="w-16 bg-sunken border border-line rounded px-2 py-0.5 text-zinc-200"
-                  />
-                </label>
-              )}
-            </div>
-            <div className="text-end text-zinc-300 tabular-nums">
-              {c.count === 0 ? <span className="text-zinc-500">{t('settings.storageEmpty')}</span> : formatBytes(c.bytes)}
-              {c.count > 0 && <div className="text-[10px] text-zinc-500">{t('settings.storageFiles', { count: c.count })}</div>}
-            </div>
-          </li>
-        ))}
-      </ul>
-
-      <div className="flex items-center gap-3 pt-1">
+      <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-line/60">
         <button
           onClick={onClean}
           disabled={busy || selected.length === 0}
           data-testid="storage-clean"
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white disabled:opacity-40 ${
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white disabled:opacity-40 cursor-pointer ${
             confirming ? 'bg-red-600 hover:bg-red-500' : 'bg-indigo-600 hover:bg-indigo-500'
           }`}
         >
@@ -153,7 +158,7 @@ export const StorageSection: React.FC = () => {
           {confirming ? t('settings.storageConfirm') : t('settings.storageClean')}
         </button>
         {confirming && (
-          <button onClick={() => setConfirming(false)} className="text-xs text-zinc-300 hover:text-white">
+          <button onClick={() => setConfirming(false)} className="text-xs text-zinc-300 hover:text-white cursor-pointer">
             {t('settings.storageCancel')}
           </button>
         )}

@@ -67,12 +67,15 @@ def test_report_and_clean_file_categories(store):
     assert not (store / "audio" / f"{done}.wav").exists()
 
 
-def test_unreferenced_app_uploads_only(store):
+def test_unreferenced_app_uploads_only(store, monkeypatch):
+    from app.core import storage_cleanup as sc
+
     kept = _write(store / "uploads" / "1a2b3c4d_kept.mkv", 70)
     orphan = _write(store / "uploads" / "5e6f7a8b_orphan.mkv", 90)
     hour_ago = time.time() - 3600
     os.utime(orphan, (hour_ago, hour_ago))
     manual = _write(store / "uploads" / "my_own_file.mkv", 60)   # not made by the app
+    monkeypatch.setattr(sc, "_arrived_at", lambda p: hour_ago if p == orphan else time.time())
     _job(video=str(kept), is_upload=True)
     with TestClient(app) as client:
         assert _report(client)["uploads"]["bytes"] == 90

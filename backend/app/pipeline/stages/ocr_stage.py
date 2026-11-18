@@ -69,12 +69,22 @@ class OnScreenTextStage(PipelineStage):
     def _client(self, ctx: PipelineContext):
         if self._client_factory:
             return self._client_factory()
-        key = (ctx.gemini_api_key_override or "").strip() or settings.gemini_api_key
-        if not key or key == "your_gemini_api_key_here":
-            return None
-        from google import genai
+        from app.core.provider_keys import resolve_secret_key
+        from app.core.user_settings import load_settings
 
-        return genai.Client(api_key=key)
+        vision = load_settings().vision
+        if vision.provider == "google":
+            vault = resolve_secret_key("google", key_id=vision.key_id)
+            key = (ctx.gemini_api_key_override or "").strip() or (vault.api_key if vault else "") or settings.gemini_api_key
+            if not key or key == "your_gemini_api_key_here":
+                return None
+            if vision.key_id is not None:
+                return f"provider:google:{vision.key_id}"
+            from google import genai
+
+            return genai.Client(api_key=key)
+        resolved = resolve_secret_key(vision.provider, key_id=vision.key_id)
+        return f"provider:{vision.provider}" if resolved is not None else None
 
     async def execute(self, ctx: PipelineContext, on_progress: Optional[ProgressCallback] = None) -> None:
         async def progress(pct: float, msg: str) -> None:
@@ -156,7 +166,7 @@ class OnScreenTextStage(PipelineStage):
         detections: List[FrameDetection] = []
         failed = 0
         errors: List[str] = []
-        sem = asyncio.Semaphore(_GEMINI_CONCURRENCY)
+        sem = asyncio.Semaphore(2 if app_settings.vision.provider == "openai" else _GEMINI_CONCURRENCY)
         from app.core.model_catalog import is_unavailable_error
 
         async def run_batch(batch: List[Frame]) -> None:
@@ -175,6 +185,8 @@ class OnScreenTextStage(PipelineStage):
                             flex=app_settings.vision.flex,
                             flex_state=ctx.flex_state,
                             sensitivity=sensitivity,
+                            provider="google" if self._client_factory else app_settings.vision.provider,
+                            key_id=None if self._client_factory else app_settings.vision.key_id,
                         ))
                         break
                     except Exception as e:
@@ -263,21 +275,23 @@ class OnScreenTextStage(PipelineStage):
             after_count = len(clusters)
             filtered_frames = max(0, before_count - after_count)
             if filtered_frames > 0 and ctx.usage is not None and hasattr(ctx.usage, "record_local_savings"):
+                from app.core.provider_catalog import estimated_image_tokens, estimated_reasoning_tokens
+
                 v = app_settings.vision
-                img_tok = image_tokens(v.model, app_settings.vision_media_resolution)
+                img_tok = estimated_image_tokens(v.provider, v.model, app_settings.vision_media_resolution)
                 b_size = max(1, settings.onscreen_batch_size)
                 saved_batches = max(0, ceil(before_count / b_size) - (ceil(after_count / b_size) if after_count else 0))
-                think_tok = estimated_thinking_tokens(v.model, v.thinking)
+                think_tok = estimated_reasoning_tokens(v.provider, v.model, v.thinking)
                 saved_in = filtered_frames * img_tok + saved_batches * 450
                 saved_out = saved_batches * (150 + think_tok)
-                saved_cost = request_cost(v.model, saved_in, saved_out, flex=getattr(v, "flex", False)) or 0.0
+                saved_cost = request_cost(v.model, saved_in, saved_out, flex=getattr(v, "flex", False), provider=v.provider) or 0.0
                 ctx.usage.record_local_savings(
                     saved_tokens=saved_in + saved_out,
                     frames_filtered=filtered_frames,
                     saved_cost_usd=saved_cost,
                 )
             logger.info(
-                f"Cost-Saver frame pre-filter: {before_count} selected -> {after_count} cluster(s) sent to Gemini"
+                f"Cost-Saver frame pre-filter: {before_count} selected -> {after_count} cluster(s) sent to AI"
             )
             selected = [
                 Frame(

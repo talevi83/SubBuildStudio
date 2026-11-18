@@ -1,6 +1,8 @@
 import React, { useState, useRef, useMemo, useCallback, useDeferredValue } from 'react';
 import { AlertTriangle, Check, Loader2 } from 'lucide-react';
 import { useJobStore } from '../../store/useJobStore';
+import { useSettingsStore } from '../../store/useSettingsStore';
+import { inferProviderFromModelId, isAnyAiReady, isProviderReady } from '../settings/labels';
 import { isActiveStatus, isRtlLanguage } from '../../types';
 import type { SubtitleSegment } from '../../types';
 import { SubtitleRow } from './SubtitleRow';
@@ -41,7 +43,13 @@ export const SubtitleTable: React.FC = () => {
   const savingCount = useJobStore((s) => s.savingCount);
   const lastSavedAt = useJobStore((s) => s.lastSavedAt);
   const retranslate = useJobStore((s) => s.retranslateActiveJob);
-  const canTranslate = useJobStore((s) => !!s.systemInfo?.is_gemini_configured || !!s.pipelineConfig.gemini_api_key_override);
+  const systemInfo = useJobStore((s) => s.systemInfo);
+  const keyOverride = useJobStore((s) => s.pipelineConfig.gemini_api_key_override);
+  const appSettings = useSettingsStore((s) => s.settings);
+  const activeProvider =
+    appSettings?.translation.provider || inferProviderFromModelId(activeJob?.gemini_model || appSettings?.translation.model);
+  const canTranslate =
+    isProviderReady(systemInfo, activeProvider, keyOverride) || isAnyAiReady(systemInfo, keyOverride);
   const timingBusy = useJobStore((s) => s.timingBusy);
   const maxCps = useJobStore((s) => s.systemInfo?.max_cps_warning ?? 20);
   const insertDraft = useJobStore((s) => s.insertDraft);
