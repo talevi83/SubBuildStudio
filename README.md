@@ -321,7 +321,7 @@ npm run build
 > 💡 **Recommendation for Best Experience:** Always prefer running SubBuild Studio in its **native desktop window** (`run.bat` or `./run.sh --window`) rather than a regular web browser. In the desktop window, dragging & dropping a video or clicking to browse reads the file's **direct local path** in place (0 seconds wait, 0 GB copied to temp/uploads, and full support for *Save next to video*), clipboard paste works without browser permission prompts, and video fullscreen controls the window directly.
 
 ### Option A1: One-click (Windows — Recommended)
-Run `install.bat` (first-time setup) or simply double-click `run.bat`. During installation, you will be prompted to create a desktop shortcut with the official SubBuild Studio icon. Before starting the server, the launcher automatically checks Git for newer tagged releases or commits on `origin/main` (skip with `--no-update` or `SUBBUILD_NO_UPDATE=1`), rebuilds the frontend whenever its sources changed, and opens the studio in its own app window (Edge WebView2, no browser, no console) with a tray icon. Your API key and projects stay in `backend\.env` and `backend\storage`. Run `run.bat --browser` to get the console server and open the studio in your browser.
+Run `install.bat` (first-time setup) or simply double-click `run.bat`. During installation, you will be prompted to create a desktop shortcut with the official SubBuild Studio icon. Before starting the server, the launcher automatically checks Git for newer published release tags (`vX.Y.Z`) (skip with `--no-update` or `SUBBUILD_NO_UPDATE=1`), rebuilds the frontend whenever its sources changed, and opens the studio in its own app window (Edge WebView2, no browser, no console) with a tray icon. Your API key and projects stay in `backend\.env` and `backend\storage`. Run `run.bat --browser` to get the console server and open the studio in your browser.
 
 ### Option A2: One-click (Linux & macOS)
 Run the installer once, then start the studio with `./run.sh` (or on macOS, double-click `install.command` and `run.command` directly in Finder). During installation, the installer offers to add SubBuild Studio directly to your Applications menu (Launchpad on macOS / application launcher on Linux) with the official application icon:
@@ -367,13 +367,13 @@ SubBuild Studio runs directly from the Git repository via `run.bat` (Windows) or
 
 ### Automatic Updates (`VERSION`, `backend/app/core/updater.py`)
 1. **Pre-launch check (`run.bat` / `run.sh`):** Every launch invokes `python -m app.core.updater --auto --no-frontend-build` before checking frontend builds and starting the server.
-   - Compares local [`VERSION`](VERSION) / Git tags & `HEAD` against `origin` semver release tags (`vX.Y.Z`) first; if no newer release tag exists, falls back to checking commits behind `origin/main`.
-   - **Offline & developer-safe:** Network errors never block startup. In `--auto` mode, pulls are skipped automatically if you are on a feature branch (non-`main` with non-release update) or have uncommitted tracked edits (`dirty_worktree`), and `--ff-only` prevents unexpected merges.
+   - Compares local [`VERSION`](VERSION) and Git tags against published `origin` semver release tags (`vX.Y.Z`) only, ignoring raw unreleased commits on development/main branches.
+   - **Offline & developer-safe:** Network errors never block startup. In `--auto` mode, pulls are skipped automatically if you are on a feature branch (non-`main`) or have uncommitted tracked edits (`dirty_worktree`), and `--ff-only` prevents unexpected merges.
    - **Dependency & UI sync:** Automatically syncs `requirements.txt` changes if updated, while `run.bat` / `run.sh` rebuild `frontend/dist` whenever frontend files change.
    - **Skip update check:** Pass `--no-update` (`run.bat --no-update` / `./run.sh --no-update`) or set `SUBBUILD_NO_UPDATE=1`.
 2. **In-app version badge & Settings updater:**
-   - The **Sidebar** displays the installed version badge and highlights available updates with one click to Settings.
-   - In **Settings → Diagnostics**, click **Check for updates** (`POST /api/system/update/check`) to view remote version/release notes or commit diff, and **Update now** (`POST /api/system/update/apply`) to pull & rebuild cleanly (refused with `409 Conflict` if any pipeline job is currently active).
+   - The **Sidebar** displays the installed version badge and highlights available releases with one click to Settings.
+   - In **Settings → Diagnostics**, click **Check for updates** (`POST /api/system/update/check`) to view remote release version & notes, and **Update now** (`POST /api/system/update/apply`) to pull & rebuild cleanly (refused with `409 Conflict` if any pipeline job is currently active).
 
 ### Desktop Window & Tray Behavior (`packaging/launcher.py`)
 - Run via `run.bat` (or `./run.sh --window`, or `backend\.venv\Scripts\python.exe packaging\launcher.py`): opens a dedicated `pywebview` window with a loading screen while Uvicorn boots and adds a system tray icon. Launching a second instance brings the existing window to focus (`POST /api/desktop/show`).

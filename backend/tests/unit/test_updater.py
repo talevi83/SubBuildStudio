@@ -95,10 +95,9 @@ def test_check_for_updates_detects_newer_release_tag(tmp_path: Path):
     assert res["release_notes"] == "New UI"
 
 
-def test_check_for_updates_falls_back_to_origin_main_commits(tmp_path: Path):
+def test_check_for_updates_ignores_unreleased_commits_without_newer_release_tag(tmp_path: Path):
     repo = _make_fake_repo(tmp_path, version="1.5.0")
     local_sha = "1111111" + "0" * 33
-    remote_sha = "3333333" + "0" * 33
 
     def fake_run_git(_root, *args, timeout=4.0):
         cmd = " ".join(args)
@@ -111,21 +110,17 @@ def test_check_for_updates_falls_back_to_origin_main_commits(tmp_path: Path):
         if cmd == "rev-parse --abbrev-ref HEAD":
             return 0, "main", ""
         if cmd.startswith("ls-remote"):
-            return 0, f"{remote_sha}\trefs/heads/main\n{local_sha}\trefs/tags/v1.5.0\n", ""
-        if cmd.startswith("fetch"):
-            return 0, "", ""
-        if cmd.startswith("rev-list --count"):
-            return 0, "3", ""
+            return 0, f"{local_sha}\trefs/tags/v1.5.0\n", ""
         return 1, "", ""
 
     with patch.object(updater, "_run_git", side_effect=fake_run_git):
         res = updater.check_for_updates(repo)
 
-    assert res["update_available"] is True
-    assert res["update_kind"] == "commit"
-    assert res["commits_behind"] == 3
-    assert res["latest_version"] == "1.5.0 (+3)"
-    assert res["target_ref"] == "origin/main"
+    assert res["update_available"] is False
+    assert res["update_kind"] is None
+    assert res["commits_behind"] == 0
+    assert res["latest_version"] == "1.5.0"
+    assert res["target_ref"] is None
 
 
 def test_check_for_updates_handles_offline_gracefully(tmp_path: Path):
@@ -155,26 +150,26 @@ def test_check_for_updates_handles_offline_gracefully(tmp_path: Path):
 def test_apply_update_skips_feature_branch_in_auto_mode_and_dirty_worktree(tmp_path: Path):
     repo = _make_fake_repo(tmp_path, version="1.5.0")
 
-    commit_status = {
+    release_status = {
         "current_version": "1.5.0",
         "current_commit": "1111111",
         "branch": "feat/custom-work",
         "update_available": True,
-        "update_kind": "commit",
-        "latest_version": "1.5.0 (+2)",
+        "update_kind": "release",
+        "latest_version": "1.6.0",
         "latest_commit": "4444444",
-        "commits_behind": 2,
-        "target_ref": "origin/main",
+        "commits_behind": 0,
+        "target_ref": "v1.6.0",
         "release_url": None,
         "release_notes": None,
         "error": None,
     }
-    with patch.object(updater, "check_for_updates", return_value=commit_status):
+    with patch.object(updater, "check_for_updates", return_value=release_status):
         res = updater.apply_update(repo, auto_mode=True)
     assert res["updated"] is False
     assert res["skipped_reason"] == "feature_branch"
 
-    main_status = {**commit_status, "branch": "main"}
+    main_status = {**release_status, "branch": "main"}
     with (
         patch.object(updater, "check_for_updates", return_value=main_status),
         patch.object(updater, "_run_git", return_value=(0, " M backend/app/main.py", "")),

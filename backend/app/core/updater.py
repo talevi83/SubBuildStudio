@@ -154,8 +154,8 @@ def get_cached_update_status() -> Optional[Dict[str, Any]]:
 
 def check_for_updates(repo_root: Optional[Path] = None, timeout: float = 4.0) -> Dict[str, Any]:
     """
-    Compare local installation against `origin` Release tags first, then fall back to `origin/main` commits.
-    Never raises on network/offline errors; caches result for `/api/system/info`.
+    Compare local installation against published `origin` semantic Release tags (`vX.Y.Z`).
+    Ignores raw branch commits. Never raises on network/offline errors; caches result for `/api/system/info`.
     """
     global _cached_update_status
 
@@ -163,7 +163,6 @@ def check_for_updates(repo_root: Optional[Path] = None, timeout: float = 4.0) ->
     info = get_current_version_info(root)
     current_version = info["current_version"]
     current_commit = info["current_commit"]
-    full_commit = info["full_commit"]
 
     result: Dict[str, Any] = {
         "current_version": current_version,
@@ -182,46 +181,34 @@ def check_for_updates(repo_root: Optional[Path] = None, timeout: float = 4.0) ->
 
     if not (root / ".git").exists():
         result["error"] = "Not a Git checkout"
+        logger.info("Updater check skipped: %s", result["error"])
         _cached_update_status = dict(result)
         return result
 
-    rc, out, err = _run_git(root, "ls-remote", "--tags", "--heads", "origin", timeout=timeout)
+    rc, out, err = _run_git(root, "ls-remote", "--tags", "origin", timeout=timeout)
     if rc != 0:
         result["error"] = err or "Unable to contact remote repository"
+        logger.info("Updater check failed (v%s): %s", current_version, result["error"])
         _cached_update_status = dict(result)
         return result
 
-    # Parse remote tags (preferring dereferenced annotated ^{} SHAs) and main/master head SHA
+    # Parse remote semver release tags (preferring dereferenced annotated ^{} SHAs)
     tag_shas: Dict[str, str] = {}
-    remote_main_ref = ""
-    remote_main_sha = ""
-    heads: Dict[str, str] = {}
-
     for line in out.splitlines():
         parts = line.strip().split()
         if len(parts) < 2:
             continue
         sha, ref = parts[0], parts[1]
-        if ref.startswith("refs/tags/"):
-            raw_tag = ref[len("refs/tags/") :]
-            if raw_tag.endswith("^{}"):
-                tag_name = raw_tag[:-3]
-                if parse_semver(tag_name) is not None:
-                    tag_shas[tag_name] = sha
-            else:
-                if parse_semver(raw_tag) is not None:
-                    tag_shas.setdefault(raw_tag, sha)
-        elif ref.startswith("refs/heads/"):
-            head_name = ref[len("refs/heads/") :]
-            heads[head_name] = sha
+        if not ref.startswith("refs/tags/"):
+            continue
+        raw_tag = ref[len("refs/tags/") :]
+        if raw_tag.endswith("^{}"):
+            tag_name = raw_tag[:-3]
+            if parse_semver(tag_name) is not None:
+                tag_shas[tag_name] = sha
+        elif parse_semver(raw_tag) is not None:
+            tag_shas.setdefault(raw_tag, sha)
 
-    for candidate in ("main", "master"):
-        if candidate in heads:
-            remote_main_ref = candidate
-            remote_main_sha = heads[candidate]
-            break
-
-    # Priority 1: Highest semver Release tag
     best_tag: Optional[str] = None
     best_tuple: Optional[Tuple[int, int, int]] = None
     best_tag_sha = ""
@@ -249,31 +236,20 @@ def check_for_updates(repo_root: Optional[Path] = None, timeout: float = 4.0) ->
                 "release_notes": release_notes,
             }
         )
-        _cached_update_status = dict(result)
-        return result
-
-    # Priority 2: Newer commits on origin/main (if HEAD differs from remote main)
-    if remote_main_sha and remote_main_sha != full_commit:
-        fetch_rc, _, _ = _run_git(
-            root, "fetch", "--quiet", "origin", remote_main_ref, "--tags", timeout=max(timeout, 10.0)
+        logger.info(
+            "Updater check (v%s, branch=%s): newer release %s (%s) available",
+            current_version,
+            info["branch"] or "detached",
+            best_tag,
+            best_tag_sha[:7],
         )
-        if fetch_rc == 0:
-            cnt_rc, cnt_out, _ = _run_git(
-                root, "rev-list", "--count", f"HEAD..origin/{remote_main_ref}", timeout=timeout
-            )
-            if cnt_rc == 0 and cnt_out.isdigit():
-                behind = int(cnt_out)
-                if behind > 0:
-                    result.update(
-                        {
-                            "update_available": True,
-                            "update_kind": "commit",
-                            "latest_version": f"{current_version} (+{behind})",
-                            "latest_commit": remote_main_sha[:7],
-                            "commits_behind": behind,
-                            "target_ref": f"origin/{remote_main_ref}",
-                        }
-                    )
+    else:
+        logger.info(
+            "Updater check (v%s, branch=%s): up to date (latest remote tag: %s)",
+            current_version,
+            info["branch"] or "detached",
+            best_tag or "none",
+        )
 
     _cached_update_status = dict(result)
     return result
@@ -352,7 +328,7 @@ def apply_update(
     rebuild_frontend: bool = True,
 ) -> Dict[str, Any]:
     """
-    Fast-forward the Git working copy to the newer release tag or `origin/main`,
+    Fast-forward the Git working copy to the newer published Release tag (`vX.Y.Z`),
     then sync Python dependencies and rebuild `frontend/dist` when changed.
     """
     global _cached_update_status
@@ -378,17 +354,17 @@ def apply_update(
         base_reply["message"] = str(status["error"])
         return base_reply
 
-    if not status.get("update_available"):
+    if not status.get("update_available") or not status.get("target_ref"):
         base_reply["message"] = "Already up to date."
         return base_reply
 
     branch = status.get("branch") or ""
-    update_kind = status.get("update_kind")
-    target_ref = status.get("target_ref") or "origin/main"
+    target_ref = str(status["target_ref"])
 
-    if auto_mode and branch not in ("main", "master") and update_kind != "release":
+    if auto_mode and branch not in ("main", "master"):
         base_reply["skipped_reason"] = "feature_branch"
-        base_reply["message"] = f"Skipped automatic branch pull on '{branch}'."
+        base_reply["message"] = f"Skipped automatic release update on branch '{branch}'."
+        logger.info("Updater apply skipped (branch=%s): %s", branch, base_reply["skipped_reason"])
         return base_reply
 
     # Protect modified tracked files in developer checkouts
@@ -396,6 +372,7 @@ def apply_update(
     if st_rc == 0 and st_out.strip():
         base_reply["skipped_reason"] = "dirty_worktree"
         base_reply["message"] = "Skipped update because tracked files have local uncommitted changes."
+        logger.info("Updater apply skipped (target=%s): dirty_worktree", target_ref)
         return base_reply
 
     req_file = root / "backend" / "requirements.txt"
@@ -404,20 +381,19 @@ def apply_update(
     pkg_before = _file_sha256(pkg_file)
     old_full_commit = get_current_version_info(root)["full_commit"]
 
-    # Fetch remote tags/refs cleanly
+    # Fetch remote tags cleanly
     fetch_rc, _, fetch_err = _run_git(root, "fetch", "--tags", "--quiet", "origin", timeout=30.0)
     if fetch_rc != 0:
         base_reply["message"] = fetch_err or "Failed to fetch updates from origin."
+        logger.warning("Updater fetch failed for %s: %s", target_ref, base_reply["message"])
         return base_reply
 
-    if target_ref in ("origin/main", "origin/master") and branch in ("main", "master"):
-        pull_rc, pull_out, pull_err = _run_git(root, "pull", "--ff-only", "origin", branch, timeout=30.0)
-    else:
-        pull_rc, pull_out, pull_err = _run_git(root, "merge", "--ff-only", target_ref, timeout=30.0)
+    pull_rc, pull_out, pull_err = _run_git(root, "merge", "--ff-only", target_ref, timeout=30.0)
 
     if pull_rc != 0:
         base_reply["skipped_reason"] = "non_fast_forward"
         base_reply["message"] = pull_err or pull_out or "Fast-forward update failed."
+        logger.warning("Updater fast-forward merge failed for %s: %s", target_ref, base_reply["message"])
         return base_reply
 
     req_after = _file_sha256(req_file)
@@ -447,6 +423,16 @@ def apply_update(
         "release_notes": status.get("release_notes"),
         "error": None,
     }
+
+    logger.info(
+        "Updater applied release %s: v%s -> v%s (%s), reqs=%s, frontend=%s",
+        target_ref,
+        prev_version,
+        after_info["current_version"],
+        after_info["current_commit"],
+        req_updated,
+        fe_rebuilt,
+    )
 
     return {
         "updated": True,

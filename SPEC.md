@@ -53,7 +53,7 @@ and frames explicitly sent to your configured cloud AI provider (or stays 100% o
 | Frontend | **React 19, TypeScript 6, Vite 8, Tailwind CSS 4, Zustand 5, lucide-react** | Single-page studio; typed REST client; WebSocket listener inside the job store |
 | Lint / build | **oxlint**, `tsc -b` + `vite build` | Zero-error lint, strict TypeScript build, 14 Vitest specs |
 | Desktop shell | **pywebview** (Edge WebView2), **pystray + Pillow** (tray icon) | Own app window and tray menu from source (`packaging/launcher.py`) |
-| Auto-Updater | **Git & GitHub Releases** (`VERSION`, `backend/app/core/updater.py`) | Tag-first semver release & `origin/main` update checks on launch (`run.bat`/`run.sh`) and in-app UI |
+| Auto-Updater | **Git & GitHub Releases** (`VERSION`, `backend/app/core/updater.py`) | Semver release tag (`vX.Y.Z`) update checks on launch (`run.bat`/`run.sh`) and in-app UI |
 | Tests | **pytest, pytest-asyncio, httpx, Vitest, Java 21 + Selenium 4 + RestAssured** | 512 Pytest + 14 Vitest + 53 Java E2E/API tests |
 
 ---
@@ -263,7 +263,7 @@ Interactive documentation: `http://localhost:8000/docs`. Summary:
 - **Fallbacks:** `--browser` (or `SUBBUILD_UI=browser`), or automatically when WebView2 is missing; `--no-tray` for a console server. A second launch asks the running copy to show its window (`POST /api/desktop/show`); if the running copy has no window it says so instead of opening a tab.
 - **Data folder** (`SUBBUILD_HOME` → `data` next to the app → `%LOCALAPPDATA%\SubBuild Studio`) holds `.env`, `storage/`, `launcher.log` and the WebView profile, so updating never touches user data. `run.bat` sets `SUBBUILD_HOME=backend`, keeping the developer layout.
 - **Source execution & FFmpeg:** stdout/stderr go to `launcher.log`; child consoles (ffmpeg, nvidia-smi) are hidden under `pythonw`; `prepare_environment()` also adds `packaging/ffmpeg` to `PATH` when present. `run.bat` / `./run.sh --window` run the launcher from source using `packaging/requirements-desktop.txt`.
-- **Auto-updater:** Root `VERSION` and `core/updater.py` compare the installed version/HEAD against remote semver release tags (`vX.Y.Z`) first, falling back to `origin/main` commits. `run.bat` and `run.sh` invoke `--auto --no-frontend-build` before launch (skipping feature branches and dirty worktrees automatically; bypass with `--no-update` or `SUBBUILD_NO_UPDATE=1`). In-app Sidebar badges and Settings controls let users check and apply updates from the UI (blocked with `409 Conflict` if any pipeline job is active).
+- **Auto-updater:** Root `VERSION` and `core/updater.py` compare the installed version/tags against published remote semver release tags (`vX.Y.Z`) only (ignoring raw branch commits). `run.bat` and `run.sh` invoke `--auto --no-frontend-build` before launch (skipping feature branches and dirty worktrees automatically; bypass with `--no-update` or `SUBBUILD_NO_UPDATE=1`). In-app Sidebar badges and Settings controls let users check and apply release updates from the UI (blocked with `409 Conflict` if any pipeline job is active).
 
 ---
 
