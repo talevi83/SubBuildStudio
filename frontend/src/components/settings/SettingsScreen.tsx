@@ -6,16 +6,16 @@ import { useJobStore } from '../../store/useJobStore';
 import { useT, formatUsd, formatNumber, formatRate } from '../../i18n';
 import type { MessageKey } from '../../i18n';
 import { useCostEstimate } from '../../hooks/useCostEstimate';
-import { thinkingLabel, modelLabel } from './labels';
+import { thinkingLabel, modelLabel, providerDisplayName } from './labels';
 import type {
-  AppSettings, CatalogModel, GeminiCallSettings, MediaResolution, ModelCheckResponse, ModelCheckResult, OllamaStatus, OnscreenPosition, PipelineTask, ThinkingLevel,
+  AIProvider, AppSettings, CatalogModel, GeminiCallSettings, HardwareInfo, MediaResolution, ModelCheckResponse, ModelCheckResult, OllamaStatus, OnscreenPosition, PipelineTask, ProviderKeyRecord, ProviderSummary, ThinkingLevel,
 } from '../../types';
 import { api } from '../../services/api';
 import { StorageSection } from './StorageSection';
 import { ApiKeySection } from './ApiKeySection';
 import {
-  ArrowLeft, Brain, Bug, Coins, Languages, Lightbulb, Moon, Palette, Sun, Save, Loader2, Check, ExternalLink, PlugZap, CheckCircle2, XCircle,
-  Hourglass, ScrollText, Stethoscope, Download, Cpu, Terminal,
+  ArrowLeft, AlertTriangle, Brain, Bug, Coins, Languages, Lightbulb, Moon, Palette, Sun, Save, Loader2, Check, ExternalLink, PlugZap, CheckCircle2, XCircle,
+  Hourglass, ScrollText, Stethoscope, Download, Cpu, Terminal, Sparkles,
 } from 'lucide-react';
 
 
@@ -25,6 +25,197 @@ const selectClass =
 
 type Step = PipelineTask;
 const STEPS: Step[] = ['translation', 'glossary', 'vision'];
+const AI_PROVIDERS: AIProvider[] = ['google', 'openai', 'anthropic', 'ollama'];
+
+function filterModelsForStepAndKey(
+  catalog: CatalogModel[],
+  providers: Partial<Record<AIProvider, ProviderSummary>>,
+  keys: ProviderKeyRecord[],
+  provider: AIProvider,
+  step: Step,
+  keyId?: string | null
+): CatalogModel[] {
+  const stepCapable = catalog.filter(
+    (m) => (m.provider || 'google') === provider && (!m.tasks || m.tasks.includes(step))
+  );
+  const providerSummary = providers[provider];
+  const providerKeys = keys.filter((k) => k.provider === provider);
+  const liveForProvider = catalog.some((m) => (m.provider || 'google') === provider && m.available);
+  const providerConfigured = !!providerSummary?.configured || providerKeys.length > 0;
+
+  if (!liveForProvider && !providerConfigured) {
+    return [];
+  }
+
+  if (liveForProvider || providerSummary?.discovered) {
+    const effectiveKeyId = keyId || providerSummary?.default_key_id || '';
+    const keyObj = effectiveKeyId ? providerKeys.find((k) => k.id === effectiveKeyId) : undefined;
+    const keyChecked = keyObj ? keyObj.discovered_count !== null && keyObj.discovered_count !== undefined : false;
+    const keyHasModels =
+      !!effectiveKeyId &&
+      catalog.some((m) => (m.provider || 'google') === provider && m.available && m.key_ids?.includes(effectiveKeyId));
+
+    return stepCapable.filter((m) => {
+      if (!m.available) return false;
+      if (effectiveKeyId && (keyChecked || keyHasModels)) {
+        return !!m.key_ids?.includes(effectiveKeyId);
+      }
+      return true;
+    });
+  }
+
+  // Offline mode fallback when live discovery did not run
+  return stepCapable;
+}
+
+function pickBestModelForProvider(
+  catalog: CatalogModel[],
+  providers: Partial<Record<AIProvider, ProviderSummary>>,
+  keys: ProviderKeyRecord[],
+  provider: AIProvider,
+  step: Step,
+  keyId?: string | null
+): CatalogModel | undefined {
+  const pool = filterModelsForStepAndKey(catalog, providers, keys, provider, step, keyId);
+  return pool.find((m) => m.recommended_for?.includes(step)) || pool[0];
+}
+
+function parseModelBillions(m: CatalogModel): number | null {
+  if (typeof m.param_billions === 'number' && Number.isFinite(m.param_billions)) {
+    return m.param_billions;
+  }
+  const match = /(?:^|[:\-_])(\d+(?:\.\d+)?)b(?:$|[:\-_])/i.exec(m.id || '');
+  if (!match) return null;
+  const val = Number.parseFloat(match[1]);
+  return Number.isFinite(val) ? val : null;
+}
+
+function maxLocalBillionsForHardware(hw?: HardwareInfo | null): number {
+  if (!hw?.cuda_available) return 0;
+  const vramMb = hw.vram_total_mb ?? 8192;
+  if (vramMb < 5500) return 0;
+  if (vramMb < 7800) return 8.5;
+  if (vramMb < 11500) return 12.5;
+  if (vramMb < 15500) return 16.0;
+  if (vramMb < 23000) return 22.0;
+  return 35.0;
+}
+
+function isLocalModelEntry(m: CatalogModel): boolean {
+  return (
+    !!m.is_local ||
+    (m.provider === 'ollama' && m.input_per_m === 0 && !m.id.endsWith('-cloud') && !m.id.includes(':cloud'))
+  );
+}
+
+function effectiveEpisodeStepCost(m: CatalogModel, step: Step): number {
+  if (isLocalModelEntry(m)) return 0;
+  const prov = m.provider || 'google';
+  const factor = prov === 'google' && m.supports_flex && m.flex_price_factor ? m.flex_price_factor : 1;
+  if (step === 'vision') {
+    const base = m.episode_vision_cost_usd ?? (m.input_per_m ?? 999) * 0.04 + (m.output_per_m ?? 999) * 0.005;
+    return base * factor;
+  }
+  if (step === 'glossary') {
+    const inP = m.input_per_m ?? 999;
+    const outP = m.output_per_m ?? 999;
+    return ((9200 * inP + 2000 * outP) / 1e6) * factor;
+  }
+  const base = m.episode_cost_usd ?? (m.input_per_m ?? 999) * 0.04 + (m.output_per_m ?? 999) * 0.025;
+  return base * factor;
+}
+
+function pickThinkingForAuto(m: CatalogModel, step: Step): ThinkingLevel {
+  const prov = m.provider || 'google';
+  if (prov !== 'google') return 'default';
+  const preferred: ThinkingLevel[] =
+    step === 'vision' ? ['minimal', 'low', 'default'] : ['low', 'medium', 'default'];
+  return preferred.find((lv) => m.thinking.includes(lv)) || 'default';
+}
+
+function pickBestValueForStep(
+  catalog: CatalogModel[],
+  providers: Partial<Record<AIProvider, ProviderSummary>>,
+  keys: ProviderKeyRecord[],
+  step: Step,
+  includeLocal: boolean,
+  hw?: HardwareInfo | null,
+): { call: GeminiCallSettings; chosen: CatalogModel; skippedHeavyLocal: CatalogModel[] } | null {
+  const maxBillions = maxLocalBillionsForHardware(hw);
+  const poolMap = new Map<string, CatalogModel>();
+  for (const prov of AI_PROVIDERS) {
+    const provKeys = keys.filter((k) => k.provider === prov);
+    const keyIdsToCheck: (string | null)[] = provKeys.length > 0 ? provKeys.map((k) => k.id) : [null];
+    for (const kid of keyIdsToCheck) {
+      for (const m of filterModelsForStepAndKey(catalog, providers, keys, prov, step, kid)) {
+        const key = `${m.provider || prov}:${m.id}`;
+        if (!poolMap.has(key)) poolMap.set(key, m);
+      }
+    }
+  }
+  const allCapable = Array.from(poolMap.values());
+  if (allCapable.length === 0) return null;
+
+  const skippedHeavyLocal: CatalogModel[] = [];
+  const eligible = allCapable.filter((m) => {
+    if (!isLocalModelEntry(m)) return true;
+    if (!includeLocal) return false;
+    if (maxBillions <= 0) {
+      skippedHeavyLocal.push(m);
+      return false;
+    }
+    const isRecLocal =
+      m.suitability_by_task?.[step] === 'recommended' || !!m.recommended_for?.includes(step);
+    if (!isRecLocal) return false;
+    const paramsB = parseModelBillions(m) ?? 8;
+    if (paramsB < 6.5) return false;
+    if (paramsB > maxBillions) {
+      skippedHeavyLocal.push(m);
+      return false;
+    }
+    return true;
+  });
+
+  if (eligible.length === 0) return null;
+
+  const recommended = eligible.filter(
+    (m) => m.suitability_by_task?.[step] === 'recommended' || !!m.recommended_for?.includes(step),
+  );
+  const suitable = eligible.filter(
+    (m) => m.suitability_by_task?.[step] !== 'warning' && m.suitability_by_task?.[step] !== 'unsuitable',
+  );
+  const candidates = recommended.length > 0 ? recommended : suitable.length > 0 ? suitable : eligible;
+
+  const sorted = [...candidates].sort((a, b) => {
+    const costDiff = effectiveEpisodeStepCost(a, step) - effectiveEpisodeStepCost(b, step);
+    if (Math.abs(costDiff) > 1e-6) return costDiff;
+    if (isLocalModelEntry(a) && isLocalModelEntry(b)) {
+      const pA = parseModelBillions(a) ?? 8;
+      const pB = parseModelBillions(b) ?? 8;
+      if (pA !== pB) return pB - pA;
+    }
+    return (a.rank ?? 50) - (b.rank ?? 50);
+  });
+
+  const best = sorted[0];
+  const prov: AIProvider = best.provider || 'google';
+  const defaultKeyId = providers[prov]?.default_key_id;
+  const keyId =
+    !best.key_ids?.length || (defaultKeyId && best.key_ids.includes(defaultKeyId))
+      ? null
+      : best.key_ids[0];
+  return {
+    call: {
+      provider: prov,
+      model: best.id,
+      key_id: keyId,
+      thinking: pickThinkingForAuto(best, step),
+      flex: prov === 'google' && !!best.supports_flex,
+    },
+    chosen: best,
+    skippedHeavyLocal,
+  };
+}
 
 /** Per-step check results; older servers only report per model. */
 function checksByStep(res: ModelCheckResponse | undefined, target: AppSettings): Partial<Record<Step, ModelCheckResult>> {
@@ -62,19 +253,38 @@ const Segmented = <V extends string>({
   </div>
 );
 
-const PriceLine: React.FC<{ model?: CatalogModel; flex?: boolean }> = ({ model, flex }) => {
+const PriceLine: React.FC<{ model?: CatalogModel; flex?: boolean; step: Step }> = ({ model, flex, step }) => {
   const t = useT();
   const language = useUiStore((s) => s.language);
   if (!model) return <p className="text-[11px] text-amber-300">{t('settings.priceUnknown')}</p>;
   // Flex bills every token at a fixed share of the Standard price
   const factor = flex && model.flex_price_factor ? model.flex_price_factor : 1;
   const usd = (v: number) => formatRate(v * factor, language);
+  const epRaw = step === 'vision' ? model.episode_vision_cost_usd : model.episode_cost_usd;
+  const mvRaw = step === 'vision' ? model.movie_vision_cost_usd : model.movie_cost_usd;
+  const epCost = epRaw != null ? epRaw * factor : null;
+  const mvCost = mvRaw != null ? mvRaw * factor : null;
+
   return (
-    <div className="space-y-0.5 text-[11px]">
-      <p className="text-zinc-300">
-        {factor !== 1 && <span className="text-emerald-400 font-medium">{t('settings.flexTag')}: </span>}
-        {t('settings.price', { input: usd(model.input_per_m), output: usd(model.output_per_m) })}
-      </p>
+    <div className="space-y-1 text-[11px]" data-testid={`model-card-${step}-pricing`}>
+      {model.is_local ? (
+        <p className="text-emerald-300 font-medium">{t('settings.localFreeTag')}</p>
+      ) : model.input_per_m != null && model.output_per_m != null ? (
+        <p className="text-zinc-300">
+          {factor !== 1 && <span className="text-emerald-400 font-medium">{t('settings.flexTag')}: </span>}
+          {t('settings.price', { input: usd(model.input_per_m), output: usd(model.output_per_m) })}
+        </p>
+      ) : (
+        <p className="text-amber-300">{t('settings.priceUnknown')}</p>
+      )}
+      {epCost != null && mvCost != null && (
+        <p className="text-indigo-300/90 font-medium" data-testid={`model-card-${step}-benchmarks`}>
+          {t('settings.benchmarkEstimate', {
+            episode: formatUsd(epCost, language),
+            movie: formatUsd(mvCost, language),
+          })}
+        </p>
+      )}
       {model.input_long_per_m && model.output_long_per_m ? (
         <p className="text-zinc-500">
           {t('settings.priceLong', { input: usd(model.input_long_per_m), output: usd(model.output_long_per_m) })}
@@ -146,77 +356,238 @@ const ModelCard: React.FC<{
   hint: string;
   value: GeminiCallSettings;
   catalog: CatalogModel[];
+  providers: Partial<Record<AIProvider, ProviderSummary>>;
+  keys: ProviderKeyRecord[];
   onChange: (v: GeminiCallSettings) => void;
+  onApplyProviderAll?: (provider: AIProvider) => void;
   children?: React.ReactNode;
   check?: ModelCheckResult;
-}> = ({ step, title, hint, value, catalog, onChange, children, check }) => {
+}> = ({ step, title, hint, value, catalog, providers, keys, onChange, onApplyProviderAll, children, check }) => {
   const t = useT();
   const testId = `model-card-${step}`;
-  // Only models that can do this step's job (e.g. image input for vision, strong multilingual output for translation)
-  const options = catalog.filter((m) => !m.tasks || m.tasks.includes(step));
-  const info = catalog.find((m) => m.id === value.model);
+  const activeProvider: AIProvider = value.provider || 'google';
+  const providerKeys = keys.filter((k) => k.provider === activeProvider);
+  // Strict filtering: only models available to the active key AND capable of this pipeline step
+  const options = filterModelsForStepAndKey(catalog, providers, keys, activeProvider, step, value.key_id);
+  const info =
+    options.find((m) => m.id === value.model) ||
+    (value.model
+      ? catalog.find((m) => (m.provider || 'google') === activeProvider && m.id === value.model)
+      : undefined);
   const levels: ThinkingLevel[] = info ? info.thinking : ['default'];
+  const warningText = info?.warnings_by_task?.[step];
+  const isRecommended = !!info?.recommended_for?.includes(step);
+  const hasAnyProviderKey =
+    providerKeys.length > 0 ||
+    !!providers[activeProvider]?.configured ||
+    catalog.some((m) => (m.provider || 'google') === activeProvider && m.available);
+
+  const handleKeyChange = (nextKeyIdRaw: string) => {
+    const nextKeyId = nextKeyIdRaw || null;
+    const nextOptions = filterModelsForStepAndKey(catalog, providers, keys, activeProvider, step, nextKeyId);
+    const keepCurrent = !!value.model && nextOptions.some((m) => m.id === value.model);
+    const picked = nextOptions.find((m) => m.recommended_for?.includes(step)) || nextOptions[0];
+    onChange({
+      ...value,
+      provider: activeProvider,
+      key_id: nextKeyId,
+      model: keepCurrent ? value.model : (picked?.id || ''),
+    });
+  };
 
   return (
     <div className="p-4 rounded-xl bg-sunken border border-line space-y-3" data-testid={testId}>
-      <div>
-        <h3 className="text-xs font-semibold text-zinc-100 flex items-center gap-2">
-          {title}
-          {info?.preview && (
-            <span className="text-[10px] px-1.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
-              {t('settings.preview')}
-            </span>
-          )}
-        </h3>
-        <p className="text-[11px] text-zinc-500 mt-0.5">{hint}</p>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h3 className="text-xs font-semibold text-zinc-100 flex flex-wrap items-center gap-2">
+            {title}
+            {isRecommended && (
+              <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                <Sparkles className="w-2.5 h-2.5" />
+                {t('settings.recommendedTag')}
+              </span>
+            )}
+            {info?.available && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                {t('settings.availableTag')}
+              </span>
+            )}
+            {info?.preview && (
+              <span className="text-[10px] px-1.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                {t('settings.preview')}
+              </span>
+            )}
+          </h3>
+          <p className="text-[11px] text-zinc-500 mt-0.5">{hint}</p>
+        </div>
+        {onApplyProviderAll && (
+          <button
+            type="button"
+            onClick={() => onApplyProviderAll(activeProvider)}
+            data-testid="apply-provider-all-btn"
+            className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-line text-[11px] text-zinc-200 cursor-pointer transition-colors"
+          >
+            {t('settings.applyProviderAll')}
+          </button>
+        )}
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
         <label className="text-[11px] text-zinc-400 space-y-1">
+          <span className="block font-medium">{t('settings.providerLabel')}</span>
+          <select
+            value={activeProvider}
+            aria-label={`${title} — ${t('settings.providerLabel')}`}
+            data-testid={`${testId}-provider`}
+            onChange={(e) => {
+              const nextProv = e.target.value as AIProvider;
+              const best = pickBestModelForProvider(catalog, providers, keys, nextProv, step);
+              const nextModel = best?.id || '';
+              const nextThinking =
+                nextProv === 'google' && best?.thinking.includes(value.thinking)
+                  ? value.thinking
+                  : nextProv === 'google' && best?.default_level && best.thinking.includes(best.default_level as ThinkingLevel)
+                    ? (best.default_level as ThinkingLevel)
+                    : 'default';
+              onChange({
+                provider: nextProv,
+                model: nextModel,
+                key_id: null,
+                thinking: nextThinking,
+                flex: nextProv === 'google' && !!value.flex && best?.supports_flex !== false,
+              });
+            }}
+            className={selectClass}
+          >
+            {AI_PROVIDERS.map((p) => (
+              <option key={p} value={p}>
+                {t(`settings.providers.${p}` as MessageKey)}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="text-[11px] text-zinc-400 space-y-1 sm:col-span-1 lg:col-span-2">
           <span className="block font-medium">{t('settings.model')}</span>
           <select
-            value={value.model}
+            value={options.some((m) => m.id === value.model) ? value.model : (options.length === 0 ? value.model : '')}
             aria-label={`${title} — ${t('settings.model')}`}
+            data-testid={`${testId}-model`}
+            disabled={options.length === 0 && !value.model}
             onChange={(e) => {
-              const next = catalog.find((m) => m.id === e.target.value);
-              // Keep the thinking level (and Flex) if the new model supports it
+              const next = options.find((m) => m.id === e.target.value);
               const thinking = next?.thinking.includes(value.thinking) ? value.thinking : 'default';
-              onChange({ model: e.target.value, thinking, flex: !!value.flex && next?.supports_flex !== false });
+              onChange({
+                ...value,
+                provider: activeProvider,
+                model: e.target.value,
+                thinking,
+                flex: activeProvider === 'google' && !!value.flex && next?.supports_flex !== false,
+              });
             }}
             className={selectClass}
           >
             {options.map((m) => (
-              <option key={m.id} value={m.id}>
+              <option key={`${activeProvider}:${m.id}`} value={m.id}>
                 {m.label}
               </option>
             ))}
-            {!options.some((m) => m.id === value.model) && (
-              // A custom model set in .env — keep it visible instead of silently showing another one
+            {options.length > 0 && !options.some((m) => m.id === value.model) && (
+              <option value="">—</option>
+            )}
+            {options.length === 0 && value.model && (
               <option value={value.model}>{value.model}</option>
+            )}
+            {options.length === 0 && !value.model && (
+              <option value="">—</option>
             )}
           </select>
         </label>
-        <label className="text-[11px] text-zinc-400 space-y-1">
-          <span className="block font-medium flex items-center gap-1">
-            <Brain className="w-3 h-3" />
-            {t('settings.thinking')}
-          </span>
+
+        {activeProvider === 'google' ? (
+          <label className="text-[11px] text-zinc-400 space-y-1">
+            <span className="block font-medium flex items-center gap-1">
+              <Brain className="w-3 h-3" />
+              {t('settings.thinking')}
+            </span>
+            <select
+              value={value.thinking}
+              aria-label={`${title} — ${t('settings.thinking')}`}
+              onChange={(e) => onChange({ ...value, thinking: e.target.value as ThinkingLevel })}
+              className={selectClass}
+              disabled={levels.length === 1}
+            >
+              {levels.map((l) => (
+                <option key={l} value={l}>
+                  {thinkingLabel(t, l, info)}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <label className="text-[11px] text-zinc-400 space-y-1">
+            <span className="block font-medium">{t('settings.keyLabel')}</span>
+            <select
+              value={value.key_id || ''}
+              aria-label={`${title} — ${t('settings.keyLabel')}`}
+              data-testid={`${testId}-key`}
+              onChange={(e) => handleKeyChange(e.target.value)}
+              className={selectClass}
+              disabled={providerKeys.length === 0}
+            >
+              <option value="">{t('settings.keyDefaultAuto')}</option>
+              {providerKeys.map((k) => (
+                <option key={k.id} value={k.id}>
+                  {k.label} {k.masked_key ? `(${k.masked_key})` : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
+
+      {activeProvider === 'google' && providerKeys.length > 1 && (
+        <label className="block text-[11px] text-zinc-400 space-y-1">
+          <span className="block font-medium">{t('settings.keyLabel')}</span>
           <select
-            value={value.thinking}
-            aria-label={`${title} — ${t('settings.thinking')}`}
-            onChange={(e) => onChange({ ...value, thinking: e.target.value as ThinkingLevel })}
+            value={value.key_id || ''}
+            aria-label={`${title} — ${t('settings.keyLabel')}`}
+            data-testid={`${testId}-key`}
+            onChange={(e) => handleKeyChange(e.target.value)}
             className={selectClass}
-            disabled={levels.length === 1}
           >
-            {levels.map((l) => (
-              <option key={l} value={l}>
-                {thinkingLabel(t, l, info)}
+            <option value="">{t('settings.keyDefaultAuto')}</option>
+            {providerKeys.map((k) => (
+              <option key={k.id} value={k.id}>
+                {k.label} {k.masked_key ? `(${k.masked_key})` : ''}
               </option>
             ))}
           </select>
         </label>
-      </div>
-      <FlexToggle step={step} value={value} info={info} onChange={onChange} />
-      <PriceLine model={info} flex={value.flex} />
+      )}
+
+      {options.length === 0 && (
+        <p data-testid={`${testId}-no-models`} className="text-[11px] text-amber-300">
+          {hasAnyProviderKey ? t('settings.noCapableModelsHint') : t('settings.noKeyModelsHint')}
+        </p>
+      )}
+
+      {warningText && (
+        <div
+          data-testid={`${testId}-warning`}
+          className="flex items-start gap-2 p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-300"
+        >
+          <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-rose-400" />
+          <span>{warningText}</span>
+        </div>
+      )}
+
+      {activeProvider === 'google' && (
+        <FlexToggle step={step} value={value} info={info} onChange={onChange} />
+      )}
+      {(info || value.model) && (
+        <PriceLine model={info} flex={activeProvider === 'google' && !!value.flex} step={step} />
+      )}
       {check && (
         <p
           className={`text-[11px] flex items-start gap-1.5 ${check.ok ? 'text-emerald-400' : 'text-rose-400'}`}
@@ -238,7 +609,7 @@ export const SettingsScreen: React.FC = () => {
   const setLanguage = useUiStore((s) => s.setLanguage);
   const setTheme = useUiStore((s) => s.setTheme);
   const setView = useUiStore((s) => s.setView);
-  const { settings, catalog, loaded, error, load, save, pricingChecked, pricingSource } = useSettingsStore();
+  const { settings, catalog, providers, keys, loaded, error, load, save, pricingChecked, pricingSource } = useSettingsStore();
 
   const [draft, setDraft] = useState<AppSettings | null>(settings);
   const [saving, setSaving] = useState(false);
@@ -252,6 +623,9 @@ export const SettingsScreen: React.FC = () => {
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [ollamaBusy, setOllamaBusy] = useState(false);
   const keyOverride = useJobStore((s) => s.pipelineConfig.gemini_api_key_override);
+  const systemInfo = useJobStore((s) => s.systemInfo);
+  const [includeLocalForAuto, setIncludeLocalForAuto] = useState(false);
+  const [autoNotice, setAutoNotice] = useState<{ summary: string; detail?: string } | null>(null);
 
   const runCheck = async (target: AppSettings | null = draft) => {
     if (!target) return;
@@ -326,11 +700,14 @@ export const SettingsScreen: React.FC = () => {
     }
   };
 
-  // Adopt server settings when they (re)load, unless the user is editing
+  // Adopt server settings when they (re)load, unless the user is editing identical server state
   const [syncedFrom, setSyncedFrom] = useState<AppSettings | null>(null);
   if (settings && settings !== syncedFrom) {
+    const serverChanged = !syncedFrom || JSON.stringify(settings) !== JSON.stringify(syncedFrom);
     setSyncedFrom(settings);
-    setDraft(settings);
+    if (!draft || serverChanged) {
+      setDraft(settings);
+    }
   }
 
   const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(settings), [draft, settings]);
@@ -350,10 +727,110 @@ export const SettingsScreen: React.FC = () => {
   const update = (step: Step, value: GeminiCallSettings) => {
     if (!draft) return;
     setDraft({ ...draft, [step]: value });
+    setAutoNotice(null);
     // A result for the previous model would be misleading
     setChecks(({ [step]: _old, ...rest }) => rest);
   };
-  const visionInfo = catalog.find((m) => m.id === draft?.vision.model);
+  const applyProviderToAll = (provider: AIProvider) => {
+    if (!draft) return;
+    const sharedKeyId = draft.translation.provider === provider ? draft.translation.key_id : null;
+    const trBest = pickBestModelForProvider(catalog, providers, keys, provider, 'translation', sharedKeyId);
+    const glBest = pickBestModelForProvider(catalog, providers, keys, provider, 'glossary', sharedKeyId);
+    const viBest = pickBestModelForProvider(catalog, providers, keys, provider, 'vision', sharedKeyId);
+    setDraft({
+      ...draft,
+      translation: {
+        provider,
+        model: trBest?.id || '',
+        key_id: sharedKeyId,
+        thinking: provider === 'google' ? 'low' : 'default',
+        flex: false,
+      },
+      glossary: {
+        provider,
+        model: glBest?.id || trBest?.id || '',
+        key_id: sharedKeyId,
+        thinking: provider === 'google' ? 'low' : 'default',
+        flex: false,
+      },
+      ...(viBest
+        ? {
+            vision: {
+              provider,
+              model: viBest.id,
+              key_id: sharedKeyId,
+              thinking: provider === 'google' ? 'minimal' : 'default',
+              flex: false,
+            },
+          }
+        : {}),
+    });
+    setAutoNotice(null);
+    setChecks({});
+  };
+
+  const hw = systemInfo?.hardware;
+  const maxLocalBillions = maxLocalBillionsForHardware(hw);
+  const vramGb = hw?.vram_total_mb ? Math.round(hw.vram_total_mb / 1024) : 0;
+
+  const autoRecommendBestValue = () => {
+    if (!draft) return;
+    const nextCalls: Partial<Record<Step, GeminiCallSettings>> = {};
+    const summaryParts: string[] = [];
+    const skippedMap = new Map<string, CatalogModel>();
+    let choseLocal = false;
+
+    for (const step of STEPS) {
+      const res = pickBestValueForStep(catalog, providers, keys, step, includeLocalForAuto, hw);
+      if (!res) continue;
+      nextCalls[step] = res.call;
+      const stepName =
+        step === 'translation'
+          ? t('settings.stepTranslation')
+          : step === 'glossary'
+            ? t('settings.stepGlossary')
+            : t('settings.stepVision');
+      const flexNote = res.call.flex ? ` (${t('settings.flexTag')})` : '';
+      summaryParts.push(`${stepName}: ${providerDisplayName(res.call.provider)} · ${res.chosen.label}${flexNote}`);
+      if (isLocalModelEntry(res.chosen)) choseLocal = true;
+      for (const s of res.skippedHeavyLocal) {
+        skippedMap.set(s.id, s);
+      }
+    }
+
+    if (summaryParts.length === 0) return;
+    setDraft({
+      ...draft,
+      ...nextCalls,
+    });
+    setChecks({});
+
+    let detail: string | undefined;
+    if (includeLocalForAuto) {
+      if (maxLocalBillions <= 0) {
+        detail = t('settings.autoRecommendNoGpu');
+      } else if (skippedMap.size > 0) {
+        detail = t('settings.autoRecommendSkippedHeavy', {
+          gpu: hw?.gpu_name || 'GPU',
+          vram: vramGb || '?',
+          models: Array.from(skippedMap.values()).map((m) => m.label).join(', '),
+        });
+      } else if (!choseLocal) {
+        detail = t('settings.autoRecommendNoLocalFit', {
+          gpu: hw?.gpu_name || 'GPU',
+          vram: vramGb || '?',
+        });
+      }
+    }
+
+    setAutoNotice({
+      summary: t('settings.autoRecommendApplied', { summary: summaryParts.join(' · ') }),
+      detail,
+    });
+  };
+  const visionInfo = catalog.find(
+    (m) => (m.provider || 'google') === (draft?.vision.provider || 'google') && m.id === draft?.vision.model
+  );
 
   const onSave = async () => {
     if (!draft) return;
@@ -423,12 +900,69 @@ export const SettingsScreen: React.FC = () => {
 
       {/* AI models */}
       <section className={card}>
-        <div className="border-b border-line pb-3">
-          <h2 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-            <Brain className="w-4 h-4 text-indigo-400" />
-            {t('settings.aiModels')}
-          </h2>
-          <p className="text-[11px] text-zinc-400 mt-1">{t('settings.aiModelsHint')}</p>
+        <div className="border-b border-line pb-3 space-y-3">
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+              <Brain className="w-4 h-4 text-indigo-400" />
+              {t('settings.aiModels')}
+            </h2>
+            <p className="text-[11px] text-zinc-400 mt-1">{t('settings.aiModelsHint')}</p>
+          </div>
+
+          <div className="p-3 rounded-lg bg-indigo-500/5 border border-indigo-500/20 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={autoRecommendBestValue}
+                disabled={!draft}
+                data-testid="auto-recommend-models-btn"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600/90 hover:bg-indigo-500 disabled:opacity-40 text-xs font-semibold text-white cursor-pointer transition-colors shadow-sm"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>{t('settings.autoRecommendBtn')}</span>
+              </button>
+
+              <label className="inline-flex flex-wrap items-center gap-2 text-[11px] text-zinc-300 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  data-testid="auto-recommend-include-local"
+                  checked={includeLocalForAuto}
+                  onChange={(e) => setIncludeLocalForAuto(e.target.checked)}
+                  className="rounded border-zinc-600 bg-sunken text-indigo-500 focus:ring-indigo-500"
+                />
+                <span>{t('settings.autoRecommendIncludeLocal')}</span>
+                {hw && (
+                  <span
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-sunken border border-line text-[10px] text-zinc-400 font-mono"
+                    dir="ltr"
+                  >
+                    <Cpu className={`w-3 h-3 ${hw.cuda_available ? 'text-emerald-400' : 'text-zinc-500'}`} />
+                    {hw.cuda_available
+                      ? `${hw.gpu_name || 'CUDA'}${vramGb ? ` · ${vramGb} GB` : ''}`
+                      : 'CPU'}
+                  </span>
+                )}
+              </label>
+            </div>
+
+            {autoNotice && (
+              <div
+                data-testid="auto-recommend-summary"
+                className="pt-2 border-t border-indigo-500/15 text-[11px] space-y-1"
+              >
+                <div className="flex items-start gap-1.5 text-emerald-300">
+                  <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                  <span>{autoNotice.summary}</span>
+                </div>
+                {autoNotice.detail && (
+                  <div className="flex items-start gap-1.5 text-amber-300">
+                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                    <span>{autoNotice.detail}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         {!draft ? (
@@ -443,7 +977,10 @@ export const SettingsScreen: React.FC = () => {
               hint={t('settings.stepTranslationHint')}
               value={draft.translation}
               catalog={catalog}
+              providers={providers}
+              keys={keys}
               onChange={(v) => update('translation', v)}
+              onApplyProviderAll={applyProviderToAll}
               check={checks.translation}
             />
             <ModelCard
@@ -452,6 +989,8 @@ export const SettingsScreen: React.FC = () => {
               hint={t('settings.stepGlossaryHint')}
               value={draft.glossary}
               catalog={catalog}
+              providers={providers}
+              keys={keys}
               onChange={(v) => update('glossary', v)}
               check={checks.glossary}
             />
@@ -461,6 +1000,8 @@ export const SettingsScreen: React.FC = () => {
               hint={t('settings.stepVisionHint')}
               value={draft.vision}
               catalog={catalog}
+              providers={providers}
+              keys={keys}
               onChange={(v) => update('vision', v)}
               check={checks.vision}
             >

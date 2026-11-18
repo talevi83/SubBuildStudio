@@ -220,7 +220,7 @@ def _get_job_or_404(session: Session, job_id: str) -> Job:
     return job
 
 
-_GEMINI_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+_GEMINI_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$")
 
 
 def _validate_whisper_model(name: str) -> None:
@@ -231,10 +231,10 @@ def _validate_whisper_model(name: str) -> None:
 
 
 def _validate_gemini_model(name: str) -> None:
-    """Custom Gemini model IDs are allowed (power users), but only as a plain model ID: the SDK puts
-    it into the request URL, so "../" or "?" must never get there."""
-    if not _GEMINI_MODEL_ID.match(name.replace("models/", "", 1)):
-        raise HTTPException(status_code=400, detail=f"Invalid Gemini model name: {name}")
+    """Custom model IDs are allowed (power users), but only as a plain model ID without path traversal."""
+    cleaned = name.replace("models/", "", 1)
+    if ".." in cleaned or not _GEMINI_MODEL_ID.match(cleaned):
+        raise HTTPException(status_code=400, detail=f"Invalid model name: {name}")
 
 
 @router.post("", response_model=JobResponse)
@@ -540,9 +540,9 @@ def update_glossary(job_id: str, body: GlossaryUpdate, session: Session = Depend
 
 @router.post("/{job_id}/detect-speakers", response_model=DetectSpeakersResponse)
 async def detect_speakers_from_video(job_id: str, req: DetectSpeakersRequest, session: Session = Depends(get_session)):
-    """Ask Gemini, from a few video frames plus the dialogue, who speaks to whom (for he/she 'you')."""
-    from google import genai
-
+    """Ask the configured vision-capable LLM, from a few video frames plus dialogue, who speaks to whom."""
+    from app.core.provider_catalog import infer_provider_from_model
+    from app.core.provider_keys import resolve_secret_key
     from app.pipeline import speaker_detect as sd
     from app.pipeline.stages.audio_stage import get_ffmpeg_bin
 
@@ -554,9 +554,26 @@ async def detect_speakers_from_video(job_id: str, req: DetectSpeakersRequest, se
         raise HTTPException(status_code=400, detail="No matching rows")
     if req.gemini_model:
         _validate_gemini_model(req.gemini_model)
-    key = (req.gemini_api_key_override or "").strip() or settings.gemini_api_key
-    if not key or key == "your_gemini_api_key_here":
-        raise HTTPException(status_code=400, detail="GEMINI_API_KEY is missing")
+
+    app_settings = load_settings()
+    chosen_model = req.gemini_model or app_settings.translation.model
+    matches_settings_model = (chosen_model == app_settings.translation.model)
+    inferred = None if matches_settings_model else (infer_provider_from_model(req.gemini_model) if req.gemini_model else None)
+    chosen_provider = inferred or app_settings.translation.provider
+    key_id = app_settings.translation.key_id if (not req.gemini_model or matches_settings_model) else None
+
+    genai_client = None
+    if chosen_provider == "google":
+        vault = resolve_secret_key("google", key_id=key_id)
+        key = (req.gemini_api_key_override or "").strip() or (vault.api_key if vault else "") or settings.gemini_api_key
+        if not key or key == "your_gemini_api_key_here":
+            raise HTTPException(status_code=400, detail="GEMINI_API_KEY is missing")
+        if key_id is None:
+            from google import genai
+            genai_client = genai.Client(api_key=key)
+    else:
+        if resolve_secret_key(chosen_provider, key_id=key_id) is None:
+            raise HTTPException(status_code=400, detail=f"No API key configured for provider '{chosen_provider}'")
 
     times = sd.frame_times(rows[0].start_time, rows[-1].end_time)
     ffmpeg = get_ffmpeg_bin()
@@ -565,11 +582,12 @@ async def detect_speakers_from_video(job_id: str, req: DetectSpeakersRequest, se
     if not frames:
         raise HTTPException(status_code=502, detail="Could not read frames from the video")
     lines = [(r.start_time, r.original_text) for r in rows[:12]]
-    app_settings = load_settings()
     try:
         guess = await sd.detect_speakers(
-            genai.Client(api_key=key), req.gemini_model or app_settings.translation.model, frames, lines,
+            genai_client, chosen_model, frames, lines,
             thinking=_valid_thinking(req.thinking) or app_settings.translation.thinking,
+            provider=chosen_provider,
+            key_id=key_id,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Detection failed: {exc}")

@@ -1,6 +1,7 @@
 package com.subbuild.qa.tests.api;
 
 import com.subbuild.qa.base.BaseApiTest;
+import com.sun.net.httpserver.HttpServer;
 import io.restassured.response.Response;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -10,6 +11,10 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -205,5 +210,175 @@ class RegressionApiTest extends BaseApiTest {
         assertEquals("done", statusRes.jsonPath().getString("state"), statusRes.asString());
         Path outFile = Path.of(statusRes.jsonPath().getString("path"));
         assertTrue(Files.isRegularFile(outFile), "Embedded MKV output file should exist on disk");
+    }
+
+    @Test
+    @DisplayName("Multi-provider API key vault stores multiple masked keys per provider and rejects invalid URLs")
+    void multiProviderKeyVaultMasksSecretsAndManagesDefaults() {
+        // Negative validation checks
+        assertEquals(400, api.addProviderKey(Map.of("provider", "openai", "api_key", "")).statusCode());
+        assertEquals(400, api.addProviderKey(Map.of("provider", "ollama", "base_url", "ftp://invalid")).statusCode());
+        assertEquals(400, api.addProviderKey(Map.of(
+                "provider", "ollama", "base_url", "https://ollama.com", "api_key", ""
+        )).statusCode());
+
+        // Add 2 keys for OpenAI + 1 for Anthropic + 1 Ollama Cloud
+        Response oai1 = api.addProviderKey(Map.of(
+                "provider", "openai", "label", "Personal", "api_key", "sk-oai-secret-1111aaaa", "verify", false
+        ));
+        assertEquals(200, oai1.statusCode());
+        String id1 = oai1.jsonPath().getString("key.id");
+
+        Response oai2 = api.addProviderKey(Map.of(
+                "provider", "openai", "label", "Work", "api_key", "sk-oai-secret-2222bbbb", "is_default", true, "verify", false
+        ));
+        assertEquals(200, oai2.statusCode());
+        String id2 = oai2.jsonPath().getString("key.id");
+
+        Response ant = api.addProviderKey(Map.of(
+                "provider", "anthropic", "label", "Claude Main", "api_key", "sk-ant-secret-9999zzzz", "verify", false
+        ));
+        assertEquals(200, ant.statusCode());
+        String antId = ant.jsonPath().getString("key.id");
+
+        Response keys = api.listProviderKeys();
+        assertEquals(200, keys.statusCode());
+        String rawJson = keys.asString();
+        assertFalse(rawJson.contains("sk-oai-secret-1111aaaa"), "Raw OpenAI key must never be returned");
+        assertFalse(rawJson.contains("sk-oai-secret-2222bbbb"), "Raw OpenAI key must never be returned");
+        assertFalse(rawJson.contains("sk-ant-secret-9999zzzz"), "Raw Anthropic key must never be returned");
+        assertEquals(2, keys.jsonPath().getInt("providers.openai.key_count"));
+        assertEquals(id2, keys.jsonPath().getString("providers.openai.default_key_id"));
+        assertTrue(keys.jsonPath().getBoolean("providers.anthropic.configured"));
+
+        // Deleting default OpenAI key promotes remaining key automatically
+        assertEquals(200, api.deleteProviderKey(id2).statusCode());
+        Response afterDel = api.listProviderKeys();
+        assertEquals(1, afterDel.jsonPath().getInt("providers.openai.key_count"));
+        assertEquals(id1, afterDel.jsonPath().getString("providers.openai.default_key_id"));
+
+        // Cleanup remaining test keys
+        api.deleteProviderKey(id1);
+        api.deleteProviderKey(antId);
+    }
+
+    @Test
+    @DisplayName("Mixed-provider settings (OpenAI + Anthropic + Ollama) persist and calculate per-stage cost estimates")
+    void mixedProviderSettingsAndCostEstimateAcrossProviders() {
+        Map<String, Object> original = api.getSettings().jsonPath().getMap("settings");
+        try {
+            Map<String, Object> mixed = new java.util.HashMap<>(original);
+            mixed.put("translation", Map.of("provider", "openai", "model", "gpt-5-mini", "thinking", "default", "flex", false));
+            mixed.put("glossary", Map.of("provider", "anthropic", "model", "claude-haiku-4-5", "thinking", "default", "flex", false));
+            mixed.put("vision", Map.of("provider", "ollama", "model", "qwen2.5vl:7b", "thinking", "default", "flex", false));
+
+            Response put = api.updateSettings(mixed);
+            assertEquals(200, put.statusCode(), put.asString());
+            assertEquals("openai", put.jsonPath().getString("settings.translation.provider"));
+            assertEquals("anthropic", put.jsonPath().getString("settings.glossary.provider"));
+            assertEquals("ollama", put.jsonPath().getString("settings.vision.provider"));
+
+            Response est = api.estimateCost(Map.of(
+                    "duration_seconds", 2700.0,
+                    "enable_translation", true,
+                    "detect_onscreen_text", true
+            ));
+            assertEquals(200, est.statusCode());
+            assertEquals("openai", est.jsonPath().getString("stages.translation.provider"));
+            assertEquals("anthropic", est.jsonPath().getString("stages.glossary.provider"));
+            assertEquals("ollama", est.jsonPath().getString("stages.onscreen.provider"));
+            assertEquals(0.0, est.jsonPath().getDouble("stages.onscreen.cost_usd"), 0.0001);
+            assertTrue(est.jsonPath().getDouble("total_cost_usd") > 0.0);
+        } finally {
+            api.updateSettings(original);
+        }
+    }
+
+    @Test
+    @DisplayName("Settings catalog exposes episode/movie benchmarks, strict step capabilities, and key-scoped live filtering")
+    void catalogExposesEpisodeAndMovieBenchmarksAndStepCapabilities() throws IOException {
+        Response res = api.getSettings();
+        assertEquals(200, res.statusCode());
+        List<Map<String, Object>> catalog = res.jsonPath().getList("catalog");
+        assertTrue(catalog.size() >= 10, "Catalog should include multi-provider models");
+
+        Map<String, Object> mini = catalog.stream()
+                .filter(m -> "openai".equals(m.get("provider")) && "gpt-5-mini".equals(m.get("id")))
+                .findFirst()
+                .orElseThrow();
+        assertTrue(((Number) mini.get("episode_cost_usd")).doubleValue() > 0.0);
+        assertTrue(((Number) mini.get("movie_cost_usd")).doubleValue()
+                > ((Number) mini.get("episode_cost_usd")).doubleValue());
+        assertEquals(List.of("translation", "glossary", "vision"), mini.get("tasks"));
+
+        Map<String, Object> nano = catalog.stream()
+                .filter(m -> "openai".equals(m.get("provider")) && "gpt-5-nano".equals(m.get("id")))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(List.of("vision"), nano.get("tasks"));
+
+        // Verify live key-scoped discovery removes unverified seeds and filters step tasks per model
+        HttpServer mockNode = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        mockNode.createContext("/api/tags", exchange -> {
+            byte[] body = "{\"models\":[{\"name\":\"qwen2.5:14b\"},{\"name\":\"qwen2.5:1.5b\"},{\"name\":\"qwen2.5-coder:7b\"},{\"name\":\"nomic-embed-text\"}]}"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(body);
+            }
+        });
+        mockNode.createContext("/api/show", exchange -> {
+            byte[] body = "{\"capabilities\":[\"completion\"]}".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(body);
+            }
+        });
+        mockNode.start();
+        Map<String, Object> originalSettings = res.jsonPath().getMap("settings");
+        String keyId = null;
+        try {
+            Response created = api.addProviderKey(Map.of(
+                    "provider", "ollama",
+                    "label", "Mock Live Ollama",
+                    "base_url", "http://127.0.0.1:" + mockNode.getAddress().getPort(),
+                    "verify", true
+            ));
+            assertEquals(200, created.statusCode(), created.asString());
+            keyId = created.jsonPath().getString("key.id");
+            assertEquals(2, created.jsonPath().getInt("key.discovered_count"));
+
+            List<Map<String, Object>> liveCatalog = created.jsonPath().getList("catalog");
+            List<String> ollamaIds = liveCatalog.stream()
+                    .filter(m -> "ollama".equals(m.get("provider")))
+                    .map(m -> String.valueOf(m.get("id")))
+                    .toList();
+            assertTrue(ollamaIds.contains("qwen2.5:14b"));
+            assertFalse(ollamaIds.contains("qwen2.5:7b"), "Unverified static seed must not remain after live discovery");
+            assertFalse(ollamaIds.contains("qwen2.5-coder:7b"), "Code-only model must be filtered out");
+            assertFalse(ollamaIds.contains("nomic-embed-text"), "Embedding model must be filtered out");
+
+            final String expectedKeyId = keyId;
+            Map<String, Object> q14 = liveCatalog.stream()
+                    .filter(m -> "ollama".equals(m.get("provider")) && "qwen2.5:14b".equals(m.get("id")))
+                    .findFirst()
+                    .orElseThrow();
+            assertEquals(List.of("translation", "glossary"), q14.get("tasks"));
+            assertEquals(List.of(expectedKeyId), q14.get("key_ids"));
+
+            Map<String, Object> qSmall = liveCatalog.stream()
+                    .filter(m -> "ollama".equals(m.get("provider")) && "qwen2.5:1.5b".equals(m.get("id")))
+                    .findFirst()
+                    .orElseThrow();
+            assertEquals(List.of(), qSmall.get("tasks"));
+        } finally {
+            mockNode.stop(0);
+            if (keyId != null) {
+                api.deleteProviderKey(keyId);
+            }
+            api.updateSettings(originalSettings);
+        }
     }
 }

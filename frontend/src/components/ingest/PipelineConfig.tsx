@@ -8,7 +8,13 @@ import { useT, formatUsd } from '../../i18n';
 import type { MessageKey } from '../../i18n';
 import { useCostEstimate } from '../../hooks/useCostEstimate';
 import { SOURCE_LANGUAGES, TARGET_LANGUAGES, sameLanguage } from './languages';
-import { thinkingLabel, modelLabel } from '../settings/labels';
+import {
+  inferProviderFromModelId,
+  isProviderReady,
+  modelLabel,
+  providerKeyEnvLabel,
+  thinkingLabel,
+} from '../settings/labels';
 import { SyncOptions } from './SyncOptions';
 import { GenrePresets } from './GenrePresets';
 import { AlertTriangle, Sparkles, Settings, Mic, Key, Play, Loader2, FileText, Coins, Users } from 'lucide-react';
@@ -85,7 +91,20 @@ export const PipelineConfig: React.FC = () => {
   const t = useT();
 
   const [showKeyOverride, setShowKeyOverride] = useState(false);
-  const isGeminiReady = systemInfo?.is_gemini_configured;
+  const activeTranslationProvider =
+    appSettings?.translation.provider || inferProviderFromModelId(appSettings?.translation.model) || 'google';
+  const activeVisionProvider =
+    appSettings?.vision.provider || inferProviderFromModelId(appSettings?.vision.model) || activeTranslationProvider;
+  const isTranslationReady = isProviderReady(
+    systemInfo,
+    activeTranslationProvider,
+    pipelineConfig.gemini_api_key_override,
+  );
+  const isVisionReady = isProviderReady(
+    systemInfo,
+    activeVisionProvider,
+    pipelineConfig.gemini_api_key_override,
+  );
   const whisperModels = systemInfo?.whisper_models?.length
     ? systemInfo.whisper_models
     : ['tiny', 'base', 'small', 'medium', 'large-v3-turbo', 'large-v3'];
@@ -99,8 +118,7 @@ export const PipelineConfig: React.FC = () => {
   );
   const dialogueTrack =
     dialogueTracks.find((s) => s.index === pipelineConfig.selected_subtitle_stream) || dialogueTracks[0];
-  const translationWithoutKey =
-    pipelineConfig.enable_translation && !isGeminiReady && !pipelineConfig.gemini_api_key_override;
+  const translationWithoutKey = pipelineConfig.enable_translation && !isTranslationReady;
 
   // Syncing a file in another language than the speech asks Gemini to match its lines
   const syncGeminiLines =
@@ -125,7 +143,9 @@ export const PipelineConfig: React.FC = () => {
   if (!probeResult) return null;
 
   const translationModel = appSettings?.translation.model;
-  const translationInfo = catalog.find((m) => m.id === translationModel);
+  const translationInfo = catalog.find(
+    (m) => (m.provider || 'google') === activeTranslationProvider && m.id === translationModel
+  );
   const estimateStages = estimate ? Object.entries(estimate.stages) : [];
 
   return (
@@ -383,23 +403,25 @@ export const PipelineConfig: React.FC = () => {
                   <div className="flex items-center gap-1.5 text-zinc-300">
                     <Key className="w-3.5 h-3.5 text-zinc-400" />
                     <span className="text-[11px]" dir="ltr">
-                      {t('config.keyLabel')}
+                      {providerKeyEnvLabel(activeTranslationProvider)}
                     </span>
                     <span
                       className={`text-[10px] font-semibold px-1.5 rounded ${
-                        isGeminiReady ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'
+                        isTranslationReady ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'
                       }`}
                     >
-                      {isGeminiReady ? t('config.keyLoaded') : t('config.keyMissing')}
+                      {isTranslationReady ? t('config.keyLoaded') : t('config.keyMissing')}
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowKeyOverride(!showKeyOverride)}
-                    className="text-[10px] text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
-                  >
-                    {showKeyOverride ? t('config.hideOverride') : t('config.overrideKey')}
-                  </button>
+                  {activeTranslationProvider === 'google' && (
+                    <button
+                      type="button"
+                      onClick={() => setShowKeyOverride(!showKeyOverride)}
+                      className="text-[10px] text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
+                    >
+                      {showKeyOverride ? t('config.hideOverride') : t('config.overrideKey')}
+                    </button>
+                  )}
                 </div>
                 {translationWithoutKey && (
                   <div className="flex items-start gap-1.5 text-[11px] text-amber-300">
@@ -407,7 +429,7 @@ export const PipelineConfig: React.FC = () => {
                     <span>{t('config.noKeyWarning')}</span>
                   </div>
                 )}
-                {(showKeyOverride || translationWithoutKey) && (
+                {activeTranslationProvider === 'google' && (showKeyOverride || translationWithoutKey) && (
                   <input
                     type="password"
                     dir="ltr"
@@ -537,7 +559,7 @@ export const PipelineConfig: React.FC = () => {
               <span className="text-emerald-400">
                 {t('config.forcedFound', { name: forcedTrack.title || forcedTrack.language || `#${forcedTrack.index}` })}
               </span>
-            ) : !isGeminiReady && !pipelineConfig.gemini_api_key_override ? (
+            ) : !isVisionReady ? (
               <span className="text-amber-300">{t('config.onscreenNeedsKey')}</span>
             ) : null)
           }

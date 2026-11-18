@@ -295,23 +295,41 @@ async def match_with_gemini(
     cancel: Any = None,
     on_batch: Any = None,
 ) -> Tuple[Dict[int, Anchor], Dict[str, int]]:
-    """Anchors from Gemini, batch by batch. Failed batches are skipped (stats["failed"])."""
-    from google.genai import types
-
-    from app.core.model_catalog import default_temperature, is_unavailable_error, thinking_config
-    from app.providers import gemini_calls
-
+    """Anchors from LLM/Gemini, batch by batch. Failed batches are skipped (stats["failed"])."""
     schema = _gemini_schema()
     phrases = build_phrases(words)
     p_starts = [p.start for p in phrases]
     system = SYNC_SYSTEM_PROMPT.format(file_lang=file_lang, spoken_lang=spoken_lang)
-    config = types.GenerateContentConfig(
-        system_instruction=system,
-        response_mime_type="application/json",
-        response_schema=schema,
-        temperature=default_temperature(call.model, 0.0),
-        thinking_config=thinking_config(call.model, call.thinking),
+    use_direct_genai = (
+        getattr(call, "provider", "google") == "google"
+        and getattr(call, "key_id", None) is None
+        and client is not None
+        and not isinstance(client, str)
     )
+    if use_direct_genai:
+        from google.genai import types
+        from app.core.model_catalog import default_temperature, is_unavailable_error, thinking_config
+        from app.providers import gemini_calls
+
+        config = types.GenerateContentConfig(
+            system_instruction=system,
+            response_mime_type="application/json",
+            response_schema=schema,
+            temperature=default_temperature(call.model, 0.0),
+            thinking_config=thinking_config(call.model, call.thinking),
+        )
+    else:
+        from app.core.model_catalog import is_unavailable_error
+        from app.providers.llm import call_text_json, resolve_provider_spec
+
+        config = None
+        spec = resolve_provider_spec(
+            getattr(call, "provider", "google"),
+            call.model,
+            key_id=getattr(call, "key_id", None),
+            thinking=getattr(call, "thinking", "default"),
+            flex=getattr(call, "flex", False),
+        )
     order = list(range(len(cue_texts)))
     batches = [order[k:k + GEMINI_BATCH] for k in range(0, len(order), GEMINI_BATCH)]
     anchors: Dict[int, Anchor] = {}
@@ -333,11 +351,25 @@ async def match_with_gemini(
                 if fatal:
                     return
                 try:
-                    response = await gemini_calls.generate_content(
-                        client, model=call.model, contents=prompt, config=config, flex=call.flex,
-                        usage=usage, stage="sync", flex_state=flex_state,
-                    )
-                    parsed = schema.model_validate_json(response.text)
+                    if use_direct_genai:
+                        response = await gemini_calls.generate_content(
+                            client, model=call.model, contents=prompt, config=config, flex=call.flex,
+                            usage=usage, stage="sync", flex_state=flex_state,
+                        )
+                        resp_text = response.text
+                    else:
+                        llm_resp = await call_text_json(
+                            spec,
+                            system_instruction=system,
+                            prompt=prompt,
+                            schema_cls=schema,
+                            temperature=0.0,
+                            usage=usage,
+                            stage="sync",
+                            flex_state=flex_state,
+                        )
+                        resp_text = llm_resp.text
+                    parsed = schema.model_validate_json(resp_text)
                     _apply(parsed.matches, batch, window, scr, words, anchors, stats)
                     break
                 except Exception as e:

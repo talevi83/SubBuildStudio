@@ -73,7 +73,7 @@ def test_settings_api_roundtrip_and_validation(client: TestClient):
     new["vision_media_resolution"] = "low"
     assert client.put("/api/settings", json=new).status_code == 200
     again = client.get("/api/settings").json()["settings"]
-    assert again["translation"] == {"model": "gemini-3.6-flash", "thinking": "low", "flex": False}
+    assert again["translation"] == {"provider": "google", "model": "gemini-3.6-flash", "key_id": None, "thinking": "low", "flex": False}
     assert json.loads((settings.storage_dir / "settings.json").read_text())["vision_media_resolution"] == "low"
 
     bad = dict(again, translation={"model": "gemini-3.8-flash", "thinking": "minimal"})
@@ -110,9 +110,9 @@ def test_saved_settings_with_retired_models_are_migrated(client: TestClient):
         "vision_media_resolution": "high",
     }))
     s = client.get("/api/settings").json()["settings"]
-    assert s["translation"] == {"model": "gemini-3.8-flash", "thinking": "low", "flex": False}
-    assert s["glossary"] == {"model": "gemini-3.5-flash-lite", "thinking": "low", "flex": False}
-    assert s["vision"] == {"model": "gemini-3.8-flash", "thinking": "low", "flex": False}  # 3.8 has no "minimal"
+    assert s["translation"] == {"provider": "google", "model": "gemini-3.8-flash", "key_id": None, "thinking": "low", "flex": False}
+    assert s["glossary"] == {"provider": "google", "model": "gemini-3.5-flash-lite", "key_id": None, "thinking": "low", "flex": False}
+    assert s["vision"] == {"provider": "google", "model": "gemini-3.8-flash", "key_id": None, "thinking": "low", "flex": False}  # 3.8 has no "minimal"
     assert s["vision_media_resolution"] == "high"
     assert json.loads(path.read_text())["glossary"]["model"] == "gemini-3.5-flash-lite"  # written back
 
@@ -265,7 +265,7 @@ def test_defaults_use_current_models(client: TestClient):
     assert Settings.model_fields["gemini_model"].default == "gemini-3.8-flash"
     assert Settings.model_fields["gemini_vision_model"].default == "gemini-3.5-flash-lite"
     s = client.get("/api/settings").json()["settings"]
-    assert s["translation"] == {"model": mc.resolve_model(settings.gemini_model, "translation"), "thinking": "low", "flex": False}
+    assert s["translation"] == {"provider": "google", "model": mc.resolve_model(settings.gemini_model, "translation"), "key_id": None, "thinking": "low", "flex": False}
     assert s["vision"]["model"] == mc.resolve_model(settings.gemini_vision_model, "vision")
 
 

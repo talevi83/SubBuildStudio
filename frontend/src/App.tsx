@@ -48,7 +48,7 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     loadSettings();
-  }, [loadSettings]);
+  }, [loadSettings, view]);
 
   // The shell is exactly one viewport tall and manages its own scrolling. If anything (a focus
   // jump, scrollIntoView...) still scrolls the document itself, snap it back instead of leaving

@@ -93,12 +93,22 @@ class SyncStage(PipelineStage):
     def _client(self, ctx: PipelineContext):
         if self._client_factory:
             return self._client_factory()
-        key = (ctx.gemini_api_key_override or "").strip() or settings.gemini_api_key
-        if not key or key == "your_gemini_api_key_here":
-            return None
-        from google import genai
+        from app.core.provider_keys import resolve_secret_key
+        from app.core.user_settings import load_settings
 
-        return genai.Client(api_key=key)
+        tr = load_settings().translation
+        if tr.provider == "google":
+            vault = resolve_secret_key("google", key_id=tr.key_id)
+            key = (ctx.gemini_api_key_override or "").strip() or (vault.api_key if vault else "") or settings.gemini_api_key
+            if not key or key == "your_gemini_api_key_here":
+                return None
+            if tr.key_id is not None:
+                return f"provider:google:{tr.key_id}"
+            from google import genai
+
+            return genai.Client(api_key=key)
+        resolved = resolve_secret_key(tr.provider, key_id=tr.key_id)
+        return f"provider:{tr.provider}" if resolved is not None else None
 
     async def execute(self, ctx: PipelineContext, on_progress: Optional[ProgressCallback] = None) -> None:
         async def progress(pct: float, msg: str) -> None:

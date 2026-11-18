@@ -258,6 +258,22 @@ public class SubBuildApiClient {
         return RestAssured.given().spec(authed()).body(payload).post("/api/settings/estimate");
     }
 
+    public Response listProviderKeys() {
+        return RestAssured.given().spec(authed()).get("/api/settings/keys");
+    }
+
+    public Response addProviderKey(Map<String, Object> payload) {
+        return RestAssured.given().spec(authed()).body(payload).post("/api/settings/keys");
+    }
+
+    public Response updateProviderKey(String keyId, Map<String, Object> payload) {
+        return RestAssured.given().spec(authed()).body(payload).put("/api/settings/keys/{keyId}", keyId);
+    }
+
+    public Response deleteProviderKey(String keyId) {
+        return RestAssured.given().spec(authed()).delete("/api/settings/keys/{keyId}", keyId);
+    }
+
     // -------------------------------------------------------------------------
     // Hybrid API + UI Seeding Helpers
     // -------------------------------------------------------------------------

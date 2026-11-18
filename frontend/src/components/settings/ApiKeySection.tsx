@@ -1,7 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { useJobStore } from '../../store/useJobStore';
+import { useSettingsStore } from '../../store/useSettingsStore';
 import { useT } from '../../i18n';
+import type { MessageKey } from '../../i18n';
 import { api } from '../../services/api';
+import type { AIProvider } from '../../types';
 import {
   Key,
   ChevronDown,
@@ -15,42 +18,87 @@ import {
   Loader2,
   Check,
   Trash2,
+  RefreshCw,
+  Star,
+  Plus,
+  Server,
 } from 'lucide-react';
 
 const AI_STUDIO_KEY_URL = 'https://aistudio.google.com/app/apikey';
+const PROVIDERS: AIProvider[] = ['google', 'openai', 'anthropic', 'ollama'];
+
+const PROVIDER_KEY_URLS: Record<AIProvider, string> = {
+  google: 'https://aistudio.google.com/app/apikey',
+  openai: 'https://platform.openai.com/api-keys',
+  anthropic: 'https://console.anthropic.com/settings/keys',
+  ollama: 'https://ollama.com/settings/keys',
+};
+
+const PROVIDER_PLACEHOLDERS: Record<AIProvider, string> = {
+  google: 'AIzaSy...',
+  openai: 'sk-proj-...',
+  anthropic: 'sk-ant-...',
+  ollama: 'Optional for local (required for Ollama Cloud)',
+};
 
 export const ApiKeySection: React.FC = () => {
   const t = useT();
   const systemInfo = useJobStore((s) => s.systemInfo);
   const fetchSystemInfo = useJobStore((s) => s.fetchSystemInfo);
+  const { keys, providers, catalog, refreshing, loaded, load, refreshProviders, syncVaultState } = useSettingsStore();
 
-  const isConfigured = !!systemInfo?.is_gemini_configured;
-  const maskedKey = systemInfo?.masked_api_key || '••••••••';
+  const totalKeys = keys.length;
+  const isConfigured = !!systemInfo?.is_gemini_configured || !!systemInfo?.is_ai_configured || totalKeys > 0;
+  const liveModelCount = catalog.filter((m) => m.available).length;
 
-  // Collapse by default if a key is already configured; expand if missing
   const [expanded, setExpanded] = useState(!isConfigured);
   const [initializedCollapse, setInitializedCollapse] = useState(false);
 
   useEffect(() => {
+    if (!loaded) {
+      load();
+    }
+  }, [loaded, load]);
+
+  useEffect(() => {
     if (systemInfo && !initializedCollapse) {
-      setExpanded(!systemInfo.is_gemini_configured);
+      setExpanded(!systemInfo.is_gemini_configured && !systemInfo.is_ai_configured);
       setInitializedCollapse(true);
     }
   }, [systemInfo, initializedCollapse]);
 
+  const [activeTab, setActiveTab] = useState<AIProvider>('google');
+  const [labelInput, setLabelInput] = useState('');
   const [keyInput, setKeyInput] = useState('');
+  const [baseUrlInput, setBaseUrlInput] = useState('http://localhost:11434');
   const [showSecret, setShowSecret] = useState(false);
   const [saving, setSaving] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const handleSave = async (newKey: string) => {
+  const tabKeys = keys.filter((k) => k.provider === activeTab);
+  const canAdd = activeTab === 'ollama' ? (baseUrlInput.trim() !== 'https://ollama.com' || !!keyInput.trim()) : !!keyInput.trim();
+
+  const handleAddKey = async () => {
+    if (!canAdd) return;
     setSaving(true);
     setError(null);
+    setNotice(null);
     try {
-      await api.saveApiKey(newKey.trim());
-      await fetchSystemInfo();
+      const res = await api.addProviderKey({
+        provider: activeTab,
+        api_key: keyInput.trim(),
+        label: labelInput.trim() || undefined,
+        base_url: activeTab === 'ollama' ? baseUrlInput.trim() || undefined : undefined,
+        verify: true,
+      });
+      syncVaultState(res);
       setKeyInput('');
+      setLabelInput('');
+      if (res.discovery_error) {
+        setNotice(res.discovery_error);
+      }
       setJustSaved(true);
       setTimeout(() => setJustSaved(false), 2500);
     } catch (e: any) {
@@ -58,6 +106,35 @@ export const ApiKeySection: React.FC = () => {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleSetDefault = async (keyId: string) => {
+    setError(null);
+    try {
+      const res = await api.updateProviderKey(keyId, { is_default: true });
+      syncVaultState(res);
+    } catch (e: any) {
+      setError(e.message || 'Failed to update default key');
+    }
+  };
+
+  const handleDeleteKey = async (keyId: string) => {
+    setError(null);
+    try {
+      const res = await api.deleteProviderKey(keyId);
+      syncVaultState(res);
+      await fetchSystemInfo();
+    } catch (e: any) {
+      setError(e.message || 'Failed to delete key');
+    }
+  };
+
+  const handleRefresh = async () => {
+    setError(null);
+    setNotice(null);
+    const errs = await refreshProviders();
+    const firstErr = Object.values(errs)[0];
+    if (firstErr) setNotice(firstErr);
   };
 
   return (
@@ -71,7 +148,7 @@ export const ApiKeySection: React.FC = () => {
         data-testid="settings-apikey-toggle"
         className="w-full p-5 flex items-center justify-between gap-3 text-start hover:bg-zinc-800/30 transition-colors cursor-pointer"
       >
-        <div className="flex items-center gap-2.5 min-w-0">
+        <div className="flex flex-wrap items-center gap-2.5 min-w-0">
           <Key className="w-4 h-4 text-indigo-400 flex-shrink-0" />
           <h2 className="text-sm font-semibold text-zinc-100">{t('settings.apiKey.title')}</h2>
           <span
@@ -84,7 +161,11 @@ export const ApiKeySection: React.FC = () => {
             {isConfigured ? (
               <>
                 <CheckCircle2 className="w-3 h-3" />
-                <span dir="ltr">{t('settings.apiKey.statusActive', { masked: maskedKey })}</span>
+                <span>
+                  {totalKeys > 0
+                    ? t('settings.apiKey.statusActive', { count: totalKeys })
+                    : t('settings.apiKey.statusActiveSingle', { masked: systemInfo?.masked_api_key || '••••••••' })}
+                </span>
               </>
             ) : (
               <>
@@ -93,6 +174,11 @@ export const ApiKeySection: React.FC = () => {
               </>
             )}
           </span>
+          {liveModelCount > 0 && (
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+              {t('settings.apiKey.discoveredCount', { count: liveModelCount })}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2 text-zinc-400">
@@ -101,83 +187,243 @@ export const ApiKeySection: React.FC = () => {
       </button>
 
       {expanded && (
-        <div className="px-5 pb-5 pt-1 border-t border-line space-y-4 text-xs">
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+        <div className="px-5 pb-5 pt-2 border-t border-line space-y-4 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
             <p className="text-[11px] text-zinc-400 leading-relaxed">{t('settings.apiKey.subtitle')}</p>
-            <a
-              href={AI_STUDIO_KEY_URL}
-              target="_blank"
-              rel="noreferrer"
-              data-testid="settings-apikey-link"
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 text-indigo-300 font-medium text-[11px] transition-colors"
-            >
-              <ExternalLink className="w-3 h-3" />
-              <span>{t('settings.apiKey.getLink')}</span>
-            </a>
-          </div>
-
-          <div className="space-y-2">
-            <label className="block text-[11px] font-medium text-zinc-300">
-              {t('settings.apiKey.inputLabel')}
-            </label>
-            <div className="flex flex-wrap sm:flex-nowrap items-center gap-2">
-              <div className="relative flex-1 min-w-[220px]">
-                <input
-                  type={showSecret ? 'text' : 'password'}
-                  dir="ltr"
-                  value={keyInput}
-                  onChange={(e) => setKeyInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && keyInput.trim()) {
-                      handleSave(keyInput);
-                    }
-                  }}
-                  placeholder={isConfigured ? maskedKey : t('settings.apiKey.placeholder')}
-                  data-testid="settings-apikey-input"
-                  className="w-full bg-sunken border border-line rounded-lg ps-3 pe-9 py-2 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-indigo-500 font-mono"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowSecret((s) => !s)}
-                  title={showSecret ? t('settings.apiKey.hideKey') : t('settings.apiKey.showKey')}
-                  className="absolute inset-y-0 end-2 flex items-center text-zinc-400 hover:text-zinc-200 cursor-pointer"
-                >
-                  {showSecret ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                </button>
-              </div>
-
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() => handleSave(keyInput)}
-                disabled={saving || !keyInput.trim()}
-                data-testid="settings-apikey-save"
-                className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
+                onClick={handleRefresh}
+                disabled={refreshing}
+                data-testid="providers-refresh-btn"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-line text-zinc-200 font-medium text-[11px] cursor-pointer transition-colors disabled:opacity-50"
               >
-                {saving ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : justSaved ? (
-                  <Check className="w-3.5 h-3.5" />
-                ) : (
-                  <Save className="w-3.5 h-3.5" />
-                )}
-                <span>{saving ? t('settings.apiKey.saving') : justSaved ? t('settings.apiKey.saved') : t('settings.apiKey.saveBtn')}</span>
+                <RefreshCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
+                <span>{refreshing ? t('settings.apiKey.refreshing') : t('settings.apiKey.refreshModels')}</span>
               </button>
+              <a
+                href={PROVIDER_KEY_URLS[activeTab]}
+                target="_blank"
+                rel="noreferrer"
+                data-testid="settings-apikey-link"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 text-indigo-300 font-medium text-[11px] transition-colors"
+              >
+                <ExternalLink className="w-3 h-3" />
+                <span>{t(`settings.apiKey.getLinkByProvider.${activeTab}` as MessageKey)}</span>
+              </a>
+            </div>
+          </div>
 
-              {isConfigured && (
+          {/* Provider Tabs */}
+          <div className="flex flex-wrap gap-1.5" role="tablist" data-testid="provider-tabs">
+            {PROVIDERS.map((prov) => {
+              const count = providers[prov]?.key_count ?? keys.filter((k) => k.provider === prov).length;
+              const active = activeTab === prov;
+              return (
+                <button
+                  key={prov}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  data-testid={`provider-tab-${prov}`}
+                  onClick={() => {
+                    setActiveTab(prov);
+                    setError(null);
+                    setNotice(null);
+                  }}
+                  className={`px-3 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors ${
+                    active
+                      ? 'bg-indigo-600 border-indigo-500 text-white shadow-sm'
+                      : 'bg-sunken border-line text-zinc-400 hover:text-zinc-200 hover:border-zinc-600'
+                  }`}
+                >
+                  <span>{t(`settings.providers.${prov}` as MessageKey)}</span>
+                  <span
+                    className={`text-[10px] px-1.5 rounded-full font-mono ${
+                      active ? 'bg-white/20 text-white' : count > 0 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-zinc-800 text-zinc-500'
+                    }`}
+                  >
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Saved keys list for selected provider */}
+          <div className="space-y-1.5" data-testid="provider-key-list">
+            {tabKeys.length === 0 ? (
+              <p className="text-[11px] text-zinc-500 italic">
+                {t('settings.apiKey.noKeysForProvider', {
+                  provider: t(`settings.providers.${activeTab}` as MessageKey),
+                })}
+              </p>
+            ) : (
+              tabKeys.map((k) => (
+                <div
+                  key={k.id}
+                  data-testid={`provider-key-item-${k.id}`}
+                  className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-sunken border border-line"
+                >
+                  <div className="flex flex-wrap items-center gap-2 min-w-0">
+                    <span className="font-semibold text-zinc-200">{k.label}</span>
+                    {k.masked_key && (
+                      <code dir="ltr" className="text-[11px] font-mono text-zinc-400">
+                        {k.masked_key}
+                      </code>
+                    )}
+                    {k.base_url && (
+                      <span dir="ltr" className="text-[10px] font-mono text-indigo-300 bg-indigo-500/10 px-1.5 py-0.5 rounded">
+                        {k.base_url}
+                      </span>
+                    )}
+                    {k.is_default && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                        <Star className="w-2.5 h-2.5 fill-current" />
+                        {t('settings.apiKey.defaultBadge')}
+                      </span>
+                    )}
+                    {k.last_error && (
+                      <span className="text-[10px] text-amber-300 truncate max-w-[260px]" title={k.last_error}>
+                        ({k.last_error})
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {!k.is_default && k.source === 'vault' && (
+                      <button
+                        type="button"
+                        onClick={() => handleSetDefault(k.id)}
+                        data-testid={`provider-key-default-${k.id}`}
+                        className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-[11px] text-zinc-300 cursor-pointer"
+                      >
+                        {t('settings.apiKey.setDefaultBtn')}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteKey(k.id)}
+                      data-testid={k.id === 'env_google' ? 'settings-apikey-clear' : `provider-key-delete-${k.id}`}
+                      title={t('settings.apiKey.clearBtn')}
+                      className="p-1.5 rounded bg-zinc-800 hover:bg-rose-950/60 hover:text-rose-300 text-zinc-400 cursor-pointer transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Add Key Form */}
+          <div className="p-3 rounded-xl bg-sunken/70 border border-line space-y-2.5">
+            {activeTab === 'ollama' && (
+              <div className="space-y-1.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="text-[11px] font-medium text-zinc-300 flex items-center gap-1.5">
+                    <Server className="w-3.5 h-3.5 text-indigo-400" />
+                    {t('settings.apiKey.baseUrlInput')}
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBaseUrlInput('http://localhost:11434');
+                        if (!labelInput) setLabelInput('Local Ollama');
+                      }}
+                      data-testid="ollama-preset-local"
+                      className="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-[10px] text-zinc-200 cursor-pointer"
+                    >
+                      {t('settings.apiKey.ollamaLocalPreset')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBaseUrlInput('https://ollama.com');
+                        if (!labelInput) setLabelInput('Ollama Cloud');
+                      }}
+                      data-testid="ollama-preset-cloud"
+                      className="px-2 py-0.5 rounded bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/30 text-[10px] text-indigo-300 cursor-pointer"
+                    >
+                      {t('settings.apiKey.ollamaCloudPreset')}
+                    </button>
+                  </div>
+                </div>
+                <input
+                  type="text"
+                  dir="ltr"
+                  value={baseUrlInput}
+                  onChange={(e) => setBaseUrlInput(e.target.value)}
+                  data-testid="provider-key-baseurl-input"
+                  className="w-full bg-surface border border-line rounded-lg px-3 py-1.5 text-xs text-zinc-100 font-mono focus:outline-none focus:border-indigo-500"
+                />
+                <p className="text-[10px] text-zinc-500">{t('settings.apiKey.localZeroCostNote')}</p>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
+              <label className="sm:col-span-3 space-y-1">
+                <span className="block text-[11px] font-medium text-zinc-300">{t('settings.apiKey.labelInput')}</span>
+                <input
+                  type="text"
+                  value={labelInput}
+                  onChange={(e) => setLabelInput(e.target.value)}
+                  placeholder={t('settings.apiKey.labelPlaceholder')}
+                  data-testid="provider-key-label-input"
+                  className="w-full bg-surface border border-line rounded-lg px-2.5 py-2 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-indigo-500"
+                />
+              </label>
+
+              <label className="sm:col-span-6 space-y-1">
+                <span className="block text-[11px] font-medium text-zinc-300">{t('settings.apiKey.inputLabel')}</span>
+                <div className="relative">
+                  <input
+                    type={showSecret ? 'text' : 'password'}
+                    dir="ltr"
+                    value={keyInput}
+                    onChange={(e) => setKeyInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && canAdd) {
+                        handleAddKey();
+                      }
+                    }}
+                    placeholder={PROVIDER_PLACEHOLDERS[activeTab]}
+                    data-testid="settings-apikey-input"
+                    className="w-full bg-surface border border-line rounded-lg ps-3 pe-9 py-2 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-indigo-500 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSecret((s) => !s)}
+                    title={showSecret ? t('settings.apiKey.hideKey') : t('settings.apiKey.showKey')}
+                    className="absolute inset-y-0 end-2 flex items-center text-zinc-400 hover:text-zinc-200 cursor-pointer"
+                  >
+                    {showSecret ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </label>
+
+              <div className="sm:col-span-3">
                 <button
                   type="button"
-                  onClick={() => handleSave('')}
-                  disabled={saving}
-                  title={t('settings.apiKey.clearBtn')}
-                  data-testid="settings-apikey-clear"
-                  className="px-3 py-2 rounded-lg bg-zinc-800 hover:bg-rose-950/60 hover:text-rose-300 border border-line text-xs text-zinc-400 flex items-center gap-1.5 cursor-pointer transition-colors"
+                  onClick={handleAddKey}
+                  disabled={saving || !canAdd}
+                  data-testid="settings-apikey-save"
+                  className="w-full px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-xs font-semibold text-white flex items-center justify-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">{t('settings.apiKey.clearBtn')}</span>
+                  {saving ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : justSaved ? (
+                    <Check className="w-3.5 h-3.5" />
+                  ) : (
+                    <Plus className="w-3.5 h-3.5" />
+                  )}
+                  <span>{saving ? t('settings.apiKey.saving') : justSaved ? t('settings.apiKey.saved') : t('settings.apiKey.addBtn')}</span>
                 </button>
-              )}
+              </div>
             </div>
+
             {error && <p className="text-[11px] text-rose-400">{error}</p>}
+            {notice && <p className="text-[11px] text-amber-300">{notice}</p>}
           </div>
         </div>
       )}
@@ -189,6 +435,7 @@ export const FirstRunApiKeyModal: React.FC = () => {
   const t = useT();
   const systemInfo = useJobStore((s) => s.systemInfo);
   const fetchSystemInfo = useJobStore((s) => s.fetchSystemInfo);
+  const loadSettings = useSettingsStore((s) => s.load);
 
   const [dismissed, setDismissed] = useState(false);
   const [keyInput, setKeyInput] = useState('');
@@ -196,8 +443,7 @@ export const FirstRunApiKeyModal: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Only show once systemInfo has loaded and we know no API key is configured
-  if (!systemInfo || systemInfo.is_gemini_configured || dismissed) {
+  if (!systemInfo || systemInfo.is_gemini_configured || systemInfo.is_ai_configured || dismissed) {
     return null;
   }
 
@@ -209,6 +455,7 @@ export const FirstRunApiKeyModal: React.FC = () => {
     try {
       await api.saveApiKey(keyInput.trim());
       await fetchSystemInfo();
+      await loadSettings();
       setDismissed(true);
     } catch (err: any) {
       setError(err.message || 'Could not save API key');
@@ -260,7 +507,7 @@ export const FirstRunApiKeyModal: React.FC = () => {
                 autoFocus
                 value={keyInput}
                 onChange={(e) => setKeyInput(e.target.value)}
-                placeholder={t('settings.apiKey.placeholder')}
+                placeholder="AIzaSy..."
                 data-testid="modal-apikey-input"
                 className="w-full bg-sunken border border-line rounded-xl ps-3.5 pe-10 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-indigo-500 font-mono"
               />

@@ -3,7 +3,7 @@ Gemini Vision prompts and the call that reads on-screen text (or burned-in subti
 batch of sampled frames.
 """
 import logging
-from typing import Any, List, Sequence
+from typing import Any, List, Optional, Sequence
 
 from app.pipeline.frame_sampling import Frame
 from app.pipeline.onscreen_merge import FrameDetection, _is_unwanted_onscreen
@@ -107,9 +107,9 @@ async def _gemini_detect(
     flex: bool = False,
     flex_state: Any = None,
     sensitivity: int = 2,
+    provider: str = "google",
+    key_id: Optional[str] = None,
 ) -> List[FrameDetection]:
-    from google.genai import types
-    from app.core.model_catalog import default_temperature, media_resolution, thinking_config
     from pydantic import BaseModel, Field
 
     class OnScreenText(BaseModel):
@@ -123,31 +123,62 @@ async def _gemini_detect(
     class OnScreenBatch(BaseModel):
         detections: List[OnScreenText] = []
 
-    contents: List[Any] = [f"{len(batch)} frames follow, each preceded by its timestamp in seconds."]
-    for f in batch:
-        contents.append(f"Frame at t={f.time:.1f}s:")
-        contents.append(types.Part.from_bytes(data=f.path.read_bytes(), mime_type="image/jpeg"))
+    if provider == "google" and key_id is None and client is not None and not isinstance(client, str):
+        from google.genai import types
+        from app.core.model_catalog import default_temperature, media_resolution, thinking_config
+        from app.providers import gemini_calls
 
-    from app.providers import gemini_calls
+        contents: List[Any] = [f"{len(batch)} frames follow, each preceded by its timestamp in seconds."]
+        for f in batch:
+            contents.append(f"Frame at t={f.time:.1f}s:")
+            contents.append(types.Part.from_bytes(data=f.path.read_bytes(), mime_type="image/jpeg"))
 
-    response = await gemini_calls.generate_content(
-        client,
-        model=model,
-        contents=contents,
-        config=types.GenerateContentConfig(
+        response = await gemini_calls.generate_content(
+            client,
+            model=model,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=instruction,
+                response_mime_type="application/json",
+                response_schema=OnScreenBatch,
+                temperature=default_temperature(model, 0.0),
+                thinking_config=thinking_config(model, thinking),
+                media_resolution=media_resolution(model, resolution),
+            ),
+            flex=flex,
+            usage=usage,
+            stage=stage,
+            flex_state=flex_state,
+        )
+        response_text = response.text
+    else:
+        from app.providers.llm import call_vision_json, resolve_provider_spec
+
+        pieces: List[Any] = [f"{len(batch)} frames follow, each preceded by its timestamp in seconds."]
+        for f in batch:
+            pieces.append(f"Frame at t={f.time:.1f}s:")
+            pieces.append((f.path.read_bytes(), "image/jpeg"))
+        spec = resolve_provider_spec(
+            provider,  # type: ignore[arg-type]
+            model,
+            key_id=key_id,
+            thinking=thinking,
+            flex=flex,
+        )
+        llm_resp = await call_vision_json(
+            spec,
             system_instruction=instruction,
-            response_mime_type="application/json",
-            response_schema=OnScreenBatch,
-            temperature=default_temperature(model, 0.0),
-            thinking_config=thinking_config(model, thinking),
-            media_resolution=media_resolution(model, resolution),
-        ),
-        flex=flex,
-        usage=usage,
-        stage=stage,
-        flex_state=flex_state,
-    )
-    parsed = OnScreenBatch.model_validate_json(response.text)
+            pieces=pieces,
+            schema_cls=OnScreenBatch,
+            temperature=0.0,
+            media_resolution=resolution,
+            usage=usage,
+            stage=stage,
+            flex_state=flex_state,
+        )
+        response_text = llm_resp.text
+
+    parsed = OnScreenBatch.model_validate_json(response_text)
     out = []
     for d in parsed.detections:
         if stage == "onscreen" and _is_unwanted_onscreen(d.text, d.kind, sensitivity=sensitivity):

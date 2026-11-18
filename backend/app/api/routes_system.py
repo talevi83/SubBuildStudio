@@ -54,12 +54,22 @@ def reset_gemini_models_cache() -> None:
 @router.get("/info", response_model=SystemInfoResponse)
 async def get_system_info():
     """Retrieve server hardware capabilities and configuration status."""
+    from app.core.provider_keys import PROVIDERS, is_provider_configured, provider_summary, resolve_secret_key
+
     hw = await asyncio.to_thread(get_hardware_info)
+    summary = provider_summary()
+    google_configured = is_provider_configured("google")
+    any_configured = any(is_provider_configured(p) for p in PROVIDERS)
+    google_key = resolve_secret_key("google", allow_local_ollama_fallback=False)
+    masked = settings.masked_api_key or (summary["google"].get("masked_default_key") if google_key else None)
+
     return SystemInfoResponse(
-        is_gemini_configured=settings.is_gemini_configured,
-        masked_api_key=settings.masked_api_key,
+        is_gemini_configured=google_configured,
+        is_ai_configured=any_configured,
+        masked_api_key=masked,
         gemini_model=settings.gemini_model,
         gemini_models=await _gemini_models(),
+        providers=summary,
         whisper_default_model=settings.whisper_default_model,
         whisper_models=settings.whisper_models,
         max_cps_warning=settings.max_cps_warning,

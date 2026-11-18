@@ -392,58 +392,58 @@ SubBuild Studio uses a **Multi-Layer Hybrid Test Pyramid** combining fast in-pro
 
 ```mermaid
 flowchart TD
-    E2E["Black-Box UI E2E — Java 21 + Selenium 4 POM (16 tests)"]
-    BAPI["Black-Box API & Security — Java 21 + RestAssured (31 tests)"]
-    FE["Frontend UI & Store — Vitest + RTL (9 tests) + oxlint + tsc"]
-    PIPE["Backend API, Pipeline & Security — Pytest (336 tests)"]
-    UNIT["Pure Unit & Domain Rules — Pytest (96 tests)"]
+    E2E["Black-Box UI E2E — Java 21 + Selenium 4 POM (18 tests)"]
+    BAPI["Black-Box API & Security — Java 21 + RestAssured (34 tests)"]
+    FE["Frontend UI & Store — Vitest + RTL (11 tests) + oxlint + tsc"]
+    PIPE["Backend API, Pipeline & Security — Pytest (367 tests)"]
+    UNIT["Pure Unit & Domain Rules — Pytest (128 tests)"]
     E2E --> BAPI --> FE --> PIPE --> UNIT
 ```
 
-### 1. Backend Pytest Suite (`backend/tests/`, 432 tests)
+### 1. Backend Pytest Suite (`backend/tests/`, 495 tests)
 Tests are organized into explicit architectural layers with shared builders/fakes (`tests/fixtures/`) and registered markers in `backend/pytest.ini`:
 
 ```powershell
 cd backend
 
-# Run the full suite (432 tests)
+# Run the full suite (495 tests)
 .\.venv\Scripts\python.exe -m pytest -q
 
 # Run by architectural layer or execution tag
-.\.venv\Scripts\python.exe -m pytest -m unit -q        # 96 pure unit tests (no DB / no FFmpeg)
-.\.venv\Scripts\python.exe -m pytest -m api -q         # 103 FastAPI + SQLite integration tests
+.\.venv\Scripts\python.exe -m pytest -m unit -q        # 128 pure unit tests (no DB / no FFmpeg)
+.\.venv\Scripts\python.exe -m pytest -m api -q         # 131 FastAPI + SQLite integration tests
 .\.venv\Scripts\python.exe -m pytest -m pipeline -q    # 170 pipeline, AI provider fake & FFmpeg tests
-.\.venv\Scripts\python.exe -m pytest -m security -q    # 63 auth, CSRF, headers, FFmpeg SSRF & upload tests
+.\.venv\Scripts\python.exe -m pytest -m security -q    # 66 auth, CSRF, headers, FFmpeg SSRF & upload tests
 .\.venv\Scripts\python.exe -m pytest -m smoke -q       # 53 critical-path smoke tests
 ```
 
 - **`tests/unit/`**: RTL BiDi wrapping, SRT/VTT timecode & formatting, segmentation/orphan-word healing, smart end-credits detection, speaker turn splitting & SDH cleanup, missing speech supplementation, QA rules, DB migration, and desktop launcher/shortcut logic.
-- **`tests/api/`**: System info, job persistence & slim listings, live WebSocket segment streaming, segment CRUD, undo/redo edit history, upload SHA-256 deduplication & Range parsing, row-scoped retranslation, glossary profiles, speaker detection, retime/reorder, settings/pricing, save-next-to-video, and storage cleanup.
-- **`tests/pipeline/`**: End-to-end pipeline on generated FFmpeg clips, Whisper threading/OOM fallback/cancellation, Gemini batching/retries/Flex tier fallback, FinOps dHash pre-filtering & Ollama local pre-tagging, OCR & tactical comms boost, foreign speech, sync alignment/burned-in detection, gap recovery, word snapping, video embedding, and per-job logging.
+- **`tests/api/`**: System info, multi-provider key vault & live discovery (`test_multi_provider_ai.py`), job persistence & slim listings, live WebSocket segment streaming, segment CRUD, undo/redo edit history, upload SHA-256 deduplication & Range parsing, row-scoped retranslation, glossary profiles, speaker detection, retime/reorder, settings/pricing, save-next-to-video, and storage cleanup.
+- **`tests/pipeline/`**: End-to-end pipeline on generated FFmpeg clips, Whisper threading/OOM fallback/cancellation, Gemini/LLM batching/retries/Flex tier fallback, FinOps dHash pre-filtering & Ollama local pre-tagging, OCR & tactical comms boost, foreign speech, sync alignment/burned-in detection, gap recovery, word snapping, video embedding, and per-job logging.
 - **`tests/security/`**: Per-launch session token (`X-SubBuild-Token` & HttpOnly cookie) and UNC path refusal, CSRF Origin/Fetch-Metadata & Host validation, anti-framing/CSP security headers, FFmpeg `-protocol_whitelist file` & AST audit, and `Content-Length` upload limits.
 
-### 2. Frontend Checks & Tests (`frontend/`, 9 tests)
+### 2. Frontend Checks & Tests (`frontend/`, 11 tests)
 ```powershell
 cd frontend
 npm run lint    # oxlint
-npm test        # Vitest + React Testing Library (9 tests)
+npm test        # Vitest + React Testing Library (11 tests)
 npm run build   # tsc -b + vitest run + vite build
 ```
 
-### 3. Java Black-Box E2E & API Suite (`qa-automation-java/`, 47 tests)
+### 3. Java Black-Box E2E & API Suite (`qa-automation-java/`, 52 tests)
 Built with **Maven + Java 21 + JUnit 5 + Selenium WebDriver 4 (POM) + RestAssured + ExtentReports**. Starts an isolated temporary backend server automatically (never touching `backend/storage` or `backend/.env`), seeds data via RestAssured for fast UI tests, captures screenshots on failure, and writes an interactive HTML report to `qa-automation-java/target/reports/subbuild-qa-report.html`.
 
 ```powershell
 cd qa-automation-java
 
-# Full regression suite (47 tests: 31 API/Security + 16 Selenium UI, headless Chrome)
+# Full regression suite (52 tests: 34 API/Security + 18 Selenium UI, headless Chrome)
 mvn clean test -Pregression
 
 # Fast critical-path smoke suite (9 tests)
 mvn test -Psmoke
 
 # Direct JUnit 5 @Tag filtering also works
-mvn test -Dgroups=regression   # 47 regression tests (includes the 9 smoke tests)
+mvn test -Dgroups=regression   # 52 regression tests (includes the 9 smoke tests)
 mvn test -Dgroups=smoke        # 9 critical-path smoke tests
 
 # Optional browser / driver / headless overrides
@@ -455,8 +455,8 @@ mvn test -Pregression "-Dsubbuild.headless=true"
 - **Branch flow (`staging` → `main`):** feature/fix branches are merged into **`staging`** first; every push there runs the full automation (GitHub Actions + Jenkins: pytest, frontend checks, Java RestAssured/Selenium). Only a green `staging` is merged into `main` (open the PR `staging` → `main`).
 - **Self-Hosted Jenkins CI (Raspberry Pi 4 8GB, Linux `aarch64`):** Configured via [`Jenkinsfile`](Jenkinsfile) and triggered automatically on pushes to `staging` and `main` via **GitHub Webhook** (plus manual parameterized runs with `JAVA_PROFILE=regression|smoke`, `RUN_BACKEND_PYTEST`, and `RUN_FRONTEND_CHECKS`).
   1. **Preflight Check:** Verifies `python3`, `node`, `npm`, `java`, `mvn`, `ffmpeg`, and `chromium`/`chromedriver`.
-  2. **Backend Pytest (`432` tests):** Provisions `backend/.venv` (filtering out `nvidia-*` CUDA packages, cached by `requirements.txt` SHA-256) and emits JUnit XML.
-  3. **Frontend Checks & Build (`9` Vitest + Vite `dist`):** Runs `npm ci`, `oxlint`, `tsc -b`, `vitest run`, and `vite build` so `backend/app/main.py` serves `frontend/dist` for Selenium tests.
-  4. **Java Black-Box QA (`47` regression / `9` smoke):** Executes `mvn -B clean test -P"${JAVA_PROFILE}" -Dsubbuild.headless=true -Dsubbuild.timeoutSeconds=30`, then publishes unified JUnit results and archives `ExtentReports` HTML + failure screenshots.
+  2. **Backend Pytest (`495` tests):** Provisions `backend/.venv` (filtering out `nvidia-*` CUDA packages, cached by `requirements.txt` SHA-256) and emits JUnit XML.
+  3. **Frontend Checks & Build (`11` Vitest + Vite `dist`):** Runs `npm ci`, `oxlint`, `tsc -b`, `vitest run`, and `vite build` so `backend/app/main.py` serves `frontend/dist` for Selenium tests.
+  4. **Java Black-Box QA (`52` regression / `9` smoke):** Executes `mvn -B clean test -P"${JAVA_PROFILE}" -Dsubbuild.headless=true -Dsubbuild.timeoutSeconds=30`, then publishes unified JUnit results and archives `ExtentReports` HTML + failure screenshots.
 - **Cross-Platform Driver & Headless Resolution (`TestConfig` + `DriverFactory`):** Auto-enables `--headless=new` in `CI`/`JENKINS_URL`/`GITHUB_ACTIONS` or display-less Linux environments; preserves Selenium Manager on Windows and GitHub Actions (`ubuntu-latest` `x86_64`), and automatically falls back to OS-packaged `/usr/bin/chromium` + `/usr/bin/chromedriver` on Linux ARM64 (`aarch64`).
 - **GitHub Actions ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)):** Runs backend `pytest` + `pip-audit` and frontend `npm audit` + `oxlint` + `vitest` + `vite build` on `ubuntu-latest` (`main`, PRs, and weekly schedule).

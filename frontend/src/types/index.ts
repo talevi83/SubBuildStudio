@@ -182,9 +182,11 @@ export interface HardwareInfo {
 
 export interface SystemInfo {
   is_gemini_configured: boolean;
+  is_ai_configured?: boolean;
   masked_api_key?: string | null;
   gemini_model: string;
   gemini_models: string[];
+  providers?: Record<string, ProviderSummary>;
   whisper_default_model: string;
   whisper_models: string[];
   max_cps_warning: number;
@@ -341,11 +343,39 @@ export const isRtlLanguage = (lang?: string | null) =>
 // Settings, model catalog, pricing
 // ---------------------------------------------------------------------------
 
+export type AIProvider = 'google' | 'openai' | 'anthropic' | 'ollama';
 export type ThinkingLevel = 'default' | 'off' | 'minimal' | 'low' | 'medium' | 'high';
 export type MediaResolution = 'low' | 'medium' | 'high';
 
+export interface ProviderKeyRecord {
+  id: string;
+  provider: AIProvider;
+  label: string;
+  masked_key?: string | null;
+  has_key: boolean;
+  base_url?: string | null;
+  is_default: boolean;
+  source: 'vault' | 'env' | string;
+  created_at?: string | null;
+  verified_at?: string | null;
+  last_error?: string | null;
+  discovered_count?: number | null;
+}
+
+export interface ProviderSummary {
+  provider: AIProvider;
+  configured: boolean;
+  key_count: number;
+  default_key_id?: string | null;
+  masked_default_key?: string | null;
+  default_base_url?: string | null;
+  discovered?: boolean;
+}
+
 export interface GeminiCallSettings {
+  provider?: AIProvider;
   model: string;
+  key_id?: string | null;
   thinking: ThinkingLevel;
   /** Flex service tier: half price, slower, falls back to Standard when Google is busy */
   flex?: boolean;
@@ -365,22 +395,35 @@ export interface AppSettings {
 
 export interface CatalogModel {
   id: string;
+  provider?: AIProvider;
   label: string;
   family: string;
   preview: boolean;
+  available?: boolean;
+  key_ids?: string[];
+  is_local?: boolean;
+  param_billions?: number | null;
   thinking: ThinkingLevel[];
   default_level: string;
-  input_per_m: number;
-  output_per_m: number;
+  input_per_m: number | null;
+  output_per_m: number | null;
   input_long_per_m?: number | null;
   output_long_per_m?: number | null;
   price_change?: { after: string; input_per_m: number; output_per_m: number } | null;
+  episode_cost_usd?: number | null;
+  movie_cost_usd?: number | null;
+  episode_vision_cost_usd?: number | null;
+  movie_vision_cost_usd?: number | null;
   supports_media_resolution: boolean;
   /** Pipeline steps this model is offered for */
   tasks: PipelineTask[];
+  recommended_for?: PipelineTask[];
+  warnings_by_task?: Partial<Record<PipelineTask, string>>;
+  suitability_by_task?: Partial<Record<PipelineTask, 'recommended' | 'suitable' | 'warning' | 'unsuitable'>>;
   supports_flex?: boolean;
   /** Share of the Standard price billed on Flex (0.5), or null when Flex isn't offered */
   flex_price_factor?: number | null;
+  rank?: number;
   note?: string;
 }
 
@@ -401,8 +444,34 @@ export interface ModelCheckResponse {
 export interface SettingsResponse {
   settings: AppSettings;
   catalog: CatalogModel[];
+  providers?: Record<string, ProviderSummary>;
+  keys?: ProviderKeyRecord[];
   pricing_source: string;
   pricing_checked: string;
+}
+
+export interface ProviderKeysResponse {
+  keys: ProviderKeyRecord[];
+  providers: Record<string, ProviderSummary>;
+}
+
+export interface ProviderKeyMutationResponse {
+  key?: ProviderKeyRecord;
+  deleted?: boolean;
+  keys: ProviderKeyRecord[];
+  providers: Record<string, ProviderSummary>;
+  catalog: CatalogModel[];
+  settings: AppSettings;
+  discovery_error?: string | null;
+}
+
+export interface RefreshProvidersResponse {
+  settings: AppSettings;
+  catalog: CatalogModel[];
+  providers: Record<string, ProviderSummary>;
+  keys: ProviderKeyRecord[];
+  errors: Record<string, string>;
+  discovered_counts: Record<string, number>;
 }
 
 export interface OllamaStatus {

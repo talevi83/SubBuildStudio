@@ -2,6 +2,7 @@ import React from 'react';
 import { useJobStore } from '../../store/useJobStore';
 import { isActiveStatus } from '../../types';
 import { languageLabel } from '../ingest/languages';
+import { inferProviderFromModelId, providerDisplayName } from '../settings/labels';
 import { useT, formatUsd } from '../../i18n';
 import type { MessageKey } from '../../i18n';
 import { useUiStore } from '../../store/useUiStore';
@@ -86,6 +87,18 @@ export const LivePipelineBar: React.FC = () => {
 
   const isCuda = systemInfo?.hardware?.cuda_available;
   const usageTotal = activeJob.usage?.total_cost_usd;
+  const stageProviders = new Set(
+    Object.values(activeJob.usage?.stages || {})
+      .map((u) => inferProviderFromModelId(u?.model))
+      .filter((p): p is NonNullable<typeof p> => !!p)
+  );
+  const inferredJobProvider =
+    stageProviders.size === 1
+      ? Array.from(stageProviders)[0]
+      : stageProviders.size === 0
+        ? inferProviderFromModelId(activeJob.gemini_model)
+        : undefined;
+  const costProvider = inferredJobProvider ? providerDisplayName(inferredJobProvider) : 'AI';
   const usageLines = Object.entries(activeJob.usage?.stages || {})
     .map(([stage, u]) => `${t(`stages.${stage}` as MessageKey)}: ${u!.model} · ${u!.requests}× · ${formatUsd(u!.cost_usd, language)}`)
     .join('\n');
@@ -159,7 +172,7 @@ export const LivePipelineBar: React.FC = () => {
               data-testid="gemini-cost"
             >
               <Coins className="w-3.5 h-3.5 text-amber-400" />
-              <span dir="ltr">{t('monitor.geminiCost', { cost: formatUsd(usageTotal, language) })}</span>
+              <span dir="ltr">{t('monitor.geminiCost', { provider: costProvider, cost: formatUsd(usageTotal, language) })}</span>
             </div>
           ) : null}
           <div className="px-2.5 py-1 rounded bg-zinc-800 border border-zinc-700/60 text-zinc-300 font-semibold text-[11px]">

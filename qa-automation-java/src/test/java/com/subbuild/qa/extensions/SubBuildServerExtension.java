@@ -134,6 +134,7 @@ public class SubBuildServerExtension implements BeforeAllCallback, ParameterReso
                 env.put("DATABASE_URL", "sqlite:///" + tempDir.resolve("qa_test.db").toString().replace('\\', '/'));
                 env.put("SUBBUILD_TOKEN", token);
                 env.put("GEMINI_API_KEY", "");
+                env.put("SUBBUILD_SKIP_LOCAL_OLLAMA_PROBE", "1");
                 env.put("ALLOWED_HOSTS", "[\"localhost\",\"127.0.0.1\"]");
 
                 Process proc = pb.start();

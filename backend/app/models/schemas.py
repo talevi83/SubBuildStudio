@@ -322,9 +322,11 @@ class WebSocketEventPayload(BaseModel):
 
 class SystemInfoResponse(BaseModel):
     is_gemini_configured: bool
+    is_ai_configured: bool = False
     masked_api_key: Optional[str] = None
     gemini_model: str
     gemini_models: List[str] = []
+    providers: Dict[str, Any] = {}
     whisper_default_model: str
     whisper_models: List[str] = []
     max_cps_warning: float = 20.0

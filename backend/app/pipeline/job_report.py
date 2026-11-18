@@ -46,7 +46,7 @@ def log_job_start(
         )
         translation_model = ctx.gemini_model or s.translation.model
         logger.info(
-            f"Gemini: translation {'on' if ctx.enable_translation else 'off'} -> {ctx.target_language}, "
+            f"AI: translation {'on' if ctx.enable_translation else 'off'} -> {ctx.target_language}, "
             f"model {call(s.translation) if translation_model == s.translation.model else translation_model}; "
             f"glossary {call(s.glossary)}; vision {call(s.vision)}, frame detail {s.vision_media_resolution}"
         )
@@ -83,7 +83,7 @@ def log_job_summary(job_id: str, ctx: Optional[PipelineContext]) -> None:
             for name, st in ctx.usage.stages.items():
                 cost = "unknown" if st.cost_usd is None else f"${st.cost_usd:.4f}"
                 logger.info(
-                    f"Gemini {name}: {st.model}, {st.requests} request(s), in {st.input_tokens}, "
+                    f"AI {name}: {st.model}, {st.requests} request(s), in {st.input_tokens}, "
                     f"out {st.output_tokens}, thinking {st.thinking_tokens}, cost {cost}, "
                     f"Flex {st.flex_requests}, Flex->Standard {st.flex_fallbacks}"
                 )
