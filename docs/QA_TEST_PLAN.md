@@ -57,7 +57,7 @@ Additional cross-cutting Pytest markers:
 - **Static Checks:** `oxlint` (`npm run lint`) and TypeScript compiler (`tsc -b`).
 - **Component & Store Tests:**
   - `frontend/src/__tests__/reliability_and_editor_roundtrip.test.tsx` (**9 tests**): autosave state, split/merge/shift controls, search navigation, and bilingual export URL generation.
-  - `frontend/src/__tests__/multi_provider_settings.test.tsx` (**4 tests**): multi-key provider vault tabs, Ollama Cloud preset, strict key & task filtering, per-episode/movie cost benchmarks, `RowTranslateDialog` model filtering & provider-conditional Thinking selector, `ExportToolbar`/`Sidebar` multi-stage AI status without Gemini keys, and GPU/VRAM-aware Best-Value Auto-Selector (with Google Flex support).
+  - `frontend/src/__tests__/multi_provider_settings.test.tsx` (**4 tests**): multi-key provider vault tabs, Ollama Cloud preset, strict key & task filtering, zero SettingsScreen content duplication (`metric-conversion-toggle` / `remove-sdh-speakers-toggle` live only in `PipelineConfig`), `vision-media-resolution` selector, collapsible Ollama details & Cost Estimator panels, per-episode/movie cost benchmarks, `RowTranslateDialog` model filtering & provider-conditional Thinking selector, `ExportToolbar`/`Sidebar` multi-stage AI status without Gemini keys, and GPU/VRAM-aware Best-Value Auto-Selector (with Google Flex support).
 
 ### 3.3 Java Enterprise Black-Box Automation (`qa-automation-java/`) — 52 Tests
 Standard Maven project built with **Java 21**, **JUnit 5**, **Selenium WebDriver 4.27**, **RestAssured 5.5**, and **ExtentReports 5** (`9 @Tag("smoke")` + `43` additional `@Tag("regression")` tests; every `smoke` test also carries `@Tag("regression")` so `-Pregression` runs the complete 52-test suite).
@@ -79,7 +79,7 @@ qa-automation-java/
     │       ├── IngestPage.java               # Bootstrap login, mode switch, media probe, presets, launch
     │       ├── StudioEditorPage.java         # SubtitleTable, Insert/Glossary/Shift-Time, Search, Undo/Redo, QA
     │       ├── ExportToolbarComponent.java   # Live onscreen position, SRT/VTT/Log/Glossary/Embed controls
-    │       ├── SettingsPage.java             # Multi-provider keys, per-step provider/model, warnings, RTL/Theme
+    │       ├── SettingsPage.java             # Multi-provider keys, per-step provider/model, Vision resolution, Flex/Cost-Saver, RTL/Theme
     │       └── SidebarComponent.java         # Project navigation, Clear All & bulk selection
     └── test/java/com/subbuild/qa/
         ├── base/
@@ -96,7 +96,7 @@ qa-automation-java/
             └── ui/
                 ├── IngestAndPresetsUiTest.java    # 6 tests (Modal, ModeSwitch, Probe, 4 Genre Presets, Launch)
                 ├── StudioEditorUiTest.java        # 2 tests (Hybrid seeded workspace, Insert/Replace/Undo/QA/Clear)
-                ├── SettingsUiTest.java            # 2 tests (RTL/LTR, Dark/Light, Metric/Cost-Saver/Flex persistence)
+                ├── SettingsUiTest.java            # 2 tests (RTL/LTR, Dark/Light, Cost-Saver, Flex & Vision resolution persistence)
                 └── RegressionUiTest.java          # 8 tests (Invalid path, Sync SRT, Overlap, Multi-Key, Warnings, Help)
 ```
 
@@ -177,7 +177,7 @@ After running `mvn test`, open the generated ExtentReports dashboard:
 | Media Probe & Embedded Pipeline E2E | `test_pipeline_e2e.py`, `test_embedded_subtitles.py` | `JobLifecycleApiTest#embeddedJobLifecycleAndExport`, `IngestAndPresetsUiTest#launchEmbeddedJobFromUi` | `smoke` / `regression` |
 | Genre Presets & Cost Estimation | `test_settings_pricing.py`, `test_finops_optimizations.py` | `IngestAndPresetsUiTest#genrePresetsUpdateActiveBadge`, `SystemAndSecurityApiTest#costEstimateCalculation` | `regression` |
 | Studio Editing, Undo/Redo, QA & Exports | `test_edit_history.py`, `test_insert_segment.py`, `test_qa.py` | `StudioEditorUiTest#openSeededJobAndUpdateOnscreenPosition`, `#insertReplaceUndoRedoQaAndSidebarCleanup` | `smoke` / `regression` |
-| RTL Localization, Theme & Settings Persistence | `test_rtl_fixer.py`, `test_settings_pricing.py`, `test_flex.py` | `SettingsUiTest#languageThemeAndTogglesPersist`, `#flexAndOnscreenPositionPersist` | `smoke` / `regression` |
+| RTL Localization, Theme & Settings Persistence | `test_rtl_fixer.py`, `test_settings_pricing.py`, `test_flex.py` | `SettingsUiTest#languageThemeAndTogglesPersist`, `#flexAndVisionResolutionPersist` | `smoke` / `regression` |
 | Split/Merge/Shift, Glossary Profiles & Bilingual Export | `test_retime.py`, `test_glossary_profiles.py`, `test_srt_formatter.py` | `RegressionApiTest#splitMergeAndShiftSegmentsWithHistory`, `#glossaryUpdateAndSeriesProfilePersistence`, `#bilingualAndRtlExportContract`, `RegressionUiTest#glossaryDialogSavesCharacterAndProfile`, `#shiftTimePopoverPersistsTimingChange` | `regression` |
 | Negative Input Validation, Overlap Guard & Soft Video Embed | `test_insert_segment.py`, `test_embed_video.py`, `test_upload_limits.py` | `RegressionApiTest#negativeSegmentValidationAndOverlaps`, `#negativeJobAndSettingsErrors`, `#negativeNonMediaPathsRejected`, `#jobLogExportAndSoftEmbed`, `RegressionUiTest#invalidMediaPathShowsErrorBanner`, `#insertDialogBlocksOverlappingSegment` | `regression` |
 | Sync SRT Upload & Help FAQ Flow | `test_sync.py`, `test_logs.py` | `RegressionUiTest#syncModeSubtitleUploadAndEncodingSelector`, `#helpScreenAndFaqAccordion` | `regression` |

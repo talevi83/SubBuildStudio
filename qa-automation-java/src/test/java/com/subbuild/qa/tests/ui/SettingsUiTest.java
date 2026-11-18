@@ -56,15 +56,12 @@ class SettingsUiTest extends BaseTest {
         // Cost estimator table renders
         assertTrue(settings.isCostEstimateTableVisible());
 
-        // Toggle Metric conversion + Cost-Saver mode + Save
-        boolean metricBefore = settings.isMetricConversionEnabled();
+        // Toggle Cost-Saver mode + Save
         boolean saverBefore = settings.isCostSaverEnabled();
-        settings.toggleMetricConversion()
-                .toggleCostSaver()
+        settings.toggleCostSaver()
                 .saveSettings();
 
         Response persisted = api.getSettings();
-        assertEquals(!metricBefore, persisted.jsonPath().getBoolean("settings.convert_to_metric"));
         assertEquals(!saverBefore, persisted.jsonPath().getBoolean("settings.cost_saver_mode"));
 
         // Navigate back to Ingest screen cleanly
@@ -74,17 +71,17 @@ class SettingsUiTest extends BaseTest {
     @Test
     @Tag("regression")
     @Tag("ui")
-    @DisplayName("Enabling Flex tier and default on-screen position persists via Settings API")
-    void flexAndOnscreenPositionPersist() {
+    @DisplayName("Enabling Flex tier and Vision frame detail persists via Settings API")
+    void flexAndVisionResolutionPersist() {
         SettingsPage settings = openStudio().sidebar().openSettings();
 
         boolean flexBefore = settings.isTranslationFlexEnabled();
         settings.toggleTranslationFlex()
-                .selectDefaultOnscreenPosition("middle_right")
+                .selectVisionMediaResolution("high")
                 .saveSettings();
 
         Response persisted = api.getSettings();
         assertEquals(!flexBefore, persisted.jsonPath().getBoolean("settings.translation.flex"));
-        assertEquals("middle_right", persisted.jsonPath().getString("settings.onscreen_position"));
+        assertEquals("high", persisted.jsonPath().getString("settings.vision_media_resolution"));
     }
 }

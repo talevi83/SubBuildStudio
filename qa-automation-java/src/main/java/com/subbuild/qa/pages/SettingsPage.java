@@ -21,8 +21,6 @@ public class SettingsPage extends BasePage {
     private static final By THEME_LIGHT_BTN = By.xpath("//div[@role='radiogroup']//button[.//*[contains(@class,'lucide-sun')]]");
     private static final By THEME_DARK_BTN = By.xpath("//div[@role='radiogroup']//button[.//*[contains(@class,'lucide-moon')]]");
 
-    private static final By METRIC_TOGGLE = By.cssSelector("[data-testid='metric-conversion-toggle']");
-    private static final By METRIC_SWITCH = By.cssSelector("[data-testid='metric-conversion-switch']");
     private static final By COST_SAVER_TOGGLE = By.cssSelector("[data-testid='cost-saver-toggle']");
     private static final By COST_SAVER_SWITCH = By.cssSelector("[data-testid='cost-saver-switch']");
     private static final By TRANSLATION_FLEX_SWITCH = By.cssSelector("[data-testid='model-card-translation-flex']");
@@ -74,19 +72,6 @@ public class SettingsPage extends BasePage {
         return this;
     }
 
-    public SettingsPage toggleMetricConversion() {
-        boolean before = isMetricConversionEnabled();
-        WebElement toggle = waitVisible(METRIC_TOGGLE);
-        scrollIntoView(toggle);
-        toggle.click();
-        wait.until(d -> isMetricConversionEnabled() != before);
-        return this;
-    }
-
-    public boolean isMetricConversionEnabled() {
-        return "true".equals(waitVisible(METRIC_SWITCH).getAttribute("aria-checked"));
-    }
-
     public SettingsPage toggleCostSaver() {
         boolean before = isCostSaverEnabled();
         WebElement toggle = waitVisible(COST_SAVER_TOGGLE);
@@ -113,20 +98,12 @@ public class SettingsPage extends BasePage {
         return waitVisible(TRANSLATION_FLEX_SWITCH).isSelected();
     }
 
-    public SettingsPage selectDefaultOnscreenPosition(String position) {
-        String icon = switch (position) {
-            case "top_center" -> "⬆️";
-            case "middle_right" -> "➡️";
-            case "middle_left" -> "⬅️";
-            case "top_right" -> "↗️";
-            case "top_left" -> "↖️";
-            default -> throw new IllegalArgumentException("Unknown onscreen position: " + position);
-        };
-        By posBtn = By.xpath(
-                "//div[@data-testid='model-card-vision']//button[@type='button' and contains(.,'" + icon + "')]");
-        WebElement btn = waitVisible(posBtn);
+    public SettingsPage selectVisionMediaResolution(String resolution) {
+        By resBtn = By.cssSelector("[data-testid='vision-resolution-" + resolution + "']");
+        WebElement btn = waitVisible(resBtn);
         scrollIntoView(btn);
         btn.click();
+        wait.until(d -> "true".equals(d.findElement(resBtn).getAttribute("aria-checked")));
         return this;
     }
 

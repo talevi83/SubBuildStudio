@@ -283,6 +283,22 @@ describe('Multi-Provider AI Settings & Key Vault UI', () => {
 
     const view = render(<SettingsScreen />);
 
+    // Duplicated content toggles belong to PipelineConfig, not SettingsScreen; Vision resolution & collapsibles work
+    expect(view.queryByTestId('metric-conversion-toggle')).toBeNull();
+    expect(view.queryByTestId('remove-sdh-speakers-toggle')).toBeNull();
+    fireEvent.click(view.getByTestId('vision-resolution-high'));
+    expect(view.getByTestId('vision-resolution-high').getAttribute('aria-checked')).toBe('true');
+
+    expect(view.queryByTestId('ollama-download-link')).toBeNull();
+    fireEvent.click(view.getByTestId('ollama-details-toggle'));
+    expect(view.getByTestId('ollama-download-link')).toBeTruthy();
+
+    await waitFor(() => expect(view.getByTestId('estimate-table')).toBeTruthy());
+    fireEvent.click(view.getByTestId('estimate-collapse-toggle'));
+    expect(view.queryByTestId('estimate-table')).toBeNull();
+    fireEvent.click(view.getByTestId('estimate-collapse-toggle'));
+    expect(view.getByTestId('estimate-table')).toBeTruthy();
+
     // Switch translation step to OpenAI -> only capable & live models appear (no gpt-5-nano, no unverified seed, no ★/✓/⚠)
     fireEvent.change(view.getByTestId('model-card-translation-provider'), { target: { value: 'openai' } });
     const trModelSelect = view.getByTestId('model-card-translation-model') as HTMLSelectElement;

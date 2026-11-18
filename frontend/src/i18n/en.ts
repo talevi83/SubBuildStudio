@@ -744,6 +744,7 @@ export const en = {
     costSaver: {
       label: 'Cost-Saver Mode (Use Local PC Hardware)',
       description: 'Cuts AI API costs by filtering video frames and pre-processing on your PC. Recommended for strong PCs; keep off on weak laptops.',
+      detailsToggle: 'How it works & manual setup',
       whyTitle: 'Why is Ollama needed for Cost-Saver Mode?',
       whyText: 'Cost-Saver works in two local layers: (1) Built-in local frame filtering drops blank frames and merges duplicate title cards before calling AI Vision (~75–80% Vision token savings), and (2) Local AI via Ollama runs an open model (such as qwen2.5:7b) on your GPU after Whisper finishes to pre-tag speaker and listener gender (M/F) on ambiguous lines — improving Hebrew/Arabic gender accuracy while saving cloud tokens.',
       installButton: 'Download Ollama (official site)',

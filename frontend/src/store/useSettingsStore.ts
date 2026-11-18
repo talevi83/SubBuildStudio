@@ -63,7 +63,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
         keys: res.keys || [],
         error: null,
       });
-      useJobStore.getState().applySettingsDefaults(res.settings, true);
+      useJobStore.getState().applySettingsDefaults(res.settings, false);
       return true;
     } catch (e: any) {
       set({ error: e.message });

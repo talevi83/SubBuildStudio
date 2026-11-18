@@ -380,64 +380,64 @@ export const PipelineConfig: React.FC = () => {
                 </select>
               </div>
 
-              <div className="p-2.5 rounded-lg bg-surface border border-line flex items-center justify-between gap-2">
-                <span className="text-[11px] text-zinc-300 min-w-0 truncate">
-                  {appSettings
-                    ? t('config.modelSummary', {
-                        model: modelLabel(catalog, appSettings.translation.model),
-                        thinking: thinkingLabel(t, appSettings.translation.thinking, translationInfo),
-                      }) + (appSettings.translation.flex ? ` · ${t('settings.flexTag')}` : '')
-                    : t('config.models')}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setView('settings')}
-                  className="text-[11px] text-indigo-400 hover:text-indigo-300 underline cursor-pointer whitespace-nowrap"
-                >
-                  {t('config.changeInSettings')}
-                </button>
-              </div>
-
-              <div className="p-2.5 rounded-lg bg-surface border border-line flex flex-col gap-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5 text-zinc-300">
-                    <Key className="w-3.5 h-3.5 text-zinc-400" />
-                    <span className="text-[11px]" dir="ltr">
-                      {providerKeyEnvLabel(activeTranslationProvider)}
-                    </span>
+              <div className="p-2.5 rounded-lg bg-surface border border-line space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[11px] text-zinc-300 min-w-0 truncate">
+                    {appSettings
+                      ? t('config.modelSummary', {
+                          model: modelLabel(catalog, appSettings.translation.model),
+                          thinking: thinkingLabel(t, appSettings.translation.thinking, translationInfo),
+                        }) + (appSettings.translation.flex ? ` · ${t('settings.flexTag')}` : '')
+                      : t('config.models')}
+                  </span>
+                  <div className="flex items-center gap-2">
                     <span
-                      className={`text-[10px] font-semibold px-1.5 rounded ${
+                      className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded ${
                         isTranslationReady ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'
                       }`}
+                      title={providerKeyEnvLabel(activeTranslationProvider)}
                     >
+                      <Key className="w-2.5 h-2.5" />
                       {isTranslationReady ? t('config.keyLoaded') : t('config.keyMissing')}
                     </span>
-                  </div>
-                  {activeTranslationProvider === 'google' && (
                     <button
                       type="button"
-                      onClick={() => setShowKeyOverride(!showKeyOverride)}
-                      className="text-[10px] text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
+                      onClick={() => setView('settings')}
+                      className="text-[11px] text-indigo-400 hover:text-indigo-300 underline cursor-pointer whitespace-nowrap"
                     >
-                      {showKeyOverride ? t('config.hideOverride') : t('config.overrideKey')}
+                      {t('config.changeInSettings')}
                     </button>
-                  )}
+                  </div>
                 </div>
                 {translationWithoutKey && (
-                  <div className="flex items-start gap-1.5 text-[11px] text-amber-300">
+                  <div className="flex items-start gap-1.5 text-[11px] text-amber-300 pt-1 border-t border-line/60">
                     <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
                     <span>{t('config.noKeyWarning')}</span>
                   </div>
                 )}
-                {activeTranslationProvider === 'google' && (showKeyOverride || translationWithoutKey) && (
-                  <input
-                    type="password"
-                    dir="ltr"
-                    placeholder={t('config.keyPlaceholder')}
-                    value={pipelineConfig.gemini_api_key_override || ''}
-                    onChange={(e) => updatePipelineConfig({ gemini_api_key_override: e.target.value })}
-                    className="w-full bg-sunken border border-line rounded px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-indigo-500 font-mono"
-                  />
+                {activeTranslationProvider === 'google' && (
+                  <div className="pt-1 border-t border-line/60 space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                      <span dir="ltr">{providerKeyEnvLabel(activeTranslationProvider)}</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowKeyOverride(!showKeyOverride)}
+                        className="text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
+                      >
+                        {showKeyOverride ? t('config.hideOverride') : t('config.overrideKey')}
+                      </button>
+                    </div>
+                    {(showKeyOverride || translationWithoutKey) && (
+                      <input
+                        type="password"
+                        dir="ltr"
+                        placeholder={t('config.keyPlaceholder')}
+                        value={pipelineConfig.gemini_api_key_override || ''}
+                        onChange={(e) => updatePipelineConfig({ gemini_api_key_override: e.target.value })}
+                        className="w-full bg-sunken border border-line rounded px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-indigo-500 font-mono"
+                      />
+                    )}
+                  </div>
                 )}
               </div>
 
