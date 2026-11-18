@@ -12,11 +12,21 @@ cd "$SCRIPT_DIR"
 OS="$(uname -s)"
 VENV_PY="$SCRIPT_DIR/backend/.venv/bin/python"
 
+NO_UPDATE=0
+for arg in "$@"; do
+    if [[ "$arg" == "--no-update" ]]; then
+        NO_UPDATE=1
+    fi
+done
+if [[ "${SUBBUILD_NO_UPDATE:-0}" == "1" ]]; then
+    NO_UPDATE=1
+fi
+
 # -----------------------------------------------------------------------------
 # 1. Ensure backend virtual environment exists
 # -----------------------------------------------------------------------------
 if [[ ! -x "$VENV_PY" ]]; then
-    echo "[1/4] Setting up Python virtual environment..."
+    echo "[1/5] Setting up Python virtual environment..."
     if command -v uv >/dev/null 2>&1; then
         uv venv --python 3.12 backend/.venv || uv venv backend/.venv
         uv pip install -r backend/requirements.txt --python "$VENV_PY"
@@ -40,21 +50,31 @@ if [[ ! -x "$VENV_PY" ]]; then
         exit 1
     fi
 else
-    echo "[1/4] Python virtual environment ready."
+    echo "[1/5] Python virtual environment ready."
 fi
 
 # -----------------------------------------------------------------------------
-# 2. Ensure .env exists
+# 2. Check for Git / Release updates before launching
+# -----------------------------------------------------------------------------
+if [[ "$NO_UPDATE" -eq 1 ]]; then
+    echo "[2/5] Auto-update check skipped."
+else
+    echo "[2/5] Checking for updates from Git..."
+    PYTHONPATH="$SCRIPT_DIR/backend" "$VENV_PY" -m app.core.updater --auto --no-frontend-build || true
+fi
+
+# -----------------------------------------------------------------------------
+# 3. Ensure .env exists
 # -----------------------------------------------------------------------------
 if [[ ! -f "backend/.env" ]]; then
-    echo "[2/4] Initializing backend/.env from template..."
+    echo "[3/5] Initializing backend/.env from template..."
     cp "backend/.env.example" "backend/.env"
 else
-    echo "[2/4] Configuration file backend/.env found."
+    echo "[3/5] Configuration file backend/.env found."
 fi
 
 # -----------------------------------------------------------------------------
-# 3. Build the frontend if it is missing or older than its sources
+# 4. Build the frontend if it is missing or older than its sources
 # -----------------------------------------------------------------------------
 NEED_BUILD=0
 if [[ ! -f "frontend/dist/index.html" ]]; then
@@ -66,7 +86,7 @@ elif [[ -n "$(find frontend/src -type f -newer frontend/dist/index.html -print -
 fi
 
 if [[ "$NEED_BUILD" -eq 1 ]]; then
-    echo "[3/4] Building frontend studio..."
+    echo "[4/5] Building frontend studio..."
     if ! command -v node >/dev/null 2>&1 || ! node -e "const [maj, min] = process.versions.node.split('.').map(Number); process.exit((maj > 20 || (maj === 20 && min >= 19)) ? 0 : 1)" 2>/dev/null; then
         echo "[ERROR] Node.js 20.19+ or 22+ is required to build the frontend (found: $(node -v 2>/dev/null || echo 'none'))."
         echo "        Run ./install.sh to automatically upgrade Node.js to v22 LTS."
@@ -79,11 +99,11 @@ if [[ "$NEED_BUILD" -eq 1 ]]; then
     npm run build
     popd >/dev/null
 else
-    echo "[3/4] Frontend studio build is up to date."
+    echo "[4/5] Frontend studio build is up to date."
 fi
 
 # -----------------------------------------------------------------------------
-# 4. Launch SubBuild Studio
+# 5. Launch SubBuild Studio
 # -----------------------------------------------------------------------------
 # Set LD_LIBRARY_PATH on Linux if NVIDIA CUDA pip wheels are installed inside the venv
 if [[ "$OS" == "Linux" ]]; then
@@ -94,9 +114,9 @@ if [[ "$OS" == "Linux" ]]; then
 fi
 
 # Optional native desktop window mode (--window) if pywebview + pystray + Pillow are installed
-if [[ "${1:-}" == "--window" ]]; then
+if [[ "${1:-}" == "--window" || "${2:-}" == "--window" ]]; then
     if "$VENV_PY" -c "import webview, pystray, PIL" >/dev/null 2>&1; then
-        echo "[4/4] Starting SubBuild Studio in its own window..."
+        echo "[5/5] Starting SubBuild Studio in its own window..."
         export SUBBUILD_HOME="$SCRIPT_DIR/backend"
         exec "$VENV_PY" "$SCRIPT_DIR/packaging/launcher.py"
     else
@@ -111,7 +131,7 @@ SUBBUILD_TOKEN="$("$VENV_PY" -c 'import secrets; print(secrets.token_urlsafe(32)
 export SUBBUILD_TOKEN
 OPEN_URL="$URL/?token=$SUBBUILD_TOKEN"
 
-echo "[4/4] Starting SubBuild Studio on $URL ..."
+echo "[5/5] Starting SubBuild Studio on $URL ..."
 echo "      Open: $OPEN_URL"
 echo
 echo "==================================================="

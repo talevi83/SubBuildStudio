@@ -31,6 +31,73 @@ def test_system_info(client: TestClient):
     assert "hardware" in data
     assert "is_gemini_configured" in data
     assert "whisper_default_model" in data
+    assert isinstance(data.get("version"), str) and len(data["version"]) > 0
+
+
+@pytest.mark.api
+def test_system_update_endpoints_and_active_job_conflict(client: TestClient, monkeypatch):
+    from app.api import routes_system
+
+    fake_status = {
+        "current_version": "1.5.0",
+        "current_commit": "abc1234",
+        "branch": "main",
+        "update_available": True,
+        "update_kind": "release",
+        "latest_version": "1.6.0",
+        "latest_commit": "def5678",
+        "commits_behind": 0,
+        "target_ref": "v1.6.0",
+        "release_url": "https://github.com/talevi83/SubBuildStudio/releases/tag/v1.6.0",
+        "release_notes": "Release 1.6.0",
+        "error": None,
+    }
+    monkeypatch.setattr(routes_system, "check_for_updates", lambda: fake_status)
+    monkeypatch.setattr(routes_system, "get_cached_update_status", lambda: fake_status)
+    monkeypatch.setattr(
+        routes_system,
+        "apply_update",
+        lambda rebuild_frontend=True: {
+            "updated": True,
+            "previous_version": "1.5.0",
+            "new_version": "1.6.0",
+            "new_commit": "def5678",
+            "requirements_updated": False,
+            "frontend_rebuilt": rebuild_frontend,
+            "restart_required": True,
+            "skipped_reason": None,
+            "message": "Updated to v1.6.0 (def5678).",
+        },
+    )
+
+    chk = client.post("/api/system/update/check")
+    assert chk.status_code == 200
+    assert chk.json()["latest_version"] == "1.6.0"
+    assert chk.json()["update_available"] is True
+
+    sys_info = client.get("/api/system/info").json()
+    assert sys_info["update"]["update_available"] is True
+
+    # While an active job exists in DB, update apply must fail with 409 Conflict
+    active_job_id = create_job_with_segments(
+        ["Line 1"],
+        id=f"active_{uuid.uuid4().hex[:8]}",
+        status=JobStatus.TRANSLATING,
+    )
+    blocked = client.post("/api/system/update/apply")
+    assert blocked.status_code == 409
+
+    # Once job finishes, apply succeeds cleanly
+    with Session(engine) as s:
+        row = s.get(Job, active_job_id)
+        row.status = JobStatus.COMPLETED
+        s.add(row)
+        s.commit()
+
+    applied = client.post("/api/system/update/apply")
+    assert applied.status_code == 200
+    assert applied.json()["updated"] is True
+    assert applied.json()["new_version"] == "1.6.0"
 
 
 @pytest.mark.asyncio

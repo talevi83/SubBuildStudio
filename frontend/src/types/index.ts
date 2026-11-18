@@ -180,6 +180,33 @@ export interface HardwareInfo {
   recommended_compute_type: string;
 }
 
+export interface UpdateStatus {
+  current_version: string;
+  current_commit: string;
+  branch: string;
+  update_available: boolean;
+  update_kind?: 'release' | 'commit' | null;
+  latest_version: string;
+  latest_commit: string;
+  commits_behind: number;
+  target_ref?: string | null;
+  release_url?: string | null;
+  release_notes?: string | null;
+  error?: string | null;
+}
+
+export interface UpdateApplyResponse {
+  updated: boolean;
+  previous_version: string;
+  new_version: string;
+  new_commit: string;
+  requirements_updated: boolean;
+  frontend_rebuilt: boolean;
+  restart_required: boolean;
+  skipped_reason?: string | null;
+  message: string;
+}
+
 export interface SystemInfo {
   is_gemini_configured: boolean;
   is_ai_configured?: boolean;
@@ -191,6 +218,8 @@ export interface SystemInfo {
   whisper_models: string[];
   max_cps_warning: number;
   hardware: HardwareInfo;
+  version?: string;
+  update?: UpdateStatus | null;
 }
 
 export interface ApiKeyStatus {

@@ -15,8 +15,8 @@
 4. **Re-times a subtitle file the user already has** against the video's speech and on-screen text — an alternative to 1–3.
 5. Offers an **editing studio** (synced player, inline edit, add/move/re-time lines, quality checks) and **SRT/VTT export**.
 
-It runs three ways from the same code: as a **desktop window** from source (`run.bat` / `./run.sh --window`),
-as a **standalone Windows program** (`SubBuild Studio.exe`, PyInstaller), and as a **local web app** (browser fallback).
+It runs from source in two modes: as a **desktop window** (`run.bat` / `./run.sh --window`) and as a **local web app** (`run.bat --browser` / `./run.sh`),
+with a built-in Git & Release auto-updater (`run.bat` / `./run.sh` pre-launch check + in-app Sidebar/Settings UI).
 **Recommended usage is the desktop window** (rather than a regular browser) so that dragged-and-dropped or browsed files resolve directly to their local disk path without uploading or copying to temp. Nothing leaves the machine except the text
 and frames explicitly sent to your configured cloud AI provider (or stays 100% offline with local Ollama); the video itself is never uploaded anywhere.
 
@@ -51,10 +51,10 @@ and frames explicitly sent to your configured cloud AI provider (or stays 100% o
 | Cloud & Local AI | **Google Gemini** (`google-genai`), **OpenAI**, **Anthropic Claude**, **Ollama** (`httpx`) | Glossary pass, translation, on-screen text (vision), sync line matching, speaker gender detection |
 | Local AI Optimization | **Ollama** (local LLM), **Pillow** (edge & dHash) | Local gender pre-tagging, frame deduplication & blank-frame pruning in Cost-Saver Mode |
 | Frontend | **React 19, TypeScript 6, Vite 8, Tailwind CSS 4, Zustand 5, lucide-react** | Single-page studio; typed REST client; WebSocket listener inside the job store |
-| Lint / build | **oxlint**, `tsc -b` + `vite build` | Zero-error lint, strict TypeScript build, 13 Vitest specs |
-| Desktop shell | **pywebview** (Edge WebView2), **pystray + Pillow** (tray icon) | Own app window and tray menu (`packaging/launcher.py`) |
-| Packaging | **PyInstaller** one-folder (`packaging/subbuild.spec`, `build_exe.bat`) | Self-contained `SubBuild Studio.exe` with Python, libraries, frontend, ffmpeg and CUDA libs |
-| Tests | **pytest, pytest-asyncio, httpx, Vitest, Java 21 + Selenium 4 + RestAssured** | 504 Pytest + 13 Vitest + 52 Java E2E/API tests |
+| Lint / build | **oxlint**, `tsc -b` + `vite build` | Zero-error lint, strict TypeScript build, 14 Vitest specs |
+| Desktop shell | **pywebview** (Edge WebView2), **pystray + Pillow** (tray icon) | Own app window and tray menu from source (`packaging/launcher.py`) |
+| Auto-Updater | **Git & GitHub Releases** (`VERSION`, `backend/app/core/updater.py`) | Tag-first semver release & `origin/main` update checks on launch (`run.bat`/`run.sh`) and in-app UI |
+| Tests | **pytest, pytest-asyncio, httpx, Vitest, Java 21 + Selenium 4 + RestAssured** | 512 Pytest + 14 Vitest + 53 Java E2E/API tests |
 
 ---
 
@@ -229,7 +229,7 @@ Interactive documentation: `http://localhost:8000/docs`. Summary:
 
 | Area | Endpoints |
 |---|---|
-| System | `GET /api/system/info`, `GET /api/system/log` |
+| System | `GET /api/system/info`, `GET /api/system/update/status`, `POST /api/system/update/check`, `POST /api/system/update/apply`, `GET /api/system/log` |
 | Media | `POST /api/media/probe-path`, `POST /api/media/upload`, `GET /api/media/upload/existing`, `POST /api/media/parse-subtitles`, `GET /api/media/stream/{job_id}` (HTTP Range) |
 | Jobs | `POST/GET /api/jobs` (`sync_cues` makes a sync job), `GET/DELETE /api/jobs/{id}`, `DELETE /api/jobs`, `POST /api/jobs/bulk-delete`, `PATCH /api/jobs/{id}/settings`, `POST …/cancel`, `POST …/translate` |
 | Editing | `POST …/segments`, `DELETE …/segments/{id}`, `DELETE …/segments`, `PATCH …/segments/{id}`, `PATCH …/segments`, `POST …/segments/move`, `POST …/retime` |
@@ -257,13 +257,13 @@ Interactive documentation: `http://localhost:8000/docs`. Summary:
 
 ---
 
-## 8. Desktop shell and packaging (`packaging/`)
+## 8. Desktop shell and auto-updater (`packaging/`, `core/updater.py`)
 
 - **`launcher.py`** starts Uvicorn inside the same process (server thread), then shows the studio in a **pywebview window** (Edge WebView2) with a **tray icon** (`pystray`): open, open in browser, data folder, `.env`, server log, restart, quit. A loading page shows while the server starts; window size is remembered; closing asks first if a project is still running (quit / keep in background / cancel).
 - **Fallbacks:** `--browser` (or `SUBBUILD_UI=browser`), or automatically when WebView2 is missing; `--no-tray` for a console server. A second launch asks the running copy to show its window (`POST /api/desktop/show`); if the running copy has no window it says so instead of opening a tab.
-- **Data folder** (`SUBBUILD_HOME` → `data` next to the exe → `%LOCALAPPDATA%\SubBuild Studio`) holds `.env`, `storage/`, `launcher.log` and the WebView profile, so replacing the program never touches user data. `run.bat` sets `SUBBUILD_HOME=backend`, keeping the developer layout.
-- **Windowed-exe details:** stdout/stderr go to `launcher.log`; child consoles (ffmpeg, nvidia-smi) are hidden under the frozen exe and `pythonw`.
-- **Build:** `build_exe.bat` installs backend + `packaging/requirements-build.txt`, builds the frontend, fetches a static ffmpeg (`get_ffmpeg.ps1`) and runs PyInstaller (`subbuild.spec`) → `dist\SubBuild Studio\` (2–3 GB, mostly CUDA libraries). `run.bat` runs the same launcher from source using `packaging/requirements-desktop.txt`.
+- **Data folder** (`SUBBUILD_HOME` → `data` next to the app → `%LOCALAPPDATA%\SubBuild Studio`) holds `.env`, `storage/`, `launcher.log` and the WebView profile, so updating never touches user data. `run.bat` sets `SUBBUILD_HOME=backend`, keeping the developer layout.
+- **Source execution & FFmpeg:** stdout/stderr go to `launcher.log`; child consoles (ffmpeg, nvidia-smi) are hidden under `pythonw`; `prepare_environment()` also adds `packaging/ffmpeg` to `PATH` when present. `run.bat` / `./run.sh --window` run the launcher from source using `packaging/requirements-desktop.txt`.
+- **Auto-updater:** Root `VERSION` and `core/updater.py` compare the installed version/HEAD against remote semver release tags (`vX.Y.Z`) first, falling back to `origin/main` commits. `run.bat` and `run.sh` invoke `--auto --no-frontend-build` before launch (skipping feature branches and dirty worktrees automatically; bypass with `--no-update` or `SUBBUILD_NO_UPDATE=1`). In-app Sidebar badges and Settings controls let users check and apply updates from the UI (blocked with `409 Conflict` if any pipeline job is active).
 
 ---
 
@@ -283,8 +283,8 @@ Interactive documentation: `http://localhost:8000/docs`. Summary:
 ---
 
 ## 10. Testing and quality gates
-- Backend: `pytest` in `backend/tests` (504 tests across `unit`, `api`, `pipeline`, `security`, and `smoke` markers). Whisper and AI providers (Google Gemini, OpenAI, Anthropic, Ollama) are replaced by fakes; ffmpeg-based tests run end to end on generated clips (forced track, frame scan, whole pipeline, sync with synthetic delays/frame-rate/cuts). Areas: RTL fixer, SRT formatter, refine quality, speaker split & SDH cleanup, smart end-credits detection & post-credits scene preservation (`credits_detect`), embedded subtitle extraction, missing-speech Whisper supplement, FinOps local pre-filtering & Ollama pre-tagging, Whisper provider (cancel, fallback), multi-provider LLM translation/discovery/key-vault & Google Flex fallback, GPU/VRAM-aware best-value auto-recommendation, settings/pricing, foreign speech, gap recovery, word snap, retime, row translate, glossary profiles, storage cleanup, sync, insert line, desktop launcher.
-- Frontend: `npx tsc -b`, `npx oxlint src` (0 errors), and `vitest run` (13 tests across `multi_provider_settings.test.tsx` and `reliability_and_editor_roundtrip.test.tsx`), plus `vite build`; UI & API flows are checked black-box by the Java 21 QA suite (`52` regression tests: `34` RestAssured API/Security + `18` Selenium WebDriver E2E in Chrome across English and Hebrew, including `9` smoke tests).
+- Backend: `pytest` in `backend/tests` (512 tests across `unit`, `api`, `pipeline`, `security`, and `smoke` markers). Whisper and AI providers (Google Gemini, OpenAI, Anthropic, Ollama) are replaced by fakes; ffmpeg-based tests run end to end on generated clips (forced track, frame scan, whole pipeline, sync with synthetic delays/frame-rate/cuts). Areas: RTL fixer, SRT formatter, refine quality, speaker split & SDH cleanup, smart end-credits detection & post-credits scene preservation (`credits_detect`), embedded subtitle extraction, missing-speech Whisper supplement, FinOps local pre-filtering & Ollama pre-tagging, Whisper provider (cancel, fallback), multi-provider LLM translation/discovery/key-vault & Google Flex fallback, GPU/VRAM-aware best-value auto-recommendation, settings/pricing, foreign speech, gap recovery, word snap, retime, row translate, glossary profiles, storage cleanup, sync, insert line, Git/Release auto-updater, desktop launcher.
+- Frontend: `npx tsc -b`, `npx oxlint src` (0 errors), and `vitest run` (14 tests across `multi_provider_settings.test.tsx` and `reliability_and_editor_roundtrip.test.tsx`), plus `vite build`; UI & API flows are checked black-box by the Java 21 QA suite (`53` regression tests: `35` RestAssured API/Security + `18` Selenium WebDriver E2E in Chrome across English and Hebrew, including `9` smoke tests).
 - Windows-only behavior (tray, WebView2 window, CUDA loading) is verified manually on a Windows PC; the launcher's pure logic is unit-tested.
 
 ---

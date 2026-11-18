@@ -61,6 +61,10 @@ public class SubBuildApiClient {
         return RestAssured.given().spec(authed()).get("/api/system/info");
     }
 
+    public Response checkForUpdates() {
+        return RestAssured.given().spec(authed()).body(Map.of()).post("/api/system/update/check");
+    }
+
     public Response getWithoutToken(String path) {
         return RestAssured.given().spec(anonymous()).get(path);
     }

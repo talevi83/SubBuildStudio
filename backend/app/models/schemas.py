@@ -320,6 +320,33 @@ class WebSocketEventPayload(BaseModel):
     usage: Optional[Dict[str, Any]] = None
 
 
+class UpdateStatusSchema(BaseModel):
+    current_version: str = "1.5.0"
+    current_commit: str = ""
+    branch: str = ""
+    update_available: bool = False
+    update_kind: Optional[str] = None
+    latest_version: str = "1.5.0"
+    latest_commit: str = ""
+    commits_behind: int = 0
+    target_ref: Optional[str] = None
+    release_url: Optional[str] = None
+    release_notes: Optional[str] = None
+    error: Optional[str] = None
+
+
+class UpdateApplyResponse(BaseModel):
+    updated: bool
+    previous_version: str
+    new_version: str
+    new_commit: str = ""
+    requirements_updated: bool = False
+    frontend_rebuilt: bool = False
+    restart_required: bool = False
+    skipped_reason: Optional[str] = None
+    message: str = ""
+
+
 class SystemInfoResponse(BaseModel):
     is_gemini_configured: bool
     is_ai_configured: bool = False
@@ -331,6 +358,8 @@ class SystemInfoResponse(BaseModel):
     whisper_models: List[str] = []
     max_cps_warning: float = 20.0
     hardware: Dict[str, Any]
+    version: str = "1.5.0"
+    update: Optional[UpdateStatusSchema] = None
 
 
 class SaveNextToVideoRequest(RequestModel):

@@ -1,4 +1,4 @@
-import type { ParsedSubtitles, SegmentCreate, SyncCue, SystemInfo, ProbeResponse, Job, JobConfig, SubtitleSegment, SegmentPatch, SegmentsChange, QAIssue, SpeakerGuess, StorageReport, StorageCleanResult, SaveNextToVideoResult, EmbedVideoOptions, EmbedVideoStatus, EditHistory, HistoryRestoreResult, Glossary, RetranslateOptions, AppSettings, SettingsResponse, CostEstimate, ModelCheckResponse } from '../types';
+import type { ParsedSubtitles, SegmentCreate, SyncCue, SystemInfo, UpdateStatus, UpdateApplyResponse, ProbeResponse, Job, JobConfig, SubtitleSegment, SegmentPatch, SegmentsChange, QAIssue, SpeakerGuess, StorageReport, StorageCleanResult, SaveNextToVideoResult, EmbedVideoOptions, EmbedVideoStatus, EditHistory, HistoryRestoreResult, Glossary, RetranslateOptions, AppSettings, SettingsResponse, CostEstimate, ModelCheckResponse } from '../types';
 
 import { hashBlobSha256 } from '../utils/sha256';
 
@@ -26,6 +26,14 @@ const json = (method: string, body: unknown): RequestInit => ({
 export const api = {
   getSystemInfo(): Promise<SystemInfo> {
     return request(`${API_BASE}/system/info`, undefined, 'Failed to load system info');
+  },
+
+  checkForUpdates(): Promise<UpdateStatus> {
+    return request(`${API_BASE}/system/update/check`, json('POST', {}), 'Failed to check for updates');
+  },
+
+  applyUpdate(): Promise<UpdateApplyResponse> {
+    return request(`${API_BASE}/system/update/apply`, json('POST', {}), 'Failed to apply update');
   },
 
   probePath(filePath: string): Promise<ProbeResponse> {

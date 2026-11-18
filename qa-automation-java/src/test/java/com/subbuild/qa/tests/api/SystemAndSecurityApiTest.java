@@ -31,12 +31,26 @@ class SystemAndSecurityApiTest extends BaseApiTest {
         List<String> geminiModels = res.jsonPath().getList("gemini_models");
         assertTrue(whisperModels.contains("large-v3-turbo"), "Expected large-v3-turbo in whisper_models");
         assertFalse(geminiModels.isEmpty(), "Expected non-empty gemini_models");
+        String version = res.jsonPath().getString("version");
+        assertNotNull(version, "Expected version field in /api/system/info");
+        assertFalse(version.isBlank(), "Version must not be blank");
 
         assertEquals("DENY", res.getHeader("X-Frame-Options"));
         assertEquals("nosniff", res.getHeader("X-Content-Type-Options"));
         String csp = res.getHeader("Content-Security-Policy");
         assertNotNull(csp);
         assertTrue(csp.contains("frame-ancestors 'none'"), "CSP must deny framing");
+    }
+
+    @Test
+    @Tag("regression")
+    @Tag("api")
+    @DisplayName("POST /api/system/update/check returns structured version & update status")
+    void updateCheckEndpointReturnsStructuredStatus() {
+        Response res = api.checkForUpdates();
+        assertEquals(200, res.statusCode());
+        assertNotNull(res.jsonPath().getString("current_version"));
+        assertNotNull(res.jsonPath().get("update_available"));
     }
 
     @ParameterizedTest(name = "Anonymous GET {0} returns 401")

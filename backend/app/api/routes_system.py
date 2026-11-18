@@ -3,10 +3,19 @@ import logging
 import time
 from typing import List, Optional
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
+from sqlmodel import Session, select
 from app.core.config import settings
+from app.core.database import get_session
 from app.core.hardware import get_hardware_info
-from app.models.schemas import SystemInfoResponse
+from app.core.updater import (
+    apply_update,
+    check_for_updates,
+    get_cached_update_status,
+    get_current_version_info,
+)
+from app.models.db_models import Job
+from app.models.schemas import SystemInfoResponse, UpdateApplyResponse, UpdateStatusSchema
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/system", tags=["System"])
@@ -56,12 +65,16 @@ async def get_system_info():
     """Retrieve server hardware capabilities and configuration status."""
     from app.core.provider_keys import PROVIDERS, is_provider_configured, provider_summary, resolve_secret_key
 
-    hw = await asyncio.to_thread(get_hardware_info)
+    hw, version_info = await asyncio.gather(
+        asyncio.to_thread(get_hardware_info),
+        asyncio.to_thread(get_current_version_info),
+    )
     summary = provider_summary()
     google_configured = is_provider_configured("google")
     any_configured = any(is_provider_configured(p) for p in PROVIDERS)
     google_key = resolve_secret_key("google", allow_local_ollama_fallback=False)
     masked = settings.masked_api_key or (summary["google"].get("masked_default_key") if google_key else None)
+    cached_update = get_cached_update_status()
 
     return SystemInfoResponse(
         is_gemini_configured=google_configured,
@@ -74,7 +87,39 @@ async def get_system_info():
         whisper_models=settings.whisper_models,
         max_cps_warning=settings.max_cps_warning,
         hardware=hw,
+        version=version_info["current_version"],
+        update=UpdateStatusSchema(**cached_update) if cached_update else None,
     )
+
+
+@router.get("/update/status", response_model=UpdateStatusSchema)
+async def get_update_status():
+    """Return cached update status or perform a quick remote version check."""
+    cached = get_cached_update_status()
+    if cached is not None:
+        return UpdateStatusSchema(**cached)
+    data = await asyncio.to_thread(check_for_updates)
+    return UpdateStatusSchema(**data)
+
+
+@router.post("/update/check", response_model=UpdateStatusSchema)
+async def check_system_updates():
+    """Check GitHub Releases / remote Git tags and origin/main for newer versions."""
+    data = await asyncio.to_thread(check_for_updates)
+    return UpdateStatusSchema(**data)
+
+
+@router.post("/update/apply", response_model=UpdateApplyResponse)
+async def apply_system_update(session: Session = Depends(get_session)):
+    """Apply an available Git update when no subtitling job is running."""
+    from app.pipeline.orchestrator import ACTIVE_STATUSES
+
+    active_job = session.exec(select(Job).where(Job.status.in_(ACTIVE_STATUSES))).first()
+    if active_job is not None:
+        raise HTTPException(status_code=409, detail="Cannot update while a job is running")
+
+    res = await asyncio.to_thread(apply_update, rebuild_frontend=True)
+    return UpdateApplyResponse(**res)
 
 
 @router.get("/log")

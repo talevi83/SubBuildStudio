@@ -13,7 +13,7 @@
 
 1. **Unified Zero-Copy Local Ingest, Stream Discovery & Embedded Subtitle Extraction:**
    - **Unified Ingest Dropzone & Path Input:** Drag & drop a video file directly onto the studio, click to browse, or paste a local path in one unified view.
-   - **Recommended — Use the Desktop App Window (`SubBuild Studio.exe` / `run.bat`):** In the desktop window (Edge WebView2 / `pywebview`), dragging & dropping a video or clicking to browse resolves the file's **direct local path** on disk (`CoreWebView2File.Path` / native file dialog) without uploading or copying a single byte to temp, and preserves the video's folder for **Save next to video**.
+   - **Recommended — Use the Desktop App Window (`run.bat` / `./run.sh --window`):** In the desktop window (Edge WebView2 / `pywebview`), dragging & dropping a video or clicking to browse resolves the file's **direct local path** on disk (`CoreWebView2File.Path` / native file dialog) without uploading or copying a single byte to temp, and preserves the video's folder for **Save next to video**.
    - Right-click the path field for a one-item **Paste** menu (also works in the desktop window, where it reads the clipboard through the app).
    - Discovers all video, audio, and embedded subtitle tracks via `ffprobe` and lets you select the exact audio or text-based dialogue subtitle stream to use.
    - **Use Embedded Subtitles Toggle (`use_embedded_subtitles`):** When the video has an embedded text-based dialogue track (e.g., SRT/ASS/WebVTT inside an MKV), SubBuild extracts it directly for instant, studio-accurate timing without waiting for full Whisper transcription — or you can switch it off to force fresh Whisper transcription from the audio.
@@ -152,15 +152,15 @@ SubBuild Studio/
 ├── install.bat / run.bat       # One-click Windows installer & launcher
 ├── install.sh / run.sh         # One-click Linux & macOS installer & launcher
 ├── install.command / run.command # Double-clickable macOS Finder wrappers
-├── build_exe.bat               # Builds the standalone desktop app (dist\SubBuild Studio\)
-├── packaging/                  # Tray launcher, PyInstaller spec, icon, FFmpeg download script
+├── VERSION                     # Semantic version baseline used by the Git/Release auto-updater
+├── packaging/                  # Source-based desktop window & tray launcher, icon generator, desktop shortcuts
 ├── backend/
 │   ├── .env.example            # Configuration template (copy to .env)
 │   ├── requirements.txt        # Python dependencies (incl. CUDA cuBLAS/cuDNN wheels)
 │   ├── app/
 │   │   ├── main.py             # FastAPI app: CORS, trusted hosts, CSRF guard, routers, startup discovery, WebSocket
-│   │   ├── api/                # Routes: system, media, jobs, export, settings (+ key vault), glossary profiles, storage
-│   │   ├── core/               # Config, SQLite DB, hardware/VRAM detection, WS manager, model_catalog,
+│   │   ├── api/                # Routes: system (+ updater), media, jobs, export, settings (+ key vault), glossary profiles, storage
+│   │   ├── core/               # Config, SQLite DB, hardware/VRAM detection, WS manager, updater, model_catalog,
 │   │   │                       #   provider_keys, provider_catalog, model_discovery, user_settings, glossary_profiles,
 │   │   │                       #   job_logging, housekeeping, storage_cleanup, ollama_setup
 │   │   ├── models/             # SQLModel tables & Pydantic schemas
@@ -221,7 +221,7 @@ Interactive docs are at `http://localhost:8000/docs` while the server runs.
 
 | Area | Endpoints |
 |---|---|
-| System | `GET /api/system/info` (hardware/VRAM, provider summaries, models), `GET /api/system/log` (server log) |
+| System | `GET /api/system/info` (version, update status, hardware/VRAM, provider summaries, models), `GET /api/system/update/status`, `POST /api/system/update/check`, `POST /api/system/update/apply`, `GET /api/system/log` (server log) |
 | Media | `POST /api/media/probe-path`, `POST /api/media/upload`, `GET /api/media/upload/existing`, `GET /api/media/stream/{job_id}` (Range), `POST /api/media/parse-subtitles` (read a subtitle file to sync) |
 | Jobs | `POST/GET /api/jobs` (with `sync_cues` = a sync job), `GET/DELETE /api/jobs/{id}`, `DELETE /api/jobs` (clear all), `POST /api/jobs/bulk-delete`, `PATCH /api/jobs/{id}/settings` (live onscreen position), `POST /api/jobs/{id}/cancel`, `POST /api/jobs/{id}/translate` |
 | Editing | `POST /api/jobs/{id}/segments` (add a line), `DELETE /api/jobs/{id}/segments/{segment_id}` (delete a line), `DELETE /api/jobs/{id}/segments` (bulk delete lines), `PATCH /api/jobs/{id}/segments/{segment_id}`, `PATCH /api/jobs/{id}/segments` (bulk), `POST /api/jobs/{id}/segments/move`, `POST /api/jobs/{id}/retime` |
@@ -318,10 +318,10 @@ npm run build
 
 ## 🏃 Running the Application
 
-> 💡 **Recommendation for Best Experience:** Always prefer running SubBuild Studio in its **native desktop window** (`SubBuild Studio.exe`, `run.bat`, or `./run.sh --window`) rather than a regular web browser. In the desktop window, dragging & dropping a video or clicking to browse reads the file's **direct local path** in place (0 seconds wait, 0 GB copied to temp/uploads, and full support for *Save next to video*), clipboard paste works without browser permission prompts, and video fullscreen controls the window directly.
+> 💡 **Recommendation for Best Experience:** Always prefer running SubBuild Studio in its **native desktop window** (`run.bat` or `./run.sh --window`) rather than a regular web browser. In the desktop window, dragging & dropping a video or clicking to browse reads the file's **direct local path** in place (0 seconds wait, 0 GB copied to temp/uploads, and full support for *Save next to video*), clipboard paste works without browser permission prompts, and video fullscreen controls the window directly.
 
 ### Option A1: One-click (Windows — Recommended)
-Run `install.bat` (first-time setup) or simply double-click `run.bat`. During installation, you will be prompted to create a desktop shortcut with the official SubBuild Studio icon. The launcher creates the virtual environment if needed, rebuilds the frontend whenever its sources changed, and opens the studio in its own app window (Edge WebView2, no browser, no console) with a tray icon. Your API key and projects stay in `backend\.env` and `backend\storage`. Run `run.bat --browser` to get the console server and open the studio in your browser.
+Run `install.bat` (first-time setup) or simply double-click `run.bat`. During installation, you will be prompted to create a desktop shortcut with the official SubBuild Studio icon. Before starting the server, the launcher automatically checks Git for newer tagged releases or commits on `origin/main` (skip with `--no-update` or `SUBBUILD_NO_UPDATE=1`), rebuilds the frontend whenever its sources changed, and opens the studio in its own app window (Edge WebView2, no browser, no console) with a tray icon. Your API key and projects stay in `backend\.env` and `backend\storage`. Run `run.bat --browser` to get the console server and open the studio in your browser.
 
 ### Option A2: One-click (Linux & macOS)
 Run the installer once, then start the studio with `./run.sh` (or on macOS, double-click `install.command` and `run.command` directly in Finder). During installation, the installer offers to add SubBuild Studio directly to your Applications menu (Launchpad on macOS / application launcher on Linux) with the official application icon:
@@ -329,7 +329,7 @@ Run the installer once, then start the studio with `./run.sh` (or on macOS, doub
 # First-time setup (checks/installs prerequisites, creates backend/.venv, .env, builds frontend, and installs app shortcut):
 ./install.sh
 
-# Start SubBuild Studio (auto-rebuilds frontend if modified and opens http://localhost:8000):
+# Start SubBuild Studio (checks Git for updates, auto-rebuilds frontend if modified, and opens http://localhost:8000):
 ./run.sh
 ```
 Pass `./install.sh --desktop` and `./run.sh --window` if you want the native `pywebview` desktop window instead of opening in the browser. Pass `./run.sh --no-browser` to start the server without opening a browser tab. To manually add or remove desktop shortcuts anytime, run `python packaging/create_shortcut.py` (or `--remove`).
@@ -361,32 +361,27 @@ Then open **`http://localhost:5173/api/session?token=dev-token`** once: it signs
 
 ---
 
-## 📦 Desktop App (Standalone EXE)
+## 🔄 Desktop Window & Auto-Updater
 
-`build_exe.bat` turns the project into a standalone Windows program: a folder with **`SubBuild Studio.exe`** that includes Python, every library, the built frontend, FFmpeg and the NVIDIA CUDA runtime. The target PC needs no Python, Node or FFmpeg (only an NVIDIA driver for GPU transcription). The studio opens in **its own window** (pywebview on Microsoft Edge WebView2, which comes with Windows 10/11).
+SubBuild Studio runs directly from the Git repository via `run.bat` (Windows) or `./run.sh` (macOS/Linux) with `packaging/launcher.py` (Edge WebView2 `pywebview` window + `pystray` tray icon), eliminating multi-gigabyte PyInstaller binary rebuilds while keeping upgrades near-instant.
 
-### Build
-Requires the same tools as the Quickstart (Python or `uv`, Node.js). Double-click **`build_exe.bat`**. It:
-1. installs the backend and build dependencies (`packaging/requirements-build.txt`: PyInstaller, pystray, Pillow, pywebview) into `backend\.venv`;
-2. builds the frontend;
-3. downloads a static FFmpeg build into `packaging\ffmpeg` (once; put your own `ffmpeg.exe` + `ffprobe.exe` there to skip it);
-4. packages everything with PyInstaller (`packaging/subbuild.spec`) into **`dist\SubBuild Studio\`**;
-5. copies `backend\.env` (your API key) to the app's data folder if that folder has none yet.
+### Automatic Updates (`VERSION`, `backend/app/core/updater.py`)
+1. **Pre-launch check (`run.bat` / `run.sh`):** Every launch invokes `python -m app.core.updater --auto --no-frontend-build` before checking frontend builds and starting the server.
+   - Compares local [`VERSION`](VERSION) / Git tags & `HEAD` against `origin` semver release tags (`vX.Y.Z`) first; if no newer release tag exists, falls back to checking commits behind `origin/main`.
+   - **Offline & developer-safe:** Network errors never block startup. In `--auto` mode, pulls are skipped automatically if you are on a feature branch (non-`main` with non-release update) or have uncommitted tracked edits (`dirty_worktree`), and `--ff-only` prevents unexpected merges.
+   - **Dependency & UI sync:** Automatically syncs `requirements.txt` changes if updated, while `run.bat` / `run.sh` rebuild `frontend/dist` whenever frontend files change.
+   - **Skip update check:** Pass `--no-update` (`run.bat --no-update` / `./run.sh --no-update`) or set `SUBBUILD_NO_UPDATE=1`.
+2. **In-app version badge & Settings updater:**
+   - The **Sidebar** displays the installed version badge and highlights available updates with one click to Settings.
+   - In **Settings → Diagnostics**, click **Check for updates** (`POST /api/system/update/check`) to view remote version/release notes or commit diff, and **Update now** (`POST /api/system/update/apply`) to pull & rebuild cleanly (refused with `409 Conflict` if any pipeline job is currently active).
 
-The output is about 2-3 GB, mostly the NVIDIA libraries. Copy or move the **whole** `dist\SubBuild Studio` folder; the exe needs the `_internal` folder next to it.
-
-### Using it
-- Run `SubBuild Studio.exe`: a SubBuild Studio window opens right away (with a short loading screen while the server starts) and an icon appears in the system tray. Running the exe again while it's open brings the existing window to the front.
-- **The window** remembers its size. Exports ask where to save the file (*Save as*, starting in Downloads), and the video player's fullscreen makes the whole window fullscreen. Closing the window quits the app; if a project is still running it asks first: *Yes* quits (the project can be resumed later), *No* keeps working in the background with only the tray icon, *Cancel* goes back.
-- **Tray menu** (right-click): *Open SubBuild Studio* (or just click the icon), *Open in browser*, *Open data folder*, *Edit settings (.env)*, *Server log*, *Restart server* (after editing `.env`) and *Quit*. Quit and Restart ask first if a project is still running.
-- **Browser instead of a window:** start the exe with `--browser` (or set the environment variable `SUBBUILD_UI=browser`). If WebView2 is missing, the studio opens in the browser automatically (the reason is written to `launcher.log`); WebView2 can be installed from Microsoft (*Evergreen Runtime*).
-- **Data folder:** the `.env`, projects database, settings, logs, the window's size and the studio's own preferences (`webview\`) live in `%LOCALAPPDATA%\SubBuild Studio`, not in the program folder, so rebuilding or replacing the program never touches them. To keep everything next to the exe instead (portable mode), create an empty `data` folder beside `SubBuild Studio.exe`; the `SUBBUILD_HOME` environment variable overrides both.
-- **Upgrading from SubForge Studio:** the app was renamed. On first start it adopts the old data automatically: the `%LOCALAPPDATA%\SubForge Studio` folder is renamed to `SubBuild Studio`, `storage/subforge.db` becomes `subbuild.db`, the old `SUBFORGE_HOME` / `SUBFORGE_UI` variables still work, and the browser-stored preferences (language, theme, last pipeline settings) are carried over.
-- Startup errors are shown in a message box. Details are in `launcher.log` and `storage\logs\server.log` in the data folder.
-- Whisper models are downloaded on first use to the usual Hugging Face cache in your user profile, shared with the developer setup.
-- The launcher also runs from source, without building: `backend\.venv\Scripts\python.exe packaging\launcher.py` (`--browser` for browser mode, `--no-tray` to run in the console, `--no-browser` to skip opening the browser in browser mode).
-
-To change the icon, edit and run `packaging/make_icon.py` (it writes `packaging/icon.ico`).
+### Desktop Window & Tray Behavior (`packaging/launcher.py`)
+- Run via `run.bat` (or `./run.sh --window`, or `backend\.venv\Scripts\python.exe packaging\launcher.py`): opens a dedicated `pywebview` window with a loading screen while Uvicorn boots and adds a system tray icon. Launching a second instance brings the existing window to focus (`POST /api/desktop/show`).
+- **The window** remembers its size, uses native file pickers/drag-drop paths without temp copies, asks before overwriting or closing while a job is active (*Yes* quits cleanly, *No* keeps running in tray, *Cancel* returns), and supports full-screen video playback.
+- **Tray menu** (right-click): *Open SubBuild Studio*, *Open in browser*, *Open data folder*, *Edit settings (.env)*, *Server log*, *Restart server*, and *Quit*.
+- **CLI flags & environment fallbacks:** `--browser` (`SUBBUILD_UI=browser`) or missing WebView2 opens in your default browser; `--no-tray` runs a console server; `--no-browser` starts headless.
+- **Data folder & legacy upgrade:** `run.bat` sets `SUBBUILD_HOME=backend` for the developer layout; standalone runs use `data/` beside the app or `%LOCALAPPDATA%\SubBuild Studio` (`%LOCALAPPDATA%\SubForge Studio` and `subforge.db` are migrated automatically on first start). If present, `packaging/ffmpeg` is automatically prepended to `PATH`.
+- Startup errors appear in a message box and write details to `launcher.log` / `storage\logs\server.log`. To change the app icon, edit and run `packaging/make_icon.py`.
 
 ---
 
@@ -397,57 +392,57 @@ SubBuild Studio uses a **Multi-Layer Hybrid Test Pyramid** combining fast in-pro
 ```mermaid
 flowchart TD
     E2E["Black-Box UI E2E — Java 21 + Selenium 4 POM (18 tests)"]
-    BAPI["Black-Box API & Security — Java 21 + RestAssured (34 tests)"]
-    FE["Frontend UI & Store — Vitest + RTL (13 tests) + oxlint + tsc"]
-    PIPE["Backend API, Pipeline & Security — Pytest (376 tests)"]
-    UNIT["Pure Unit & Domain Rules — Pytest (128 tests)"]
+    BAPI["Black-Box API & Security — Java 21 + RestAssured (35 tests)"]
+    FE["Frontend UI & Store — Vitest + RTL (14 tests) + oxlint + tsc"]
+    PIPE["Backend API, Pipeline & Security — Pytest (377 tests)"]
+    UNIT["Pure Unit & Domain Rules — Pytest (135 tests)"]
     E2E --> BAPI --> FE --> PIPE --> UNIT
 ```
 
-### 1. Backend Pytest Suite (`backend/tests/`, 504 tests)
+### 1. Backend Pytest Suite (`backend/tests/`, 512 tests)
 Tests are organized into explicit architectural layers with shared builders/fakes (`tests/fixtures/`) and registered markers in `backend/pytest.ini`:
 
 ```powershell
 cd backend
 
-# Run the full suite (504 tests)
+# Run the full suite (512 tests)
 .\.venv\Scripts\python.exe -m pytest -q
 
 # Run by architectural layer or execution tag
-.\.venv\Scripts\python.exe -m pytest -m unit -q        # 128 pure unit tests (no DB / no FFmpeg)
-.\.venv\Scripts\python.exe -m pytest -m api -q         # 140 FastAPI + SQLite integration tests
+.\.venv\Scripts\python.exe -m pytest -m unit -q        # 135 pure unit tests (no DB / no FFmpeg)
+.\.venv\Scripts\python.exe -m pytest -m api -q         # 141 FastAPI + SQLite integration tests
 .\.venv\Scripts\python.exe -m pytest -m pipeline -q    # 170 pipeline, AI provider fake & FFmpeg tests
 .\.venv\Scripts\python.exe -m pytest -m security -q    # 66 auth, CSRF, headers, FFmpeg SSRF & upload tests
-.\.venv\Scripts\python.exe -m pytest -m smoke -q       # 53 critical-path smoke tests
+.\.venv\Scripts\python.exe -m pytest -m smoke -q       # 54 critical-path smoke tests
 ```
 
-- **`tests/unit/`**: RTL BiDi wrapping, SRT/VTT timecode & formatting, segmentation/orphan-word healing, smart end-credits detection, speaker turn splitting & SDH cleanup, missing speech supplementation, QA rules, DB migration, and desktop launcher/shortcut logic.
-- **`tests/api/`**: System info, multi-provider key vault & live discovery (`test_multi_provider_ai.py`), job persistence & slim listings, live WebSocket segment streaming, segment CRUD, undo/redo edit history, upload SHA-256 deduplication & Range parsing, row-scoped retranslation, glossary profiles, speaker detection, retime/reorder, settings/pricing, save-next-to-video, and storage cleanup.
+- **`tests/unit/`**: RTL BiDi wrapping, SRT/VTT timecode & formatting, segmentation/orphan-word healing, smart end-credits detection, speaker turn splitting & SDH cleanup, missing speech supplementation, QA rules, Git/Release auto-updater (`test_updater.py`), DB migration, and desktop launcher/shortcut logic.
+- **`tests/api/`**: System info & auto-updater endpoints (`update/check`, `update/apply` + active-job `409` guard), multi-provider key vault & live discovery (`test_multi_provider_ai.py`), job persistence & slim listings, live WebSocket segment streaming, segment CRUD, undo/redo edit history, upload SHA-256 deduplication & Range parsing, row-scoped retranslation, glossary profiles, speaker detection, retime/reorder, settings/pricing, save-next-to-video, and storage cleanup.
 - **`tests/pipeline/`**: End-to-end pipeline on generated FFmpeg clips, Whisper threading/OOM fallback/cancellation, Gemini/LLM batching/retries/Flex tier fallback, FinOps dHash pre-filtering & Ollama local pre-tagging, OCR & tactical comms boost, foreign speech, sync alignment/burned-in detection, gap recovery, word snapping, video embedding, and per-job logging.
 - **`tests/security/`**: Per-launch session token (`X-SubBuild-Token` & HttpOnly cookie) and UNC path refusal, CSRF Origin/Fetch-Metadata & Host validation, anti-framing/CSP security headers, FFmpeg `-protocol_whitelist file` & AST audit, and `Content-Length` upload limits.
 
-### 2. Frontend Checks & Tests (`frontend/`, 13 tests)
+### 2. Frontend Checks & Tests (`frontend/`, 14 tests)
 ```powershell
 cd frontend
 npm run lint    # oxlint
-npm test        # Vitest + React Testing Library (13 tests)
+npm test        # Vitest + React Testing Library (14 tests)
 npm run build   # tsc -b + vitest run + vite build
 ```
 
-### 3. Java Black-Box E2E & API Suite (`qa-automation-java/`, 52 tests)
+### 3. Java Black-Box E2E & API Suite (`qa-automation-java/`, 53 tests)
 Built with **Maven + Java 21 + JUnit 5 + Selenium WebDriver 4 (POM) + RestAssured + ExtentReports**. Starts an isolated temporary backend server automatically (never touching `backend/storage` or `backend/.env`), seeds data via RestAssured for fast UI tests, captures screenshots on failure, and writes an interactive HTML report to `qa-automation-java/target/reports/subbuild-qa-report.html`.
 
 ```powershell
 cd qa-automation-java
 
-# Full regression suite (52 tests: 34 API/Security + 18 Selenium UI, headless Chrome)
+# Full regression suite (53 tests: 35 API/Security + 18 Selenium UI, headless Chrome)
 mvn clean test -Pregression
 
 # Fast critical-path smoke suite (9 tests)
 mvn test -Psmoke
 
 # Direct JUnit 5 @Tag filtering also works
-mvn test -Dgroups=regression   # 52 regression tests (includes the 9 smoke tests)
+mvn test -Dgroups=regression   # 53 regression tests (includes the 9 smoke tests)
 mvn test -Dgroups=smoke        # 9 critical-path smoke tests
 
 # Optional browser / driver / headless overrides
@@ -459,8 +454,8 @@ mvn test -Pregression "-Dsubbuild.headless=true"
 - **Branch flow (`staging` → `main`):** feature/fix branches are merged into **`staging`** first; every push there runs the full automation (GitHub Actions + Jenkins: pytest, frontend checks, Java RestAssured/Selenium). Only a green `staging` is merged into `main` (open the PR `staging` → `main`).
 - **Self-Hosted Jenkins CI (Raspberry Pi 4 8GB, Linux `aarch64`):** Configured via [`Jenkinsfile`](Jenkinsfile) and triggered automatically on pushes to `staging` and `main` via **GitHub Webhook** (plus manual parameterized runs with `JAVA_PROFILE=regression|smoke`, `RUN_BACKEND_PYTEST`, and `RUN_FRONTEND_CHECKS`).
   1. **Preflight Check:** Verifies `python3`, `node`, `npm`, `java`, `mvn`, `ffmpeg`, and `chromium`/`chromedriver`.
-  2. **Backend Pytest (`504` tests):** Provisions `backend/.venv` (filtering out `nvidia-*` CUDA packages, cached by `requirements.txt` SHA-256) and emits JUnit XML.
-  3. **Frontend Checks & Build (`13` Vitest + Vite `dist`):** Runs `npm ci`, `oxlint`, `tsc -b`, `vitest run`, and `vite build` so `backend/app/main.py` serves `frontend/dist` for Selenium tests.
-  4. **Java Black-Box QA (`52` regression / `9` smoke):** Executes `mvn -B clean test -P"${JAVA_PROFILE}" -Dsubbuild.headless=true -Dsubbuild.timeoutSeconds=30`, then publishes unified JUnit results and archives `ExtentReports` HTML + failure screenshots.
+  2. **Backend Pytest (`512` tests):** Provisions `backend/.venv` (filtering out `nvidia-*` CUDA packages, cached by `requirements.txt` SHA-256) and emits JUnit XML.
+  3. **Frontend Checks & Build (`14` Vitest + Vite `dist`):** Runs `npm ci`, `oxlint`, `tsc -b`, `vitest run`, and `vite build` so `backend/app/main.py` serves `frontend/dist` for Selenium tests.
+  4. **Java Black-Box QA (`53` regression / `9` smoke):** Executes `mvn -B clean test -P"${JAVA_PROFILE}" -Dsubbuild.headless=true -Dsubbuild.timeoutSeconds=30`, then publishes unified JUnit results and archives `ExtentReports` HTML + failure screenshots.
 - **Cross-Platform Driver & Headless Resolution (`TestConfig` + `DriverFactory`):** Auto-enables `--headless=new` in `CI`/`JENKINS_URL`/`GITHUB_ACTIONS` or display-less Linux environments; preserves Selenium Manager on Windows and GitHub Actions (`ubuntu-latest` `x86_64`), and automatically falls back to OS-packaged `/usr/bin/chromium` + `/usr/bin/chromedriver` on Linux ARM64 (`aarch64`).
 - **GitHub Actions ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)):** Runs backend `pytest` + `pip-audit` and frontend `npm audit` + `oxlint` + `vitest` + `vite build` on `ubuntu-latest` (`main`, PRs, and weekly schedule).

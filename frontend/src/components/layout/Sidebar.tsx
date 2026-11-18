@@ -141,14 +141,32 @@ export const Sidebar: React.FC = () => {
         <div className="w-9 h-9 rounded-lg bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center shadow-lg shadow-indigo-500/20">
           <Film className="w-5 h-5 text-white" />
         </div>
-        <div>
-          <h1 className="font-bold text-base tracking-tight text-zinc-50 flex items-center gap-1.5" dir="ltr">
+        <div className="min-w-0 flex-1">
+          <h1 className="font-bold text-base tracking-tight text-zinc-50 flex flex-wrap items-center gap-1.5" dir="ltr">
             SubBuild
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-400 font-semibold tracking-wider uppercase border border-indigo-500/30">
               Studio
             </span>
+            <span
+              data-testid="sidebar-version-badge"
+              className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono border border-line"
+            >
+              v{systemInfo?.version || '1.5.0'}
+            </span>
           </h1>
-          <p className="text-[11px] text-zinc-400 font-medium">{t('sidebar.tagline')}</p>
+          <div className="flex items-center justify-between gap-2 mt-0.5">
+            <p className="text-[11px] text-zinc-400 font-medium truncate">{t('sidebar.tagline')}</p>
+            {systemInfo?.update?.update_available && (
+              <button
+                type="button"
+                onClick={() => setView('settings')}
+                data-testid="sidebar-update-badge"
+                className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 font-medium cursor-pointer flex-shrink-0 transition-colors"
+              >
+                {t('sidebar.updateAvailable')}
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
