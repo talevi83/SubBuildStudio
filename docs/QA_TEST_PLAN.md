@@ -188,11 +188,11 @@ After running `mvn test`, open the generated ExtentReports dashboard:
 
 ## 7. CI/CD Architecture (Jenkins on Raspberry Pi 4 ARM64 & GitHub Actions)
 
-SubBuild Studio runs automated verification across both cloud CI (**GitHub Actions**) and a self-hosted **Jenkins** controller running on a **Raspberry Pi 4 (8GB, Debian `aarch64`)** triggered automatically by **GitHub Webhooks** on pushes to `staging` and `main`.
+SubBuild Studio runs automated verification across both cloud CI (**GitHub Actions**) and a self-hosted **Jenkins** controller running on a **Raspberry Pi 4 (8GB, Debian `aarch64`)** triggered automatically by **GitHub Webhooks** on pushes and PRs to `main`.
 
 ```mermaid
 flowchart LR
-    GH["GitHub Push (staging / main)"] -->|Webhook| J["Jenkins Pipeline (Jenkinsfile)"]
+    GH["GitHub Push / PR (main)"] -->|Webhook| J["Jenkins Pipeline (Jenkinsfile)"]
     J --> S1["1. Preflight Check<br/>Java 21, Maven, Python3, Node 22, FFmpeg, Chromium"]
     S1 --> S2["2. Backend Pytest (512)<br/>.venv + CUDA-free reqs + JUnit XML"]
     S2 --> S3["3. Frontend Build (14 Vitest)<br/>oxlint + tsc + vite build -> frontend/dist"]
