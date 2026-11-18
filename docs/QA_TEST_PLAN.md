@@ -2,7 +2,7 @@
 
 ## 1. Executive Summary & QA Strategy
 
-SubBuild Studio is an AI-powered local video subtitling, transcription, synchronization, and translation workbench built on **FastAPI + SQLite (SQLModel)** and **React 19 + TypeScript + Vite 8**. Testing an application that combines local FFmpeg media pipelines, GPU/CPU Whisper models, Google Gemini LLM/Vision calls, and a virtualized interactive studio UI requires a **Multi-Layer Hybrid Test Pyramid** rather than relying solely on slow UI tests or mocked unit tests.
+SubBuild Studio is an AI-powered local video subtitling, transcription, synchronization, and translation workbench built on **FastAPI + SQLite (SQLModel)** and **React 19 + TypeScript + Vite 8**. Testing an application that combines local FFmpeg media pipelines, GPU/CPU Whisper models, multi-provider LLM/Vision calls (Google Gemini, OpenAI, Anthropic, Ollama), and a virtualized interactive studio UI requires a **Multi-Layer Hybrid Test Pyramid** rather than relying solely on slow UI tests or mocked unit tests.
 
 Our QA strategy separates deterministic white-box verification from black-box system validation:
 
@@ -17,8 +17,8 @@ Our QA strategy separates deterministic white-box verification from black-box sy
 flowchart TD
     E2E["Layer 5: Black-Box Browser E2E<br/>Java 21 + Selenium 4 POM (18 UI Tests)<br/>Hybrid API Seeding + Chrome/Chromium/Edge"]
     BAPI["Layer 4: Black-Box REST & Security Contracts<br/>Java 21 + RestAssured (34 API Tests)<br/>Session Token, CSRF, Key Vault, Job Lifecycle, Edge Cases"]
-    FE["Layer 3: Frontend Component & Store<br/>Vitest + React Testing Library (11 Tests)<br/>TypeScript tsc -b + oxlint"]
-    PIPE["Layer 2: Backend API, Pipeline & Security<br/>Pytest (367 Tests: 131 API + 170 Pipeline + 66 Security)<br/>FastAPI TestClient, SQLite, AI Fakes, 24 FFmpeg Tests"]
+    FE["Layer 3: Frontend Component & Store<br/>Vitest + React Testing Library (13 Tests)<br/>TypeScript tsc -b + oxlint"]
+    PIPE["Layer 2: Backend API, Pipeline & Security<br/>Pytest (376 Tests: 140 API + 170 Pipeline + 66 Security)<br/>FastAPI TestClient, SQLite, AI Fakes, 24 FFmpeg Tests"]
     UNIT["Layer 1: Pure Unit & Domain Rules<br/>Pytest (128 Tests)<br/>RTL BiDi, SRT/VTT, Segmentation, Credits, QA Rules"]
 
     E2E --> BAPI
@@ -28,7 +28,7 @@ flowchart TD
 ```
 
 ### Why Hybrid API + UI Automation?
-Running full Whisper transcription and Gemini translation through a browser UI for every UI test would take minutes per test and introduce GPU/network flakiness. Instead, `StudioEditorUiTest` uses a **Hybrid API + UI pattern**:
+Running full Whisper transcription and AI translation through a browser UI for every UI test would take minutes per test and introduce GPU/network flakiness. Instead, `StudioEditorUiTest` uses a **Hybrid API + UI pattern**:
 1. A deterministic 4-second synthetic `.mkv` containing an embedded SRT track is generated once per session via `ffmpeg`.
 2. `SubBuildApiClient` (RestAssured) creates and polls a job to `COMPLETED` via `use_embedded_subtitles=true` in under 2 seconds.
 3. Selenium WebDriver opens the browser via the one-time `/?token=...` bootstrap link, selects the completed project, and tests real DOM interactions (inline editing, segment insertion, search/replace, undo/redo history, QA panel, export toolbar).
@@ -37,13 +37,13 @@ Running full Whisper transcription and Gemini translation through a browser UI f
 
 ## 3. Suite Breakdown & Directory Layout
 
-### 3.1 Python Backend Test Suite (`backend/tests/`) — 495 Tests
+### 3.1 Python Backend Test Suite (`backend/tests/`) — 504 Tests
 Configured in [`backend/pytest.ini`](../backend/pytest.ini) with `pythonpath = .` and automated directory-based tagging in [`backend/tests/conftest.py`](../backend/tests/conftest.py).
 
 | Layer / Marker | Directory | Files | Collected Tests | Scope & Isolation |
 |---|---|---:|---:|---|
 | `@pytest.mark.unit` | `backend/tests/unit/` | 12 | 128 | Pure logic with zero DB or FFmpeg: RTL BiDi (`test_rtl_fixer.py`), SRT/VTT serialization & timestamp carry (`test_srt_formatter.py`), segmentation & orphan-word healing (`test_refine_stage.py`, `test_refine_quality.py`), end-credits detection (`test_credits_detect.py`), speaker split & SDH (`test_speaker_split.py`), missing speech (`test_missing_speech.py`), QA rules (`test_qa.py`), desktop launcher & shortcuts (`test_desktop_launcher.py`, `test_create_shortcut.py`), DB migration (`test_legacy_rename.py`). |
-| `@pytest.mark.api` | `backend/tests/api/` | 13 | 131 | FastAPI `TestClient` + isolated SQLite: job lifecycle & live segments (`test_api_and_pipeline.py`), multi-provider key vault, live model discovery, pricing & mixed-provider runtime (`test_multi_provider_ai.py`), segment CRUD (`test_insert_segment.py`), undo/redo edit history (`test_edit_history.py`), upload deduplication & SHA-256 cache (`test_media_upload.py`), row-scoped retranslation (`test_row_translate.py`), glossary profiles (`test_glossary_profiles.py`), speaker detection (`test_speaker_detect.py`), retime/reorder (`test_retime.py`), settings/pricing (`test_settings_pricing.py`), review fixes (`test_review_fixes.py`), save next to video (`test_save_next_to_video.py`), storage cleanup (`test_storage_cleanup.py`). |
+| `@pytest.mark.api` | `backend/tests/api/` | 13 | 140 | FastAPI `TestClient` + isolated SQLite: job lifecycle & live segments (`test_api_and_pipeline.py`), multi-provider key vault, strict filtering, Ollama `/api/show` capability discovery, OpenAI snapshot deduplication, startup discovery guard, GPT-5.4/GPT-6 pricing & mixed-provider runtime (`test_multi_provider_ai.py`), segment CRUD (`test_insert_segment.py`), undo/redo edit history (`test_edit_history.py`), upload deduplication & SHA-256 cache (`test_media_upload.py`), row-scoped retranslation (`test_row_translate.py`), glossary profiles (`test_glossary_profiles.py`), speaker detection (`test_speaker_detect.py`), retime/reorder (`test_retime.py`), settings/pricing (`test_settings_pricing.py`), review fixes (`test_review_fixes.py`), save next to video (`test_save_next_to_video.py`), storage cleanup (`test_storage_cleanup.py`). |
 | `@pytest.mark.pipeline` | `backend/tests/pipeline/` | 13 | 170 | Pipeline orchestration & AI adapters: full E2E clip (`test_pipeline_e2e.py`), Whisper threading/OOM/cancel (`test_whisper_provider.py`), Gemini/LLM retries/glossary/truncation (`test_gemini_provider.py`), Flex tier fallback (`test_flex.py`), FinOps dHash prefilter & Ollama pre-tagging (`test_finops_optimizations.py`), OCR & tactical comms (`test_comms_onscreen.py`), foreign speech (`test_foreign_speech.py`), sync alignment & burned-in detection (`test_sync.py`), gap recovery (`test_gap_recovery.py`), word snapping (`test_word_snap.py`), video embedding (`test_embed_video.py`), embedded tracks (`test_embedded_subtitles.py`), per-job logging (`test_logs.py`). |
 | `@pytest.mark.security` | `backend/tests/security/` | 5 | 66 | Defense-in-depth verification: `X-SubBuild-Token` & cookie bootstrap + UNC path refusal (`test_session_auth.py`), Origin/Fetch-Metadata CSRF guard & `TrustedHostMiddleware` (`test_request_guard.py`), CSP & anti-framing headers (`test_security_headers.py`), FFmpeg `-protocol_whitelist file` & AST bare `-i` audit (`test_ffmpeg_safety.py`), `Content-Length` upload limits & filename sanitization (`test_upload_limits.py`). |
 | Shared Fixtures | `backend/tests/fixtures/` | 2 | — | `builders.py` (`insert_job`, `create_job_with_segments`, `wait_for_job`) and `fakes.py` (`FakeTranslator`, `SlowTranscriber`). |
@@ -51,13 +51,13 @@ Configured in [`backend/pytest.ini`](../backend/pytest.ini) with `pythonpath = .
 Additional cross-cutting Pytest markers:
 - `@pytest.mark.smoke` (**53 tests**): Critical-path sanity checks across auth, core API, pipeline E2E, RTL, and SRT/VTT formatting.
 - `@pytest.mark.ffmpeg` (**24 tests**): Tests invoking real `ffmpeg`/`ffprobe` binaries.
-- `@pytest.mark.regression` (**495 tests**): Full regression coverage.
+- `@pytest.mark.regression` (**504 tests**): Full regression coverage.
 
-### 3.2 Frontend Test & Static Analysis Suite (`frontend/`) — 11 Tests
+### 3.2 Frontend Test & Static Analysis Suite (`frontend/`) — 13 Tests
 - **Static Checks:** `oxlint` (`npm run lint`) and TypeScript compiler (`tsc -b`).
 - **Component & Store Tests:**
   - `frontend/src/__tests__/reliability_and_editor_roundtrip.test.tsx` (**9 tests**): autosave state, split/merge/shift controls, search navigation, and bilingual export URL generation.
-  - `frontend/src/__tests__/multi_provider_settings.test.tsx` (**2 tests**): multi-key provider vault tabs, Ollama Cloud preset, red suitability warnings, per-episode/movie cost benchmarks, and mixed-provider settings.
+  - `frontend/src/__tests__/multi_provider_settings.test.tsx` (**4 tests**): multi-key provider vault tabs, Ollama Cloud preset, strict key & task filtering, per-episode/movie cost benchmarks, `RowTranslateDialog` model filtering & provider-conditional Thinking selector, `ExportToolbar`/`Sidebar` multi-stage AI status without Gemini keys, and GPU/VRAM-aware Best-Value Auto-Selector (with Google Flex support).
 
 ### 3.3 Java Enterprise Black-Box Automation (`qa-automation-java/`) — 52 Tests
 Standard Maven project built with **Java 21**, **JUnit 5**, **Selenium WebDriver 4.27**, **RestAssured 5.5**, and **ExtentReports 5** (`9 @Tag("smoke")` + `43` additional `@Tag("regression")` tests; every `smoke` test also carries `@Tag("regression")` so `-Pregression` runs the complete 52-test suite).
@@ -116,7 +116,7 @@ All automated test suites strictly protect real user data (`backend/storage/subb
 ```powershell
 cd "backend"
 
-# Full regression suite (495 tests)
+# Full regression suite (504 tests)
 .\.venv\Scripts\python.exe -m pytest -q
 
 # Fast targeted layers
@@ -193,8 +193,8 @@ SubBuild Studio runs automated verification across both cloud CI (**GitHub Actio
 flowchart LR
     GH["GitHub Push (staging / main)"] -->|Webhook| J["Jenkins Pipeline (Jenkinsfile)"]
     J --> S1["1. Preflight Check<br/>Java 21, Maven, Python3, Node 22, FFmpeg, Chromium"]
-    S1 --> S2["2. Backend Pytest (495)<br/>.venv + CUDA-free reqs + JUnit XML"]
-    S2 --> S3["3. Frontend Build (11 Vitest)<br/>oxlint + tsc + vite build -> frontend/dist"]
+    S1 --> S2["2. Backend Pytest (504)<br/>.venv + CUDA-free reqs + JUnit XML"]
+    S2 --> S3["3. Frontend Build (13 Vitest)<br/>oxlint + tsc + vite build -> frontend/dist"]
     S3 --> S4["4. Java QA (52 Regression / 9 Smoke)<br/>ARM64 Chromium Headless + RestAssured"]
     S4 --> R["Unified JUnit Results + ExtentReports HTML & Screenshots"]
 ```

@@ -5,7 +5,7 @@
 
 # SubBuild Studio 🎬
 
-**SubBuild Studio** is a modular local web application for automated video subtitling, high-precision Speech-to-Text transcription with word-level timing, broadcast-grade subtitle refinement, and context-aware batch translation powered by Google Gemini API (with first-class RTL/Hebrew support).
+**SubBuild Studio** is a modular local web application for automated video subtitling, high-precision Speech-to-Text transcription with word-level timing, broadcast-grade subtitle refinement, and context-aware batch translation powered by multiple AI providers — **Google Gemini**, **OpenAI GPT**, **Anthropic Claude**, and **Ollama (Local / Cloud)** — with first-class RTL/Hebrew support.
 
 ---
 
@@ -38,8 +38,9 @@
    - Timing pass: no overlaps, ≥2-frame gaps, display time extended toward a target reading speed (`TARGET_CPS`), short gaps closed to avoid flicker.
    - Reading speed (CPS) badges, plus a categorized problem filter (`All problems`, `Untranslated / failed`, `Leftover English in translation`, `Fast reading speed / CPS`) and segment tag filter in the editor.
 
-4. **Context-Aware Gemini Subtitle Translation (Batch 120 + Dynamic Glossary Pruning + Separate On-Screen Pass):**
-   - Default batch size of 120 lines (`GEMINI_BATCH_SIZE=120`) cuts translation request roundtrips and repeated prompt/thinking token overhead.
+4. **Context-Aware Multi-Provider Subtitle Translation (Google Gemini, OpenAI, Anthropic, Ollama):**
+   - Mix and match providers per stage (*Translation*, *Glossary pass*, *On-screen OCR/Vision*) or keep one provider across the whole pipeline (e.g., local Ollama for Translation + Gemini Flex / GPT-5 nano for frame OCR).
+   - Default batch size of 120 lines for Gemini (`GEMINI_BATCH_SIZE=120`) and tuned batch sizing for OpenAI / Anthropic / Ollama (`~30–50`), paired with adaptive splitting and structured JSON schema validation (`core/provider_catalog.py`, `providers/llm/client.py`).
    - **Dedicated On-Screen Translation Pass:** `[ON_SCREEN]` cues (burned-in signs, location chyrons, HUD telemetry, text messages) are translated in a separate pass with a dedicated sign/title prompt from spoken dialogue (`DIALOGUE` / `COMMS` / `FOREIGN`), preventing sign text and overlapping dialogue from contaminating or overwriting each other during translation.
    - One glossary pass over the whole transcript (characters, gender, terminology) feeds translation, with per-batch dynamic glossary pruning (main cast + characters and terms appearing in the active window) so prompts stay compact without mutating the saved glossary.
    - **Metric System Conversion Toggle (`convert_to_metric`):** Optional setting (in Settings and per job) to automatically convert imperial measurements (miles, feet, inches, lbs, Fahrenheit, gallons, acres) into natural, idiomatic metric equivalents (km, m, kg, Celsius, liters, dunams) with natural rounding while preserving figurative idioms.
@@ -78,41 +79,41 @@
 
 9. **⏱ Sync Existing Subtitles (+ Optional Whisper Supplement):**
    - Choose **Sync my subtitles** on the setup screen, pick the video and a subtitle file you already have (SRT, WebVTT or ASS, in any language and encoding: UTF-8/UTF-16/Windows-1255 Hebrew files are read correctly). The existing text is never changed, only the timing.
-   - Matches speech rhythm (Silero VAD + Whisper word times), embedded/burned-in tracks, and Gemini translation anchors.
+   - Matches speech rhythm (Silero VAD + Whisper word times), embedded/burned-in tracks, and AI translation anchors.
    - Optionally enable **Supplement missing speech with Whisper** and **On-screen OCR** during sync so any untranscribed spoken lines or burned-in signs missing from your subtitle file are automatically transcribed, translated, and merged into the synced timeline.
 
 10. **💡 Cost-Saver Mode & Local AI Offloading (Optional Toggle):**
     - **One simple toggle** in Settings (`cost_saver_mode`, off by default to protect weak laptops).
-    - **Local frame pre-filtering:** Pillow-based edge detection and 64-bit difference hashing (`dHash`) filter out blank/textless frames and merge consecutive identical title cards before calling Gemini Vision, saving ~75–80% of Vision image tokens.
+    - **Local frame pre-filtering:** Pillow-based edge detection and 64-bit difference hashing (`dHash`) filter out blank/textless frames and merge consecutive identical title cards before calling Vision AI, saving ~75–80% of Vision image tokens.
     - **GPU VRAM unloading:** Unloads Faster-Whisper from GPU memory right after transcription completes so 8GB GPUs have free VRAM for local LLMs or system tasks.
     - **Zero-config local gender pre-tagging (Ollama):** Auto-detects local Ollama (e.g. `qwen2.5:7b`), pre-tags ambiguous pronoun lines (`you`, `I am`) with `[Speaker: M/F, To: M/F]` hints locally for Hebrew/Arabic translation, cutting cloud token overhead. Silently skips with zero delay if Ollama is not installed.
     - **One-click Ollama setup:** Settings screen includes live Ollama status, a link to the official Ollama download (the app never downloads and runs an installer itself), one-click daemon startup / model pull once Ollama is installed (`POST /api/settings/ollama/setup`), and instructions for advanced users.
 
 11. **📊 Live & Post-Run Token & Local AI Savings Summary:**
     - Live monitoring bar in the studio and final run summary shows:
-      - Breakdown of tokens used per Gemini model (specifying the exact model and input/output/thinking counts).
+      - Breakdown of tokens and cost used per AI provider/model (specifying the exact provider/model and input/output/thinking counts).
       - Local AI queries sent to Ollama and model name.
       - Tokens and video frames saved locally by Cost-Saver pre-filtering.
 
 12. **❓ Dedicated Help, User Guide & Q&A Screen:**
     - Dedicated **"Help & Q&A"** button in the sidebar bottom panel opens a comprehensive standalone guide.
     - 4-step quick-start workflow overview (Media Ingest, Configuration, Live Monitoring, Review & Export).
-    - Interactive FAQ accordion covering Whisper model choices, Comms Boost, Cost-Saver Mode, Hebrew gender rules, Gemini models and Flex mode, timing fixes, and video player codec compatibility.
+    - Interactive FAQ accordion covering Whisper model choices, Comms Boost, Cost-Saver Mode, Hebrew gender rules, multi-provider AI models (Gemini, OpenAI, Anthropic, Ollama) and Google Flex mode, timing fixes, and video player codec compatibility.
 
 ---
 
 ## ⚙️ Settings, Models & Pricing
 
-Open **Settings** (bottom of the sidebar):
+Open **Settings** (bottom of the sidebar — its compact status badge tracks readiness across all 3 active pipeline steps at a glance):
 
-- **Google Gemini API Key (`ApiKeySection`)** — first-run onboarding modal when no API key is configured yet, plus a collapsible API key management panel at the top of Settings (`GET/PUT /api/settings/api-key`) that shows a masked preview (`AIza••••••••abcd`) and saves your key directly to `backend/.env` without restarting the server.
+- **Multi-Provider AI Key Vault (`ApiKeySection`)** — first-run onboarding modal when no AI key is configured yet, plus a tabbed multi-provider API key panel at the top of Settings (`GET/POST /api/settings/keys`, `PUT/DELETE /api/settings/keys/{key_id}`, `POST /api/settings/providers/refresh`) supporting **Google Gemini**, **OpenAI**, **Anthropic Claude**, and **Ollama (Local / Cloud)**. Supports multiple named keys per provider, default key selection, direct "Get API Key" links for each provider, masked secret previews (`AIza••••••••abcd`), and automatic live model discovery (no server restart required). `.env` keys remain supported automatically.
 - **Appearance** — interface language (Hebrew / English, with a full right-to-left layout in Hebrew) and dark / light theme. Saved per browser.
-- **AI models** — pick the Gemini model and thinking level separately for each step that calls Gemini: *Translation*, *Glossary pass* and *On-screen text (vision)*, plus the frame detail used for vision. Saved to `storage/settings.json` and used by every new job and retranslation.
-  - Each list shows only the models that can do that step (vision needs image input). For translation, **Gemini 3.5 Flash-Lite** and **Gemini 3.1 Flash-Lite** are the budget choices: about 58% and 29% of the Flash cost for a translated episode (about 29% and 15% once the Flash promotion ends in January 2027), with weaker Hebrew quality (gender agreement, idioms), so check the result. With Flex on top they cost half again. Models Google retired are migrated automatically in saved settings.
-  - Thinking uses `thinking_level` (minimal / low / medium / high, as supported by each model). "Model default" sends nothing.
-  - **Flex mode** (per step): sends requests with `service_tier="flex"` at 50% of the Standard price. Google answers Flex when it has spare capacity, so a request can take minutes; busy (429/503) requests are retried with backoff and then sent once on the Standard tier, and the job warns how many requests fell back. Translation runs batch by batch, so Flex can make long episodes much slower.
-  - Gemini 3+ models keep their default temperature, as Google recommends.
-  - **Test models** sends a tiny request to each chosen model (an image for the vision step, over Flex when Flex is on) to confirm your API key can use it. The API is `POST /api/settings/check`.
+- **AI models per Pipeline Step** — pick the provider, optional key, model, and thinking level (for Google Gemini) separately for *Translation*, *Glossary pass*, and *On-screen text (vision)*, plus the frame detail used for vision. Saved to `storage/settings.json`.
+  - **Strict live & task filtering:** Each dropdown displays only verified models returned by your configured key(s) that are actually capable of that pipeline step (e.g., retired Gemini 2.x/image/omni/latest aliases, OpenAI `-pro`/`-codex`/`search-api` and redundant dated snapshots, diffusion models, and sub-7B local models are excluded from translation). Local Ollama models query `/api/show` to discover native `vision` capability and parameter sizes.
+  - **Best-Value (Cost / Quality) Auto-Selector:** One-click optimizer button (*Auto-select best value (Cost / Quality)*) inspects all configured keys across all providers, compares episode costs including Google **Flex (`-50%`)**, and assigns the lowest-cost recommended model per stage (enabling Flex automatically when Google Flex wins). Includes an optional GPU/VRAM-aware **"Include free Local AI"** checkbox that only selects recommended local models (`>= 6.5B`) fitting your detected CUDA VRAM (`8GB -> <=12.5B`, `12GB -> <=16B`, etc.) and explains any local models skipped as too heavy.
+  - **Episode & movie cost benchmarks:** Each model card shows estimated ~45m episode and ~120m movie costs before running (local Ollama shows `$0.00`).
+  - **Flex mode** (Google Gemini steps): sends requests with `service_tier="flex"` at 50% of the Standard price when Google has spare capacity, with automatic fallback to Standard on repeated busy errors (`429`/`503`).
+  - **Test models** sends a tiny request to each configured step (including an image for Vision, over Flex when Flex is on) to confirm your active key/daemon can run it (`POST /api/settings/check`).
 - **Missed-speech recovery** (on by default, `WHISPER_GAP_RECOVERY=false` to disable): the voice detector (Silero VAD) misses speech under gunfire, engines, music and radio filtering, so Whisper never hears it. After transcription, Whisper re-listens *without* VAD to every stretch no subtitle covers and keeps only lines that pass strict hallucination checks; each kept/rejected line is listed in the project log. Shouted commands ("Fire!", "Go, go, go!", "Cease fire!") are judged by their own words rather than the noisy window's confidence, and repeats of a neighbouring command are kept.
 - **Subtitle start alignment** (on by default, `WHISPER_SNAP_STARTS=false` to disable): Whisper's word timestamps ignore silence, so a word that follows a pause is stamped right after the previous word and the subtitle can appear a second or two before anyone speaks. After transcription, Silero VAD finds where speech really begins and any word that spans a silent gap (0.4s or longer) is moved to just before the speech that follows it (starts are only ever moved later, and speech the detector misses is left as Whisper timed it). The job log shows how many word starts were moved.
 - **Re-check timing (finished jobs)**: the *Re-check timing* button above the table re-extracts the audio, runs voice-activity detection over the whole video and moves every subtitle that starts in a silence shortly before speech to just before that speech (text and on-screen cues are never touched; there is an *Undo* right after). Results are cached in `storage/regions`. The API is `POST /api/jobs/{id}/retime`.
@@ -122,20 +123,20 @@ Open **Settings** (bottom of the sidebar):
 - **Characters & terms editor**: the *Characters & terms* button opens the glossary the translator was given (gender, name spelling, terms, tone). Fix it, save, and optionally re-translate everything. The API is `PUT /api/jobs/{id}/glossary`.
 - **Series glossary profiles**: give a show a name (in the setup screen, or in the *Characters & terms* window) and its characters, genders, name spellings and terms are saved under `storage/glossaries/`. Later episodes that use the same name start from that list (it is treated as authoritative), the glossary pass only adds characters and terms that are new, and the profile grows with every episode. The API is `GET /api/glossary-profiles`.
 - **Check quality**: a button above the table scans the translation without calling any model and lists untranslated Latin words, names/terms that differ from the glossary, "את/אתה" pronoun and verb mismatches, and missing translations. Click an item to jump to the row, or select all the flagged rows and re-translate them. The API is `GET /api/jobs/{id}/qa`.
-- **Detect from video**: in the "re-translate with note" window, you can also pick the Gemini model and thinking level for that run (it starts from the project's model and your Settings), and this button sends 2-3 frames around the selected rows plus their dialogue to Gemini and fills in the speaker and addressee gender (left empty when the video is unclear). The API is `POST /api/jobs/{id}/detect-speakers`.
+- **Detect from video**: in the "re-translate with note" window (`RowTranslateDialog`), only available translation-capable models from your active keys are shown (with provider labels, and Thinking levels shown for Google Gemini models); clicking *Detect from video* sends 2-3 frames around the selected rows plus their dialogue to the Vision AI provider and fills in the speaker and addressee gender. The API is `POST /api/jobs/{id}/detect-speakers`.
 - **Storage and cleanup** (Settings): shows what the app keeps in `storage/` and frees it by category: temporary audio/frames, the timing cache, logs, exported files, uploaded video copies no project uses, and (with a second confirm) finished projects older than N days together with their uploaded copy. Videos you picked from your own folders, running projects and the live `server.log` are never touched. The API is `GET /api/storage` and `POST /api/storage/clean`.
-- **Diagnostics** — *Download server log* (`storage/logs/server.log`, rotating 3 × 5 MB). Every project also keeps its own detailed log (`storage/logs/jobs/<job>.log`): settings, each stage with timings, Gemini errors, retries and Flex fallbacks, and a result summary. Download it with the **Log** button in the studio; it is deleted with the project.
+- **Diagnostics** — *Download server log* (`storage/logs/server.log`, rotating 3 × 5 MB). Every project also keeps its own detailed log (`storage/logs/jobs/<job>.log`): settings, each stage with timings, AI errors, retries and Flex fallbacks, and a result summary. Download it with the **Log** button in the studio; it is deleted with the project.
   - Flex: after 2 requests in a row fall back to Standard, the rest of the job uses Standard for that model.
 - **Cost estimate** — per-step requests, tokens and dollars for a video of any length, recalculated live as you change models (before saving). The setup screen also shows the estimate for the loaded file.
 - **Cost-Saver Mode & Ollama Local AI** (Settings toggle, default off):
-  - Pre-filters sampled frames locally using Pillow edge detection and 64-bit dHash perceptual hashing, filtering out ~75–80% of textless frames before calling Gemini Vision.
+  - Pre-filters sampled frames locally using Pillow edge detection and 64-bit dHash perceptual hashing, filtering out ~75–80% of textless frames before calling cloud/local Vision.
   - Automatically unloads Faster-Whisper from GPU memory right after transcription to free VRAM for local models.
   - Automatically pre-tags ambiguous pronouns (`you`, `I am`) using a local Ollama model (e.g. `qwen2.5:7b`), eliminating cloud token overhead for gender disambiguation.
   - Settings screen features a live Ollama service & model status monitor, a download link to the official installer, a one-click button that starts Ollama and pulls the model (`POST /api/settings/ollama/setup`), and direct manual links for advanced users.
 - **Live & Post-Run Token & Local AI Savings Breakdown**:
-  - Live studio monitor bar and final run summary display per-model Gemini token usage (input, output, thinking), Ollama local queries handled, and total frames/tokens saved by local pre-filtering.
+  - Live studio monitor bar and final run summary display per-model token usage (input, output, thinking) across active providers, Ollama local queries handled, and total frames/tokens saved by local pre-filtering.
 
-Prices come from the official Gemini API paid tier (checked October 2026, including promotional prices that end on a set date) and live in `backend/app/core/model_catalog.py` — update that file when Google changes prices. Every job records the **exact** tokens (input, output, thinking) and cost reported by the API per step; the total is shown in the studio header and the project list.
+Pricing covers Google Gemini (paid tier + dated promotions in `backend/app/core/model_catalog.py`), OpenAI (including GPT-5.4 / GPT-6 tiers & image billing rules), Anthropic Claude, and `$0.00` local Ollama in `backend/app/core/provider_catalog.py`. Every job records exact tokens and cost per step in `Job.usage_json`.
 
 ---
 
@@ -156,10 +157,11 @@ SubBuild Studio/
 │   ├── .env.example            # Configuration template (copy to .env)
 │   ├── requirements.txt        # Python dependencies (incl. CUDA cuBLAS/cuDNN wheels)
 │   ├── app/
-│   │   ├── main.py             # FastAPI app: CORS, trusted hosts, CSRF guard, routers, WebSocket, serves frontend/dist
-│   │   ├── api/                # Routes: system, media, jobs, export, settings, glossary profiles, storage
-│   │   ├── core/               # Config, SQLite DB, hardware detection, WS manager, model catalog & prices,
-│   │   │                       #   user settings, glossary profiles, job logging, housekeeping, storage cleanup, ollama_setup
+│   │   ├── main.py             # FastAPI app: CORS, trusted hosts, CSRF guard, routers, startup discovery, WebSocket
+│   │   ├── api/                # Routes: system, media, jobs, export, settings (+ key vault), glossary profiles, storage
+│   │   ├── core/               # Config, SQLite DB, hardware/VRAM detection, WS manager, model_catalog,
+│   │   │                       #   provider_keys, provider_catalog, model_discovery, user_settings, glossary_profiles,
+│   │   │                       #   job_logging, housekeeping, storage_cleanup, ollama_setup
 │   │   ├── models/             # SQLModel tables & Pydantic schemas
 │   │   ├── pipeline/
 │   │   │   ├── orchestrator.py # Runs the stages: GPU queue, cancel, save-as-you-go, recovery after restart
@@ -167,29 +169,29 @@ SubBuild Studio/
 │   │   │   ├── stages/         # probe, audio, transcribe, ocr (on-screen text), refine, translate, sync
 │   │   │   ├── segmentation.py, timeline_merge.py    # Refine: Whisper words -> subtitles; COMMS/on-screen/foreign merge
 │   │   │   ├── embedded_tracks.py   # Forced / dialogue subtitle tracks inside the video
-│   │   │   ├── frame_sampling.py, onscreen_vision.py, onscreen_merge.py   # On-screen text: frames -> Gemini -> segments
+│   │   │   ├── frame_sampling.py, onscreen_vision.py, onscreen_merge.py   # On-screen text: frames -> Vision AI -> segments
 │   │   │   ├── sync_align.py   # Sync: offset / frame rate / cuts (correlation + dynamic programming)
-│   │   │   ├── sync_text.py    # Sync: line-to-speech anchors (local word matching, Gemini)
+│   │   │   ├── sync_text.py    # Sync: line-to-speech anchors (local word matching, AI)
 │   │   │   ├── sync_burned.py  # Sync: burned-in subtitle detection (local frame analysis)
 │   │   │   ├── gap_recovery.py # Missed-speech recovery (Whisper without VAD over uncovered audio)
 │   │   │   ├── missing_speech.py      # Supplement embedded/synced subtitles with Whisper speech detection
 │   │   │   ├── word_snap.py    # Subtitle start alignment
 │   │   │   ├── onscreen_prefilter.py  # Local frame edge & dHash pre-filter (with steady-state retention)
 │   │   │   ├── credits_detect.py      # Smart end-credits detection & mid/post-credits scene preservation
-│   │   │   ├── gender_pretag.py       # Local Ollama gender pre-tagging
+│   │   │   ├── gender_pretag.py       # Local Ollama pre-tagging
 │   │   │   ├── glossary_pruner.py     # Dynamic glossary pruning per batch
 │   │   │   ├── speech_regions.py, retime.py   # Speech maps, "Re-check timing" and drag-to-reorder
 │   │   │   ├── foreign_speech.py              # Passages in other languages
 │   │   │   ├── speaker_detect.py, qa.py       # Gender detection from frames, quality check
 │   │   │   └── context.py                     # Job context passed between stages
-│   │   ├── providers/          # faster-whisper transcription; Gemini (+ Flex wrapper) and Noop translation
+│   │   ├── providers/          # faster-whisper transcription; llm/client.py (Gemini, OpenAI, Anthropic, Ollama); Flex wrapper
 │   │   └── utils/              # SRT/VTT formatter, subtitle file parser, RTL fixer, speaker split/SDH cleaner, languages, text rules
 │   ├── pytest.ini              # Pytest markers (unit, api, pipeline, ffmpeg, security, smoke, regression)
 │   └── tests/                  # Layered pytest suites (unit/, api/, pipeline/, security/, fixtures/)
 ├── frontend/                   # React 19 + TypeScript + Vite 8 + Tailwind 4 + Zustand
 │   ├── vite.config.ts          # Build & dev proxy to the backend
 │   └── src/
-│       ├── components/         # ingest/ (incl. GenrePresets), monitor/, studio/ (table/ = subtitle table hooks & toolbar), settings/, layout/
+│       ├── components/         # ingest/ (incl. GenrePresets), monitor/, studio/ (table/ = subtitle table hooks & toolbar), settings/ (ApiKeySection, SettingsScreen, labels), layout/
 │       ├── store/              # Zustand stores (jobs + WebSocket listener, settings, UI)
 │       ├── services/api.ts     # Typed REST client
 │       ├── hooks/              # Cost estimate
@@ -203,6 +205,7 @@ SubBuild Studio/
 └── storage/                    # Created at runtime, git-ignored
     ├── subbuild.db             # Projects and subtitles (SQLite)
     ├── settings.json           # Choices from the Settings screen
+    ├── provider_keys.json      # Saved multi-provider API keys (masked in API responses)
     ├── uploads/                # Browser-uploaded video copies
     ├── audio/, frames/         # Temporary audio and sampled frames
     ├── exports/                # Exported subtitle files
@@ -217,14 +220,14 @@ Interactive docs are at `http://localhost:8000/docs` while the server runs.
 
 | Area | Endpoints |
 |---|---|
-| System | `GET /api/system/info` (hardware, models, masked API key), `GET /api/system/log` (server log) |
+| System | `GET /api/system/info` (hardware/VRAM, provider summaries, models), `GET /api/system/log` (server log) |
 | Media | `POST /api/media/probe-path`, `POST /api/media/upload`, `GET /api/media/upload/existing`, `GET /api/media/stream/{job_id}` (Range), `POST /api/media/parse-subtitles` (read a subtitle file to sync) |
 | Jobs | `POST/GET /api/jobs` (with `sync_cues` = a sync job), `GET/DELETE /api/jobs/{id}`, `DELETE /api/jobs` (clear all), `POST /api/jobs/bulk-delete`, `PATCH /api/jobs/{id}/settings` (live onscreen position), `POST /api/jobs/{id}/cancel`, `POST /api/jobs/{id}/translate` |
 | Editing | `POST /api/jobs/{id}/segments` (add a line), `DELETE /api/jobs/{id}/segments/{segment_id}` (delete a line), `DELETE /api/jobs/{id}/segments` (bulk delete lines), `PATCH /api/jobs/{id}/segments/{segment_id}`, `PATCH /api/jobs/{id}/segments` (bulk), `POST /api/jobs/{id}/segments/move`, `POST /api/jobs/{id}/retime` |
 | History | `GET /api/jobs/{id}/history`, `POST /api/jobs/{id}/history/undo`, `POST /api/jobs/{id}/history/redo`, `POST /api/jobs/{id}/history/{entry_id}/restore` |
 | Translation tools | `PUT /api/jobs/{id}/glossary`, `POST /api/jobs/{id}/detect-speakers`, `GET /api/jobs/{id}/qa`, `GET /api/glossary-profiles` |
 | Export | `GET /api/jobs/{id}/export/srt`, `GET /api/jobs/{id}/export/vtt`, `GET /api/jobs/{id}/export/log`, `POST /api/jobs/{id}/export/save-next-to-video` |
-| Settings | `GET/PUT /api/settings`, `GET/PUT /api/settings/api-key`, `POST /api/settings/estimate`, `POST /api/settings/check`, `GET /api/settings/ollama/status`, `POST /api/settings/ollama/setup` |
+| Settings | `GET/PUT /api/settings`, `GET/PUT /api/settings/api-key`, `GET/POST /api/settings/keys`, `PUT/DELETE /api/settings/keys/{key_id}`, `POST /api/settings/providers/refresh`, `POST /api/settings/estimate`, `POST /api/settings/check`, `GET /api/settings/ollama/status`, `POST /api/settings/ollama/setup` |
 | Storage | `GET /api/storage`, `POST /api/storage/clean` |
 | Live | `WS /ws/jobs/{job_id}` |
 
@@ -255,14 +258,14 @@ uv pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `backend/.env` to configure your Google Gemini API key:
+Edit `backend/.env` (optional if managing keys in the Settings UI) to configure defaults or a Google Gemini API key:
 ```env
 GEMINI_API_KEY=your_gemini_api_key_here
 WHISPER_DEFAULT_MODEL=medium
 WHISPER_DEVICE=auto
 ```
 
-AI models and thinking levels (Translation, Glossary, and Vision) are configured in the app's **Settings** screen (saved to `storage/settings.json`).
+AI provider keys (Google Gemini, OpenAI, Anthropic, Ollama), per-stage models, thinking levels (Translation, Glossary, and Vision), and Best-Value auto-selection are configured in the app's **Settings** screen (saved to `storage/provider_keys.json` and `storage/settings.json`).
 
 Optional settings (defaults shown):
 
@@ -282,8 +285,8 @@ Optional settings (defaults shown):
 | `REMOVE_SDH_SPEAKERS` | `false` | Strip hearing-impaired speaker labels (`JOHN:`) and sound cues (`[sighs]`) from dialogue while keeping `[ON_SCREEN]` titles. |
 | `SKIP_END_CREDITS` | `true` | Automatically skip end-credits rolls and closing songs while preserving mid-credits and post-credits scenes. |
 | `GEMINI_VISION_MODEL` | `gemini-3.5-flash-lite` | Initial model that reads on-screen text from frames. |
-| `ONSCREEN_FRAME_INTERVAL` / `ONSCREEN_MAX_FRAMES` | `2.0` / `660` | Frame sampling interval (s) and max frames sent to Gemini (scaled per sensitivity level 1–3). Frame extraction uses GPU acceleration (`-hwaccel auto`). |
-| `ONSCREEN_BATCH_SIZE` | `12` | Frames per Gemini Vision request. |
+| `ONSCREEN_FRAME_INTERVAL` / `ONSCREEN_MAX_FRAMES` | `2.0` / `660` | Frame sampling interval (s) and max frames sent to Vision AI (scaled per sensitivity level 1–3). Frame extraction uses GPU acceleration (`-hwaccel auto`). |
+| `ONSCREEN_BATCH_SIZE` | `12` | Frames per Vision AI request. |
 | `MAX_CHARS_PER_LINE` | `42` | Line length limit for refinement and export. |
 | `TARGET_CPS` / `MAX_CPS_WARNING` | `17` / `20` | Reading speed the timing pass aims for / when the editor flags a line. |
 | `MIN_SUBTITLE_DURATION` / `MAX_SUBTITLE_DURATION` | `1.0` / `7.0` | Display time limits (seconds). |
@@ -296,7 +299,7 @@ Optional settings (defaults shown):
 | `SUBBUILD_DEV` | `false` | Development only: also trust the Vite dev server (`http://localhost:5173`, `http://127.0.0.1:5173`). Off by default, so another program on port 5173 can't drive the installed app. |
 | `SUBBUILD_TOKEN` | random per launch | Session token. Every `/api` and `/ws` request needs it (as an HttpOnly cookie set by opening `/?token=<token>` once, or an `X-SubBuild-Token` header), so other programs, other Windows accounts and the LAN can't use the API. The desktop app and `run.bat` / `run.sh` set it for you; set it yourself only for development. |
 
-An API key saved in Settings (or the first-run dialog) is stored in `.env`. A key typed on the Ingest screen for a single job is used for that run only and is never written to disk.
+API keys saved in the Settings Key Vault (or the first-run dialog) are persisted to `storage/provider_keys.json` (and legacy Google keys via `/api/settings/api-key` also write to `.env`). A key typed on the Ingest screen for a single job is used in memory for that run only and is never written to disk.
 
 ### 3. Frontend Setup
 ```bash
@@ -394,24 +397,24 @@ SubBuild Studio uses a **Multi-Layer Hybrid Test Pyramid** combining fast in-pro
 flowchart TD
     E2E["Black-Box UI E2E — Java 21 + Selenium 4 POM (18 tests)"]
     BAPI["Black-Box API & Security — Java 21 + RestAssured (34 tests)"]
-    FE["Frontend UI & Store — Vitest + RTL (11 tests) + oxlint + tsc"]
-    PIPE["Backend API, Pipeline & Security — Pytest (367 tests)"]
+    FE["Frontend UI & Store — Vitest + RTL (13 tests) + oxlint + tsc"]
+    PIPE["Backend API, Pipeline & Security — Pytest (376 tests)"]
     UNIT["Pure Unit & Domain Rules — Pytest (128 tests)"]
     E2E --> BAPI --> FE --> PIPE --> UNIT
 ```
 
-### 1. Backend Pytest Suite (`backend/tests/`, 495 tests)
+### 1. Backend Pytest Suite (`backend/tests/`, 504 tests)
 Tests are organized into explicit architectural layers with shared builders/fakes (`tests/fixtures/`) and registered markers in `backend/pytest.ini`:
 
 ```powershell
 cd backend
 
-# Run the full suite (495 tests)
+# Run the full suite (504 tests)
 .\.venv\Scripts\python.exe -m pytest -q
 
 # Run by architectural layer or execution tag
 .\.venv\Scripts\python.exe -m pytest -m unit -q        # 128 pure unit tests (no DB / no FFmpeg)
-.\.venv\Scripts\python.exe -m pytest -m api -q         # 131 FastAPI + SQLite integration tests
+.\.venv\Scripts\python.exe -m pytest -m api -q         # 140 FastAPI + SQLite integration tests
 .\.venv\Scripts\python.exe -m pytest -m pipeline -q    # 170 pipeline, AI provider fake & FFmpeg tests
 .\.venv\Scripts\python.exe -m pytest -m security -q    # 66 auth, CSRF, headers, FFmpeg SSRF & upload tests
 .\.venv\Scripts\python.exe -m pytest -m smoke -q       # 53 critical-path smoke tests
@@ -422,11 +425,11 @@ cd backend
 - **`tests/pipeline/`**: End-to-end pipeline on generated FFmpeg clips, Whisper threading/OOM fallback/cancellation, Gemini/LLM batching/retries/Flex tier fallback, FinOps dHash pre-filtering & Ollama local pre-tagging, OCR & tactical comms boost, foreign speech, sync alignment/burned-in detection, gap recovery, word snapping, video embedding, and per-job logging.
 - **`tests/security/`**: Per-launch session token (`X-SubBuild-Token` & HttpOnly cookie) and UNC path refusal, CSRF Origin/Fetch-Metadata & Host validation, anti-framing/CSP security headers, FFmpeg `-protocol_whitelist file` & AST audit, and `Content-Length` upload limits.
 
-### 2. Frontend Checks & Tests (`frontend/`, 11 tests)
+### 2. Frontend Checks & Tests (`frontend/`, 13 tests)
 ```powershell
 cd frontend
 npm run lint    # oxlint
-npm test        # Vitest + React Testing Library (11 tests)
+npm test        # Vitest + React Testing Library (13 tests)
 npm run build   # tsc -b + vitest run + vite build
 ```
 
@@ -455,8 +458,8 @@ mvn test -Pregression "-Dsubbuild.headless=true"
 - **Branch flow (`staging` → `main`):** feature/fix branches are merged into **`staging`** first; every push there runs the full automation (GitHub Actions + Jenkins: pytest, frontend checks, Java RestAssured/Selenium). Only a green `staging` is merged into `main` (open the PR `staging` → `main`).
 - **Self-Hosted Jenkins CI (Raspberry Pi 4 8GB, Linux `aarch64`):** Configured via [`Jenkinsfile`](Jenkinsfile) and triggered automatically on pushes to `staging` and `main` via **GitHub Webhook** (plus manual parameterized runs with `JAVA_PROFILE=regression|smoke`, `RUN_BACKEND_PYTEST`, and `RUN_FRONTEND_CHECKS`).
   1. **Preflight Check:** Verifies `python3`, `node`, `npm`, `java`, `mvn`, `ffmpeg`, and `chromium`/`chromedriver`.
-  2. **Backend Pytest (`495` tests):** Provisions `backend/.venv` (filtering out `nvidia-*` CUDA packages, cached by `requirements.txt` SHA-256) and emits JUnit XML.
-  3. **Frontend Checks & Build (`11` Vitest + Vite `dist`):** Runs `npm ci`, `oxlint`, `tsc -b`, `vitest run`, and `vite build` so `backend/app/main.py` serves `frontend/dist` for Selenium tests.
+  2. **Backend Pytest (`504` tests):** Provisions `backend/.venv` (filtering out `nvidia-*` CUDA packages, cached by `requirements.txt` SHA-256) and emits JUnit XML.
+  3. **Frontend Checks & Build (`13` Vitest + Vite `dist`):** Runs `npm ci`, `oxlint`, `tsc -b`, `vitest run`, and `vite build` so `backend/app/main.py` serves `frontend/dist` for Selenium tests.
   4. **Java Black-Box QA (`52` regression / `9` smoke):** Executes `mvn -B clean test -P"${JAVA_PROFILE}" -Dsubbuild.headless=true -Dsubbuild.timeoutSeconds=30`, then publishes unified JUnit results and archives `ExtentReports` HTML + failure screenshots.
 - **Cross-Platform Driver & Headless Resolution (`TestConfig` + `DriverFactory`):** Auto-enables `--headless=new` in `CI`/`JENKINS_URL`/`GITHUB_ACTIONS` or display-less Linux environments; preserves Selenium Manager on Windows and GitHub Actions (`ubuntu-latest` `x86_64`), and automatically falls back to OS-packaged `/usr/bin/chromium` + `/usr/bin/chromedriver` on Linux ARM64 (`aarch64`).
 - **GitHub Actions ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)):** Runs backend `pytest` + `pip-audit` and frontend `npm audit` + `oxlint` + `vitest` + `vite build` on `ubuntu-latest` (`main`, PRs, and weekly schedule).
