@@ -122,7 +122,7 @@ class RegressionUiTest extends BaseTest {
     @DisplayName("Help & Q&A screen renders 4 workflow steps, interactive FAQ accordion, and navigates back")
     void helpScreenAndFaqAccordion() {
         HelpPage help = openStudio().sidebar().openHelp();
-        assertEquals(6, help.getFaqCount());
+        assertEquals(8, help.getFaqCount());
         help.toggleFaqItem(1);
         IngestPage back = help.backToStudio();
         assertEquals("transcribe", back.getSelectedMode());

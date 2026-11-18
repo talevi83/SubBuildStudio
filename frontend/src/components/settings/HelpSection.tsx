@@ -13,6 +13,8 @@ const FAQ_KEYS: { q: MessageKey; a: MessageKey }[] = [
   { q: 'settings.help.q4', a: 'settings.help.a4' },
   { q: 'settings.help.q5', a: 'settings.help.a5' },
   { q: 'settings.help.q6', a: 'settings.help.a6' },
+  { q: 'settings.help.q7', a: 'settings.help.a7' },
+  { q: 'settings.help.q8', a: 'settings.help.a8' },
 ];
 
 const WORKFLOW_STEPS: { title: MessageKey; text: MessageKey }[] = [
