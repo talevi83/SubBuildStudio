@@ -38,6 +38,8 @@ public class SettingsPage extends BasePage {
     private static final By OLLAMA_PRESET_CLOUD = By.cssSelector("[data-testid='ollama-preset-cloud']");
     private static final By OLLAMA_BASE_URL_INPUT = By.cssSelector("[data-testid='provider-key-baseurl-input']");
     private static final By APPLY_PROVIDER_ALL_BTN = By.cssSelector("[data-testid='apply-provider-all-btn']");
+    private static final By CHECK_UPDATES_BTN = By.cssSelector("[data-testid='check-updates-btn']");
+    private static final By UPDATE_STATUS_TEXT = By.cssSelector("[data-testid='update-status-text']");
 
     public SettingsPage(WebDriver driver) {
         super(driver);
@@ -250,6 +252,18 @@ public class SettingsPage extends BasePage {
 
     public String getStepBenchmarksText(String step) {
         return waitVisible(By.cssSelector("[data-testid='model-card-" + step + "-benchmarks']")).getText();
+    }
+
+    public boolean isCheckUpdatesButtonVisible() {
+        return isDisplayedQuick(CHECK_UPDATES_BTN, Duration.ofSeconds(3));
+    }
+
+    public SettingsPage clickCheckUpdates() {
+        WebElement btn = waitClickable(CHECK_UPDATES_BTN);
+        scrollIntoView(btn);
+        btn.click();
+        waitVisible(UPDATE_STATUS_TEXT);
+        return this;
     }
 
     public IngestPage backToStudio() {

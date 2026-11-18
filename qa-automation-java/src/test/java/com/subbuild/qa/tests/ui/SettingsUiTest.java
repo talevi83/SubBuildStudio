@@ -64,6 +64,10 @@ class SettingsUiTest extends BaseTest {
         Response persisted = api.getSettings();
         assertEquals(!saverBefore, persisted.jsonPath().getBoolean("settings.cost_saver_mode"));
 
+        // Updater section is visible and Check Updates button is responsive
+        assertTrue(settings.isCheckUpdatesButtonVisible());
+        settings.clickCheckUpdates();
+
         // Navigate back to Ingest screen cleanly
         settings.backToStudio();
     }

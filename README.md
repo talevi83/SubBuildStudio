@@ -13,7 +13,7 @@
 
 1. **Unified Zero-Copy Local Ingest, Stream Discovery & Embedded Subtitle Extraction:**
    - **Unified Ingest Dropzone & Path Input:** Drag & drop a video file directly onto the studio, click to browse, or paste a local path in one unified view.
-   - **Recommended — Use the Desktop App Window (`SubBuild Studio.exe` / `run.bat`):** In the desktop window (Edge WebView2 / `pywebview`), dragging & dropping a video or clicking to browse resolves the file's **direct local path** on disk (`CoreWebView2File.Path` / native file dialog) without uploading or copying a single byte to temp, and preserves the video's folder for **Save next to video**.
+   - **Recommended — Use the Desktop App Window (`run.bat` / `./run.sh --window`):** In the desktop window (Edge WebView2 / `pywebview`), dragging & dropping a video or clicking to browse resolves the file's **direct local path** on disk (`CoreWebView2File.Path` / native file dialog) without uploading or copying a single byte to temp, and preserves the video's folder for **Save next to video**.
    - Right-click the path field for a one-item **Paste** menu (also works in the desktop window, where it reads the clipboard through the app).
    - Discovers all video, audio, and embedded subtitle tracks via `ffprobe` and lets you select the exact audio or text-based dialogue subtitle stream to use.
    - **Use Embedded Subtitles Toggle (`use_embedded_subtitles`):** When the video has an embedded text-based dialogue track (e.g., SRT/ASS/WebVTT inside an MKV), SubBuild extracts it directly for instant, studio-accurate timing without waiting for full Whisper transcription — or you can switch it off to force fresh Whisper transcription from the audio.
@@ -102,19 +102,10 @@
 
 ---
 
-## ⚙️ Settings, Models & Pricing
+## 🎛️ Studio Quality, Timing & Gender Tools
 
-Open **Settings** (bottom of the sidebar — its compact status badge tracks readiness across all 3 active pipeline steps at a glance). The screen uses a clean, single-page **Bento layout** designed to eliminate clutter and remove duplication with per-video job setup:
+Tools available inside the interactive Studio Editor and Whisper refinement pipeline:
 
-- **Compact Header & Appearance Bar** — interface language (Hebrew / English, with full RTL layout in Hebrew), Dark / Light theme, and *Back to studio* in one streamlined header row.
-- **Multi-Provider AI Key Vault (`ApiKeySection`)** — auto-collapsed when keys are configured (plus first-run onboarding modal when no AI key exists yet). Tabbed management panel (`GET/POST /api/settings/keys`, `PUT/DELETE /api/settings/keys/{key_id}`, `POST /api/settings/providers/refresh`) supporting **Google Gemini**, **OpenAI**, **Anthropic Claude**, and **Ollama (Local / Cloud)** with multiple named keys per provider, default key selection, direct "Get API Key" links, masked secret previews (`AIza••••••••abcd`), and automatic live model discovery.
-- **AI models per Pipeline Step (3-Column Stage Grid)** — *Translation*, *Glossary pass*, and *On-screen text (vision)* appear side-by-side on desktop (plus frame detail resolution inside Vision). Pick provider, optional key, model, thinking level (for Google Gemini), and Flex mode per step, saved to `storage/settings.json`.
-  - **Zero Duplication with Setup (`PipelineConfig`):** Per-video formatting and content options (*Convert to metric*, *Remove SDH speaker names*, *Smart end-credits filter*, and default *On-screen OCR text position*) live exclusively in the post-video **Setup** screen (where **Genre Presets** also configure them per movie/episode) rather than duplicating controls in Settings.
-  - **Strict live & task filtering:** Each dropdown displays only verified models returned by your configured key(s) that are actually capable of that pipeline step (e.g., retired Gemini 2.x/image/omni/latest aliases, OpenAI `-pro`/`-codex`/`search-api` and redundant dated snapshots, diffusion models, and sub-7B local models are excluded from translation). Local Ollama models query `/api/show` to discover native `vision` capability and parameter sizes.
-  - **Best-Value (Cost / Quality) Auto-Selector:** One-click optimizer button (*Auto-select best value (Cost / Quality)*) inspects all configured keys across all providers, compares episode costs including Google **Flex (`-50%`)**, and assigns the lowest-cost recommended model per stage (enabling Flex automatically when Google Flex wins). Includes an optional GPU/VRAM-aware **"Include free Local AI"** checkbox that only selects recommended local models (`>= 6.5B`) fitting your detected CUDA VRAM (`8GB -> <=12.5B`, `12GB -> <=16B`, etc.) and explains any local models skipped as too heavy.
-  - **Episode & movie cost benchmarks:** Each model card shows estimated ~45m episode and ~120m movie costs before running (local Ollama shows `$0.00`).
-  - **Flex mode** (Google Gemini steps): sends requests with `service_tier="flex"` at 50% of the Standard price when Google has spare capacity, with automatic fallback to Standard on repeated busy errors (`429`/`503`).
-  - **Test models** sends a tiny request to each configured step (including an image for Vision, over Flex when Flex is on) to confirm your active key/daemon can run it (`POST /api/settings/check`).
 - **Missed-speech recovery** (on by default, `WHISPER_GAP_RECOVERY=false` to disable): the voice detector (Silero VAD) misses speech under gunfire, engines, music and radio filtering, so Whisper never hears it. After transcription, Whisper re-listens *without* VAD to every stretch no subtitle covers and keeps only lines that pass strict hallucination checks; each kept/rejected line is listed in the project log. Shouted commands ("Fire!", "Go, go, go!", "Cease fire!") are judged by their own words rather than the noisy window's confidence, and repeats of a neighbouring command are kept.
 - **Subtitle start alignment** (on by default, `WHISPER_SNAP_STARTS=false` to disable): Whisper's word timestamps ignore silence, so a word that follows a pause is stamped right after the previous word and the subtitle can appear a second or two before anyone speaks. After transcription, Silero VAD finds where speech really begins and any word that spans a silent gap (0.4s or longer) is moved to just before the speech that follows it (starts are only ever moved later, and speech the detector misses is left as Whisper timed it). The job log shows how many word starts were moved.
 - **Re-check timing (finished jobs)**: the *Re-check timing* button above the table re-extracts the audio, runs voice-activity detection over the whole video and moves every subtitle that starts in a silence shortly before speech to just before that speech (text and on-screen cues are never touched; there is an *Undo* right after). Results are cached in `storage/regions`. The API is `POST /api/jobs/{id}/retime`.
@@ -125,17 +116,26 @@ Open **Settings** (bottom of the sidebar — its compact status badge tracks rea
 - **Series glossary profiles**: give a show a name (in the setup screen, or in the *Characters & terms* window) and its characters, genders, name spellings and terms are saved under `storage/glossaries/`. Later episodes that use the same name start from that list (it is treated as authoritative), the glossary pass only adds characters and terms that are new, and the profile grows with every episode. The API is `GET /api/glossary-profiles`.
 - **Check quality**: a button above the table scans the translation without calling any model and lists untranslated Latin words, names/terms that differ from the glossary, "את/אתה" pronoun and verb mismatches, and missing translations. Click an item to jump to the row, or select all the flagged rows and re-translate them. The API is `GET /api/jobs/{id}/qa`.
 - **Detect from video**: in the "re-translate with note" window (`RowTranslateDialog`), only available translation-capable models from your active keys are shown (with provider labels, and Thinking levels shown for Google Gemini models); clicking *Detect from video* sends 2-3 frames around the selected rows plus their dialogue to the Vision AI provider and fills in the speaker and addressee gender. The API is `POST /api/jobs/{id}/detect-speakers`.
-- **Storage, Diagnostics & Feedback (2-Column Bento Row):** **Storage and cleanup** (`GET /api/storage`, `POST /api/storage/clean`) shows storage categories in a compact 2×3 card grid (protecting source folders, running jobs, and `server.log`), paired side-by-side with **Diagnostics** (*Download server log* `storage/logs/server.log`) and bug/feature links. Every project also keeps its own detailed log (`storage/logs/jobs/<job>.log`) accessible via the **Log** button in the studio.
-  - Flex: after 2 requests in a row fall back to Standard, the rest of the job uses Standard for that model.
-- **Cost-Saver Mode & Cost Estimator (2-Column Bento Row):**
-  - **Cost Estimator (collapsible):** per-step requests, tokens and dollars for a video of any length, recalculated live as you change models (before saving), paired beside Cost-Saver Mode. The setup screen also shows the estimate for the loaded file.
-  - **Cost-Saver Mode & Ollama Local AI** (default off, with collapsible setup guide & CLI instructions):
-    - Pre-filters sampled frames locally using Pillow edge detection and 64-bit dHash perceptual hashing, filtering out ~75–80% of textless frames before calling cloud/local Vision.
-    - Automatically unloads Faster-Whisper from GPU memory right after transcription to free VRAM for local models.
-    - Automatically pre-tags ambiguous pronouns (`you`, `I am`) using a local Ollama model (e.g. `qwen2.5:7b`), eliminating cloud token overhead for gender disambiguation.
-    - Features live Ollama service & model status, a download link to the official installer, a one-click button that starts Ollama and pulls the model (`POST /api/settings/ollama/setup`), and a collapsible details drawer with manual CLI links for advanced users.
-- **Live & Post-Run Token & Local AI Savings Breakdown**:
-  - Live studio monitor bar and final run summary display per-model token usage (input, output, thinking) across active providers, Ollama local queries handled, and total frames/tokens saved by local pre-filtering.
+
+---
+
+## ⚙️ Settings, Models & Pricing
+
+Open **Settings** (bottom of the sidebar — its compact status badge tracks readiness across all 3 active pipeline steps at a glance). The screen is organized into a clean, single-page **4-Row Bento layout** designed to eliminate clutter and remove duplication with per-video job setup:
+
+- **Compact Header & Appearance + Local AI Row (Row 1):**
+  - **Appearance Card:** Interface language (Hebrew / English, with full RTL layout in Hebrew), Dark / Light theme, and *Back to studio* shortcut.
+  - **Local AI & Cost-Saver Mode Card (`cost_saver_mode`, off by default):** Pre-filters sampled frames locally using Pillow edge detection and 64-bit dHash (~75–80% Vision token savings), unloads Faster-Whisper from GPU VRAM after transcription, and auto-tags ambiguous pronouns via local Ollama (`qwen2.5:7b`). Includes live Ollama status, official download link, one-click daemon startup/pull (`POST /api/settings/ollama/setup`), and a collapsible details drawer with manual CLI instructions.
+- **Multi-Provider AI Key Vault (`ApiKeySection`, Row 2):** Auto-collapsed when keys are already loaded (plus a first-run onboarding modal when no AI key exists yet). Tabbed panel (`GET/POST /api/settings/keys`, `PUT/DELETE /api/settings/keys/{key_id}`, `POST /api/settings/providers/refresh`) supporting **Google Gemini**, **OpenAI**, **Anthropic Claude**, and **Ollama (Local / Cloud)** with multiple named keys per provider, default selection, custom base URL / **Ollama Cloud** preset, masked secret previews (`AIza••••••••abcd`), direct "Get API Key" links, and live model discovery.
+- **AI Models per Pipeline Step, Best-Value Optimizer & Cost Estimator (Row 3):**
+  - **Best-Value (Cost / Quality) Auto-Selector:** One-click optimizer (*Auto-select best value (Cost / Quality)*) inspects all configured keys across all providers, compares episode costs including Google **Flex (`-50%`)**, and assigns the lowest-cost recommended model per stage (enabling Flex automatically when Google Flex wins). Includes an optional GPU/VRAM-aware **"Include free Local AI"** checkbox that selects recommended local models (`>= 6.5B`) fitting your detected CUDA VRAM and explains any skipped heavy models.
+  - **3-Column AI Stage Cards:** *Translation*, *Glossary pass*, and *On-screen text (vision)* appear side-by-side on desktop (plus Vision frame detail resolution). Pick provider, optional key, model, thinking level (Google Gemini), and Flex mode per step (`storage/settings.json`), with estimated ~45m episode and ~120m movie cost badges (`$0.00` for local Ollama), suitability warnings, and strict live/task capability filtering (`/api/show` vision & size checks for Ollama).
+  - **Test models & Flex fallback:** *Test models* sends a tiny test request to each configured step (`POST /api/settings/check`); Google Flex sends requests with `service_tier="flex"` at 50% off Standard and automatically falls back to Standard after repeated busy errors (`429`/`503`).
+  - **Collapsible Cost Estimator:** Interactive per-step request, token, and USD calculator for any video length, updating live before saving (the Setup screen also displays the estimate for your loaded file).
+  - **Zero Duplication with Setup (`PipelineConfig`):** Per-video formatting and content options (*Convert to metric*, *Remove SDH speaker names*, *Smart end-credits filter*, and default *On-screen OCR text position*) live exclusively in the post-video **Setup** screen (controlled by **Genre Presets**) rather than duplicating controls in Settings.
+- **Storage, Diagnostics, Updater & Feedback (Row 4):**
+  - **Storage & Cleanup (`GET /api/storage`, `POST /api/storage/clean`):** Compact 2×3 category grid protecting source folders, active jobs, and `server.log`.
+  - **Diagnostics, Auto-Updater & Feedback:** *Download server log* (`storage/logs/server.log`), **Software Version & Updates** (shows installed version/commit, checks GitHub Release tags `vX.Y.Z` via `POST /api/system/update/check`, and applies release updates via `POST /api/system/update/apply` when no jobs are active), plus *Report a Bug* and *Request a Feature* links.
 
 Pricing covers Google Gemini (paid tier + dated promotions in `backend/app/core/model_catalog.py`), OpenAI (including GPT-5.4 / GPT-6 tiers & image billing rules), Anthropic Claude, and `$0.00` local Ollama in `backend/app/core/provider_catalog.py`. Every job records exact tokens and cost per step in `Job.usage_json`.
 
@@ -152,15 +152,15 @@ SubBuild Studio/
 ├── install.bat / run.bat       # One-click Windows installer & launcher
 ├── install.sh / run.sh         # One-click Linux & macOS installer & launcher
 ├── install.command / run.command # Double-clickable macOS Finder wrappers
-├── build_exe.bat               # Builds the standalone desktop app (dist\SubBuild Studio\)
-├── packaging/                  # Tray launcher, PyInstaller spec, icon, FFmpeg download script
+├── VERSION                     # Semantic version baseline used by the Git/Release auto-updater
+├── packaging/                  # Source-based desktop window & tray launcher, icon generator, desktop shortcuts
 ├── backend/
 │   ├── .env.example            # Configuration template (copy to .env)
 │   ├── requirements.txt        # Python dependencies (incl. CUDA cuBLAS/cuDNN wheels)
 │   ├── app/
 │   │   ├── main.py             # FastAPI app: CORS, trusted hosts, CSRF guard, routers, startup discovery, WebSocket
-│   │   ├── api/                # Routes: system, media, jobs, export, settings (+ key vault), glossary profiles, storage
-│   │   ├── core/               # Config, SQLite DB, hardware/VRAM detection, WS manager, model_catalog,
+│   │   ├── api/                # Routes: system (+ updater), media, jobs, export, settings (+ key vault), glossary profiles, storage
+│   │   ├── core/               # Config, SQLite DB, hardware/VRAM detection, WS manager, updater, model_catalog,
 │   │   │                       #   provider_keys, provider_catalog, model_discovery, user_settings, glossary_profiles,
 │   │   │                       #   job_logging, housekeeping, storage_cleanup, ollama_setup
 │   │   ├── models/             # SQLModel tables & Pydantic schemas
@@ -221,7 +221,7 @@ Interactive docs are at `http://localhost:8000/docs` while the server runs.
 
 | Area | Endpoints |
 |---|---|
-| System | `GET /api/system/info` (hardware/VRAM, provider summaries, models), `GET /api/system/log` (server log) |
+| System | `GET /api/system/info` (version, update status, hardware/VRAM, provider summaries, models), `GET /api/system/update/status`, `POST /api/system/update/check`, `POST /api/system/update/apply`, `GET /api/system/log` (server log) |
 | Media | `POST /api/media/probe-path`, `POST /api/media/upload`, `GET /api/media/upload/existing`, `GET /api/media/stream/{job_id}` (Range), `POST /api/media/parse-subtitles` (read a subtitle file to sync) |
 | Jobs | `POST/GET /api/jobs` (with `sync_cues` = a sync job), `GET/DELETE /api/jobs/{id}`, `DELETE /api/jobs` (clear all), `POST /api/jobs/bulk-delete`, `PATCH /api/jobs/{id}/settings` (live onscreen position), `POST /api/jobs/{id}/cancel`, `POST /api/jobs/{id}/translate` |
 | Editing | `POST /api/jobs/{id}/segments` (add a line), `DELETE /api/jobs/{id}/segments/{segment_id}` (delete a line), `DELETE /api/jobs/{id}/segments` (bulk delete lines), `PATCH /api/jobs/{id}/segments/{segment_id}`, `PATCH /api/jobs/{id}/segments` (bulk), `POST /api/jobs/{id}/segments/move`, `POST /api/jobs/{id}/retime` |
@@ -236,13 +236,15 @@ Interactive docs are at `http://localhost:8000/docs` while the server runs.
 
 ## 🚀 Quickstart Guide
 
+> 💡 **Fastest Setup (Recommended):** Skip manual steps below and just run **`install.bat`** (Windows) or **`./install.sh`** (macOS/Linux), then launch with **`run.bat`** / **`./run.sh`**. The launcher automatically sets up `backend/.venv`, initializes `backend/.env`, checks for GitHub Release updates, builds the frontend, and lets you enter all AI provider keys directly in the app.
+
 ### 1. Prerequisites
 - **Python 3.11+** (`run.bat` uses 3.12)
 - **Node.js 20.19+ or 22.12+** & npm (required by Vite 8)
 - **FFmpeg & FFprobe** installed and accessible on PATH
 - **Optional:** an NVIDIA GPU for fast transcription. The CUDA cuBLAS/cuDNN runtime comes from `requirements.txt`, so no separate CUDA install is needed; without a GPU Whisper runs on the CPU (INT8).
 
-### 2. Backend Setup
+### 2. Backend Setup (Manual)
 ```bash
 # Navigate to backend directory
 cd backend
@@ -255,37 +257,38 @@ uv venv --python 3.12 .venv
 # Install dependencies
 uv pip install -r requirements.txt
 
-# Configure environment variables
+# Initialize default .env file
 cp .env.example .env
 ```
 
-Edit `backend/.env` (optional if managing keys in the Settings UI) to configure defaults or a Google Gemini API key:
+`backend/.env` is **purely optional** for overriding low-level server, network, or Whisper hardware defaults (for example):
 ```env
-GEMINI_API_KEY=your_gemini_api_key_here
 WHISPER_DEFAULT_MODEL=medium
 WHISPER_DEVICE=auto
+HOST=127.0.0.1
+PORT=8000
 ```
 
-AI provider keys (Google Gemini, OpenAI, Anthropic, Ollama), per-stage models, thinking levels (Translation, Glossary, and Vision), and Best-Value auto-selection are configured in the app's **Settings** screen (saved to `storage/provider_keys.json` and `storage/settings.json`).
+All AI provider API keys (**Google Gemini**, **OpenAI**, **Anthropic Claude**, and **Ollama Local / Cloud**), per-stage models, thinking levels (Translation, Glossary, and Vision), and Best-Value auto-selection are configured directly inside the app's **Settings** screen (saved to `storage/provider_keys.json` and `storage/settings.json`; optional legacy `GEMINI_API_KEY` in `.env` still works as a fallback if no vault keys exist).
 
-Optional settings (defaults shown):
+Optional environment defaults (fallback defaults — per-stage AI models, Cost-Saver, and per-job formatting toggles are configured in the in-app **Settings** and **Setup** screens):
 
 | Setting | Default | What it does |
 |---|---|---|
 | `WHISPER_DEVICE` / `WHISPER_COMPUTE_TYPE` | `auto` / `auto` | `cuda` or `cpu`; `float16` or `int8`. `auto` picks CUDA FP16 when a GPU is found, otherwise CPU INT8. |
 | `WHISPER_BATCH_SIZE` | `8` | Batched GPU inference. Lower if you run out of VRAM; `0` = sequential. |
-| `WHISPER_GAP_RECOVERY` | `true` | Missed-speech recovery (see Settings above). |
-| `WHISPER_SNAP_STARTS` | `true` | Subtitle start alignment (see Settings above). |
+| `WHISPER_GAP_RECOVERY` | `true` | Missed-speech recovery (see Studio Quality tools above). |
+| `WHISPER_SNAP_STARTS` | `true` | Subtitle start alignment (see Studio Quality tools above). |
 | `MAX_CONCURRENT_TRANSCRIPTIONS` | `1` | Jobs allowed on the GPU at once (others wait as *Queued*). |
-| `GEMINI_BATCH_SIZE` | `120` | Subtitle lines per translation request. |
-| `GEMINI_GLOSSARY_PASS` | `true` | Build a character/terminology glossary before translating. |
-| `COST_SAVER_MODE` | `false` | Enable local frame pre-filtering, Whisper VRAM unloading, and local Ollama pre-tagging. |
-| `ALLOW_ONSCREEN_OVERLAP` | `true` | Allow on-screen OCR titles to display concurrently with dialogue subtitles. |
-| `ONSCREEN_POSITION` | `top_center` | Default screen position for on-screen OCR text (`top_center`, `middle_center`, `middle_right`, `middle_left`, `top_right`, `top_left`). |
-| `CONVERT_TO_METRIC` | `false` | Convert non-metric units (miles, feet, pounds, Fahrenheit, etc.) to metric equivalents during translation. |
-| `REMOVE_SDH_SPEAKERS` | `false` | Strip hearing-impaired speaker labels (`JOHN:`) and sound cues (`[sighs]`) from dialogue while keeping `[ON_SCREEN]` titles. |
-| `SKIP_END_CREDITS` | `true` | Automatically skip end-credits rolls and closing songs while preserving mid-credits and post-credits scenes. |
-| `GEMINI_VISION_MODEL` | `gemini-3.5-flash-lite` | Initial model that reads on-screen text from frames. |
+| `GEMINI_BATCH_SIZE` | `120` | Default batch line budget fallback for Gemini translation requests. |
+| `GEMINI_GLOSSARY_PASS` | `true` | Default fallback: build a character/terminology glossary before translating. |
+| `COST_SAVER_MODE` | `false` | Default fallback for local frame pre-filtering, Whisper VRAM unloading, and Ollama pre-tagging (managed in Settings). |
+| `ALLOW_ONSCREEN_OVERLAP` | `true` | Default fallback allowing on-screen OCR titles to display concurrently with dialogue subtitles. |
+| `ONSCREEN_POSITION` | `top_center` | Default fallback screen position for on-screen OCR text (`top_center`, `middle_center`, `middle_right`, `middle_left`, `top_right`, `top_left`). |
+| `CONVERT_TO_METRIC` | `false` | Default fallback for converting imperial units to metric equivalents (controlled per job in Setup / Genre Presets). |
+| `REMOVE_SDH_SPEAKERS` | `false` | Default fallback for stripping hearing-impaired speaker labels (`JOHN:`) and sound cues (controlled per job in Setup / Genre Presets). |
+| `SKIP_END_CREDITS` | `true` | Default fallback for skipping end-credits rolls while preserving mid/post-credits scenes (controlled per job in Setup / Genre Presets). |
+| `GEMINI_VISION_MODEL` | `gemini-3.5-flash-lite` | Legacy fallback vision model when no stage model is selected in `storage/settings.json`. |
 | `ONSCREEN_FRAME_INTERVAL` / `ONSCREEN_MAX_FRAMES` | `2.0` / `660` | Frame sampling interval (s) and max frames sent to Vision AI (scaled per sensitivity level 1–3). Frame extraction uses GPU acceleration (`-hwaccel auto`). |
 | `ONSCREEN_BATCH_SIZE` | `12` | Frames per Vision AI request. |
 | `MAX_CHARS_PER_LINE` | `42` | Line length limit for refinement and export. |
@@ -298,6 +301,7 @@ Optional settings (defaults shown):
 | `ALLOWED_HOSTS` | `["localhost","127.0.0.1","[::1]"]` | Host names the server answers to (blocks DNS-rebinding attacks). Add your PC's LAN name/IP if you set `HOST=0.0.0.0`. |
 | `CORS_ORIGINS` | `["http://localhost:8000", "http://127.0.0.1:8000"]` | Browser origins allowed to use the API. State-changing requests and WebSockets from any other website are rejected (CSRF guard); the studio's own page is always allowed. |
 | `SUBBUILD_DEV` | `false` | Development only: also trust the Vite dev server (`http://localhost:5173`, `http://127.0.0.1:5173`). Off by default, so another program on port 5173 can't drive the installed app. |
+| `SUBBUILD_NO_UPDATE` | `0` | Set to `1` (or pass `--no-update` to `run.bat`/`run.sh`) to skip the pre-launch Git Release auto-update check. |
 | `SUBBUILD_TOKEN` | random per launch | Session token. Every `/api` and `/ws` request needs it (as an HttpOnly cookie set by opening `/?token=<token>` once, or an `X-SubBuild-Token` header), so other programs, other Windows accounts and the LAN can't use the API. The desktop app and `run.bat` / `run.sh` set it for you; set it yourself only for development. |
 
 API keys saved in the Settings Key Vault (or the first-run dialog) are persisted to `storage/provider_keys.json` (and legacy Google keys via `/api/settings/api-key` also write to `.env`). A key typed on the Ingest screen for a single job is used in memory for that run only and is never written to disk.
@@ -318,10 +322,10 @@ npm run build
 
 ## 🏃 Running the Application
 
-> 💡 **Recommendation for Best Experience:** Always prefer running SubBuild Studio in its **native desktop window** (`SubBuild Studio.exe`, `run.bat`, or `./run.sh --window`) rather than a regular web browser. In the desktop window, dragging & dropping a video or clicking to browse reads the file's **direct local path** in place (0 seconds wait, 0 GB copied to temp/uploads, and full support for *Save next to video*), clipboard paste works without browser permission prompts, and video fullscreen controls the window directly.
+> 💡 **Recommendation for Best Experience:** Always prefer running SubBuild Studio in its **native desktop window** (`run.bat` or `./run.sh --window`) rather than a regular web browser. In the desktop window, dragging & dropping a video or clicking to browse reads the file's **direct local path** in place (0 seconds wait, 0 GB copied to temp/uploads, and full support for *Save next to video*), clipboard paste works without browser permission prompts, and video fullscreen controls the window directly.
 
 ### Option A1: One-click (Windows — Recommended)
-Run `install.bat` (first-time setup) or simply double-click `run.bat`. During installation, you will be prompted to create a desktop shortcut with the official SubBuild Studio icon. The launcher creates the virtual environment if needed, rebuilds the frontend whenever its sources changed, and opens the studio in its own app window (Edge WebView2, no browser, no console) with a tray icon. Your API key and projects stay in `backend\.env` and `backend\storage`. Run `run.bat --browser` to get the console server and open the studio in your browser.
+Run `install.bat` (first-time setup) or simply double-click `run.bat`. During installation, you will be prompted to create a desktop shortcut with the official SubBuild Studio icon. Before starting the server, the launcher automatically checks Git for newer published release tags (`vX.Y.Z`) (skip with `--no-update` or `SUBBUILD_NO_UPDATE=1`), rebuilds the frontend whenever its sources changed, and opens the studio in its own app window (Edge WebView2, no browser, no console) with a tray icon. Your API keys, model settings, and projects stay in `backend\storage` (`provider_keys.json`, `settings.json`, `subbuild.db`). Run `run.bat --browser` to get the console server and open the studio in your browser.
 
 ### Option A2: One-click (Linux & macOS)
 Run the installer once, then start the studio with `./run.sh` (or on macOS, double-click `install.command` and `run.command` directly in Finder). During installation, the installer offers to add SubBuild Studio directly to your Applications menu (Launchpad on macOS / application launcher on Linux) with the official application icon:
@@ -329,7 +333,7 @@ Run the installer once, then start the studio with `./run.sh` (or on macOS, doub
 # First-time setup (checks/installs prerequisites, creates backend/.venv, .env, builds frontend, and installs app shortcut):
 ./install.sh
 
-# Start SubBuild Studio (auto-rebuilds frontend if modified and opens http://localhost:8000):
+# Start SubBuild Studio (checks Git for updates, auto-rebuilds frontend if modified, and opens http://localhost:8000):
 ./run.sh
 ```
 Pass `./install.sh --desktop` and `./run.sh --window` if you want the native `pywebview` desktop window instead of opening in the browser. Pass `./run.sh --no-browser` to start the server without opening a browser tab. To manually add or remove desktop shortcuts anytime, run `python packaging/create_shortcut.py` (or `--remove`).
@@ -361,32 +365,27 @@ Then open **`http://localhost:5173/api/session?token=dev-token`** once: it signs
 
 ---
 
-## 📦 Desktop App (Standalone EXE)
+## 🔄 Desktop Window & Auto-Updater
 
-`build_exe.bat` turns the project into a standalone Windows program: a folder with **`SubBuild Studio.exe`** that includes Python, every library, the built frontend, FFmpeg and the NVIDIA CUDA runtime. The target PC needs no Python, Node or FFmpeg (only an NVIDIA driver for GPU transcription). The studio opens in **its own window** (pywebview on Microsoft Edge WebView2, which comes with Windows 10/11).
+SubBuild Studio runs directly from the Git repository via `run.bat` (Windows) or `./run.sh` (macOS/Linux) with `packaging/launcher.py` (Edge WebView2 `pywebview` window + `pystray` tray icon), eliminating multi-gigabyte PyInstaller binary rebuilds while keeping upgrades near-instant.
 
-### Build
-Requires the same tools as the Quickstart (Python or `uv`, Node.js). Double-click **`build_exe.bat`**. It:
-1. installs the backend and build dependencies (`packaging/requirements-build.txt`: PyInstaller, pystray, Pillow, pywebview) into `backend\.venv`;
-2. builds the frontend;
-3. downloads a static FFmpeg build into `packaging\ffmpeg` (once; put your own `ffmpeg.exe` + `ffprobe.exe` there to skip it);
-4. packages everything with PyInstaller (`packaging/subbuild.spec`) into **`dist\SubBuild Studio\`**;
-5. copies `backend\.env` (your API key) to the app's data folder if that folder has none yet.
+### Automatic Updates (`VERSION`, `backend/app/core/updater.py`)
+1. **Pre-launch check (`run.bat` / `run.sh`):** Every launch invokes `python -m app.core.updater --auto --no-frontend-build` before checking frontend builds and starting the server.
+   - Compares local [`VERSION`](VERSION) and Git tags against published `origin` semver release tags (`vX.Y.Z`) only, ignoring raw unreleased commits on development/main branches.
+   - **Offline & developer-safe:** Network errors never block startup. In `--auto` mode, pulls are skipped automatically if you are on a feature branch (non-`main`) or have uncommitted tracked edits (`dirty_worktree`), and `--ff-only` prevents unexpected merges.
+   - **Dependency & UI sync:** Automatically syncs `requirements.txt` changes if updated, while `run.bat` / `run.sh` rebuild `frontend/dist` whenever frontend files change.
+   - **Skip update check:** Pass `--no-update` (`run.bat --no-update` / `./run.sh --no-update`) or set `SUBBUILD_NO_UPDATE=1`.
+2. **In-app version badge & Settings updater:**
+   - The **Sidebar** displays the installed version badge and highlights available releases with one click to Settings.
+   - In **Settings → Diagnostics**, click **Check for updates** (`POST /api/system/update/check`) to view remote release version & notes, and **Update now** (`POST /api/system/update/apply`) to pull & rebuild cleanly (refused with `409 Conflict` if any pipeline job is currently active).
 
-The output is about 2-3 GB, mostly the NVIDIA libraries. Copy or move the **whole** `dist\SubBuild Studio` folder; the exe needs the `_internal` folder next to it.
-
-### Using it
-- Run `SubBuild Studio.exe`: a SubBuild Studio window opens right away (with a short loading screen while the server starts) and an icon appears in the system tray. Running the exe again while it's open brings the existing window to the front.
-- **The window** remembers its size. Exports ask where to save the file (*Save as*, starting in Downloads), and the video player's fullscreen makes the whole window fullscreen. Closing the window quits the app; if a project is still running it asks first: *Yes* quits (the project can be resumed later), *No* keeps working in the background with only the tray icon, *Cancel* goes back.
-- **Tray menu** (right-click): *Open SubBuild Studio* (or just click the icon), *Open in browser*, *Open data folder*, *Edit settings (.env)*, *Server log*, *Restart server* (after editing `.env`) and *Quit*. Quit and Restart ask first if a project is still running.
-- **Browser instead of a window:** start the exe with `--browser` (or set the environment variable `SUBBUILD_UI=browser`). If WebView2 is missing, the studio opens in the browser automatically (the reason is written to `launcher.log`); WebView2 can be installed from Microsoft (*Evergreen Runtime*).
-- **Data folder:** the `.env`, projects database, settings, logs, the window's size and the studio's own preferences (`webview\`) live in `%LOCALAPPDATA%\SubBuild Studio`, not in the program folder, so rebuilding or replacing the program never touches them. To keep everything next to the exe instead (portable mode), create an empty `data` folder beside `SubBuild Studio.exe`; the `SUBBUILD_HOME` environment variable overrides both.
-- **Upgrading from SubForge Studio:** the app was renamed. On first start it adopts the old data automatically: the `%LOCALAPPDATA%\SubForge Studio` folder is renamed to `SubBuild Studio`, `storage/subforge.db` becomes `subbuild.db`, the old `SUBFORGE_HOME` / `SUBFORGE_UI` variables still work, and the browser-stored preferences (language, theme, last pipeline settings) are carried over.
-- Startup errors are shown in a message box. Details are in `launcher.log` and `storage\logs\server.log` in the data folder.
-- Whisper models are downloaded on first use to the usual Hugging Face cache in your user profile, shared with the developer setup.
-- The launcher also runs from source, without building: `backend\.venv\Scripts\python.exe packaging\launcher.py` (`--browser` for browser mode, `--no-tray` to run in the console, `--no-browser` to skip opening the browser in browser mode).
-
-To change the icon, edit and run `packaging/make_icon.py` (it writes `packaging/icon.ico`).
+### Desktop Window & Tray Behavior (`packaging/launcher.py`)
+- Run via `run.bat` (or `./run.sh --window`, or `backend\.venv\Scripts\python.exe packaging\launcher.py`): opens a dedicated `pywebview` window with a loading screen while Uvicorn boots and adds a system tray icon. Launching a second instance brings the existing window to focus (`POST /api/desktop/show`).
+- **The window** remembers its size, uses native file pickers/drag-drop paths without temp copies, asks before overwriting or closing while a job is active (*Yes* quits cleanly, *No* keeps running in tray, *Cancel* returns), and supports full-screen video playback.
+- **Tray menu** (right-click): *Open SubBuild Studio*, *Open in browser*, *Open data folder*, *Edit settings (.env)*, *Server log*, *Restart server*, and *Quit*.
+- **CLI flags & environment fallbacks:** `--browser` (`SUBBUILD_UI=browser`) or missing WebView2 opens in your default browser; `--no-tray` runs a console server; `--no-browser` starts headless.
+- **Data folder & legacy upgrade:** `run.bat` sets `SUBBUILD_HOME=backend` for the developer layout; standalone runs use `data/` beside the app or `%LOCALAPPDATA%\SubBuild Studio` (`%LOCALAPPDATA%\SubForge Studio` and `subforge.db` are migrated automatically on first start). If present, `packaging/ffmpeg` is automatically prepended to `PATH`.
+- Startup errors appear in a message box and write details to `launcher.log` / `storage\logs\server.log`. To change the app icon, edit and run `packaging/make_icon.py`.
 
 ---
 
@@ -397,57 +396,57 @@ SubBuild Studio uses a **Multi-Layer Hybrid Test Pyramid** combining fast in-pro
 ```mermaid
 flowchart TD
     E2E["Black-Box UI E2E — Java 21 + Selenium 4 POM (18 tests)"]
-    BAPI["Black-Box API & Security — Java 21 + RestAssured (34 tests)"]
-    FE["Frontend UI & Store — Vitest + RTL (13 tests) + oxlint + tsc"]
-    PIPE["Backend API, Pipeline & Security — Pytest (376 tests)"]
-    UNIT["Pure Unit & Domain Rules — Pytest (128 tests)"]
+    BAPI["Black-Box API & Security — Java 21 + RestAssured (35 tests)"]
+    FE["Frontend UI & Store — Vitest + RTL (14 tests) + oxlint + tsc"]
+    PIPE["Backend API, Pipeline & Security — Pytest (377 tests)"]
+    UNIT["Pure Unit & Domain Rules — Pytest (135 tests)"]
     E2E --> BAPI --> FE --> PIPE --> UNIT
 ```
 
-### 1. Backend Pytest Suite (`backend/tests/`, 504 tests)
+### 1. Backend Pytest Suite (`backend/tests/`, 512 tests)
 Tests are organized into explicit architectural layers with shared builders/fakes (`tests/fixtures/`) and registered markers in `backend/pytest.ini`:
 
 ```powershell
 cd backend
 
-# Run the full suite (504 tests)
+# Run the full suite (512 tests)
 .\.venv\Scripts\python.exe -m pytest -q
 
 # Run by architectural layer or execution tag
-.\.venv\Scripts\python.exe -m pytest -m unit -q        # 128 pure unit tests (no DB / no FFmpeg)
-.\.venv\Scripts\python.exe -m pytest -m api -q         # 140 FastAPI + SQLite integration tests
+.\.venv\Scripts\python.exe -m pytest -m unit -q        # 135 pure unit tests (no DB / no FFmpeg)
+.\.venv\Scripts\python.exe -m pytest -m api -q         # 141 FastAPI + SQLite integration tests
 .\.venv\Scripts\python.exe -m pytest -m pipeline -q    # 170 pipeline, AI provider fake & FFmpeg tests
 .\.venv\Scripts\python.exe -m pytest -m security -q    # 66 auth, CSRF, headers, FFmpeg SSRF & upload tests
-.\.venv\Scripts\python.exe -m pytest -m smoke -q       # 53 critical-path smoke tests
+.\.venv\Scripts\python.exe -m pytest -m smoke -q       # 54 critical-path smoke tests
 ```
 
-- **`tests/unit/`**: RTL BiDi wrapping, SRT/VTT timecode & formatting, segmentation/orphan-word healing, smart end-credits detection, speaker turn splitting & SDH cleanup, missing speech supplementation, QA rules, DB migration, and desktop launcher/shortcut logic.
-- **`tests/api/`**: System info, multi-provider key vault & live discovery (`test_multi_provider_ai.py`), job persistence & slim listings, live WebSocket segment streaming, segment CRUD, undo/redo edit history, upload SHA-256 deduplication & Range parsing, row-scoped retranslation, glossary profiles, speaker detection, retime/reorder, settings/pricing, save-next-to-video, and storage cleanup.
+- **`tests/unit/`**: RTL BiDi wrapping, SRT/VTT timecode & formatting, segmentation/orphan-word healing, smart end-credits detection, speaker turn splitting & SDH cleanup, missing speech supplementation, QA rules, Git/Release auto-updater (`test_updater.py`), DB migration, and desktop launcher/shortcut logic.
+- **`tests/api/`**: System info & auto-updater endpoints (`update/check`, `update/apply` + active-job `409` guard), multi-provider key vault & live discovery (`test_multi_provider_ai.py`), job persistence & slim listings, live WebSocket segment streaming, segment CRUD, undo/redo edit history, upload SHA-256 deduplication & Range parsing, row-scoped retranslation, glossary profiles, speaker detection, retime/reorder, settings/pricing, save-next-to-video, and storage cleanup.
 - **`tests/pipeline/`**: End-to-end pipeline on generated FFmpeg clips, Whisper threading/OOM fallback/cancellation, Gemini/LLM batching/retries/Flex tier fallback, FinOps dHash pre-filtering & Ollama local pre-tagging, OCR & tactical comms boost, foreign speech, sync alignment/burned-in detection, gap recovery, word snapping, video embedding, and per-job logging.
 - **`tests/security/`**: Per-launch session token (`X-SubBuild-Token` & HttpOnly cookie) and UNC path refusal, CSRF Origin/Fetch-Metadata & Host validation, anti-framing/CSP security headers, FFmpeg `-protocol_whitelist file` & AST audit, and `Content-Length` upload limits.
 
-### 2. Frontend Checks & Tests (`frontend/`, 13 tests)
+### 2. Frontend Checks & Tests (`frontend/`, 14 tests)
 ```powershell
 cd frontend
 npm run lint    # oxlint
-npm test        # Vitest + React Testing Library (13 tests)
+npm test        # Vitest + React Testing Library (14 tests)
 npm run build   # tsc -b + vitest run + vite build
 ```
 
-### 3. Java Black-Box E2E & API Suite (`qa-automation-java/`, 52 tests)
+### 3. Java Black-Box E2E & API Suite (`qa-automation-java/`, 53 tests)
 Built with **Maven + Java 21 + JUnit 5 + Selenium WebDriver 4 (POM) + RestAssured + ExtentReports**. Starts an isolated temporary backend server automatically (never touching `backend/storage` or `backend/.env`), seeds data via RestAssured for fast UI tests, captures screenshots on failure, and writes an interactive HTML report to `qa-automation-java/target/reports/subbuild-qa-report.html`.
 
 ```powershell
 cd qa-automation-java
 
-# Full regression suite (52 tests: 34 API/Security + 18 Selenium UI, headless Chrome)
+# Full regression suite (53 tests: 35 API/Security + 18 Selenium UI, headless Chrome)
 mvn clean test -Pregression
 
 # Fast critical-path smoke suite (9 tests)
 mvn test -Psmoke
 
 # Direct JUnit 5 @Tag filtering also works
-mvn test -Dgroups=regression   # 52 regression tests (includes the 9 smoke tests)
+mvn test -Dgroups=regression   # 53 regression tests (includes the 9 smoke tests)
 mvn test -Dgroups=smoke        # 9 critical-path smoke tests
 
 # Optional browser / driver / headless overrides
@@ -456,11 +455,11 @@ mvn test -Pregression "-Dsubbuild.headless=true"
 ```
 
 ### 4. CI/CD Pipeline (`Jenkinsfile` on Raspberry Pi 4 ARM64 & GitHub Actions)
-- **Branch flow (`staging` → `main`):** feature/fix branches are merged into **`staging`** first; every push there runs the full automation (GitHub Actions + Jenkins: pytest, frontend checks, Java RestAssured/Selenium). Only a green `staging` is merged into `main` (open the PR `staging` → `main`).
-- **Self-Hosted Jenkins CI (Raspberry Pi 4 8GB, Linux `aarch64`):** Configured via [`Jenkinsfile`](Jenkinsfile) and triggered automatically on pushes to `staging` and `main` via **GitHub Webhook** (plus manual parameterized runs with `JAVA_PROFILE=regression|smoke`, `RUN_BACKEND_PYTEST`, and `RUN_FRONTEND_CHECKS`).
+- **Branch flow (`feature/*` → `main`):** Work is developed on feature/fix branches and merged into **`main`** via Pull Request after passing automated verification (GitHub Actions + Jenkins: pytest, frontend checks, Java RestAssured/Selenium).
+- **Self-Hosted Jenkins CI (Raspberry Pi 4 8GB, Linux `aarch64`):** Configured via [`Jenkinsfile`](Jenkinsfile) and triggered automatically on pushes and PRs to `main` via **GitHub Webhook** (plus manual parameterized runs with `JAVA_PROFILE=regression|smoke`, `RUN_BACKEND_PYTEST`, and `RUN_FRONTEND_CHECKS`).
   1. **Preflight Check:** Verifies `python3`, `node`, `npm`, `java`, `mvn`, `ffmpeg`, and `chromium`/`chromedriver`.
-  2. **Backend Pytest (`504` tests):** Provisions `backend/.venv` (filtering out `nvidia-*` CUDA packages, cached by `requirements.txt` SHA-256) and emits JUnit XML.
-  3. **Frontend Checks & Build (`13` Vitest + Vite `dist`):** Runs `npm ci`, `oxlint`, `tsc -b`, `vitest run`, and `vite build` so `backend/app/main.py` serves `frontend/dist` for Selenium tests.
-  4. **Java Black-Box QA (`52` regression / `9` smoke):** Executes `mvn -B clean test -P"${JAVA_PROFILE}" -Dsubbuild.headless=true -Dsubbuild.timeoutSeconds=30`, then publishes unified JUnit results and archives `ExtentReports` HTML + failure screenshots.
+  2. **Backend Pytest (`512` tests):** Provisions `backend/.venv` (filtering out `nvidia-*` CUDA packages, cached by `requirements.txt` SHA-256) and emits JUnit XML.
+  3. **Frontend Checks & Build (`14` Vitest + Vite `dist`):** Runs `npm ci`, `oxlint`, `tsc -b`, `vitest run`, and `vite build` so `backend/app/main.py` serves `frontend/dist` for Selenium tests.
+  4. **Java Black-Box QA (`53` regression / `9` smoke):** Executes `mvn -B clean test -P"${JAVA_PROFILE}" -Dsubbuild.headless=true -Dsubbuild.timeoutSeconds=30`, then publishes unified JUnit results and archives `ExtentReports` HTML + failure screenshots.
 - **Cross-Platform Driver & Headless Resolution (`TestConfig` + `DriverFactory`):** Auto-enables `--headless=new` in `CI`/`JENKINS_URL`/`GITHUB_ACTIONS` or display-less Linux environments; preserves Selenium Manager on Windows and GitHub Actions (`ubuntu-latest` `x86_64`), and automatically falls back to OS-packaged `/usr/bin/chromium` + `/usr/bin/chromedriver` on Linux ARM64 (`aarch64`).
 - **GitHub Actions ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)):** Runs backend `pytest` + `pip-audit` and frontend `npm audit` + `oxlint` + `vitest` + `vite build` on `ubuntu-latest` (`main`, PRs, and weekly schedule).

@@ -8,13 +8,13 @@ import type { MessageKey } from '../../i18n';
 import { useCostEstimate } from '../../hooks/useCostEstimate';
 import { thinkingLabel, modelLabel, providerDisplayName } from './labels';
 import type {
-  AIProvider, AppSettings, CatalogModel, GeminiCallSettings, HardwareInfo, MediaResolution, ModelCheckResponse, ModelCheckResult, OllamaStatus, PipelineTask, ProviderKeyRecord, ProviderSummary, ThinkingLevel,
+  AIProvider, AppSettings, CatalogModel, GeminiCallSettings, HardwareInfo, MediaResolution, ModelCheckResponse, ModelCheckResult, OllamaStatus, PipelineTask, ProviderKeyRecord, ProviderSummary, ThinkingLevel, UpdateApplyResponse, UpdateStatus,
 } from '../../types';
 import { api } from '../../services/api';
 import { StorageSection } from './StorageSection';
 import { ApiKeySection } from './ApiKeySection';
 import {
-  ArrowLeft, AlertTriangle, Brain, Bug, ChevronDown, ChevronUp, Coins, Lightbulb, Moon, Sun, Save, Loader2, Check, ExternalLink, PlugZap, CheckCircle2, XCircle,
+  ArrowLeft, AlertTriangle, Brain, Bug, ChevronDown, ChevronUp, Coins, Lightbulb, Moon, RefreshCw, Sun, Save, Loader2, Check, ExternalLink, PlugZap, CheckCircle2, XCircle,
   Hourglass, ScrollText, Stethoscope, Download, Cpu, Terminal, Sparkles,
 } from 'lucide-react';
 
@@ -635,10 +635,67 @@ export const SettingsScreen: React.FC = () => {
   const [ollamaBusy, setOllamaBusy] = useState(false);
   const keyOverride = useJobStore((s) => s.pipelineConfig.gemini_api_key_override);
   const systemInfo = useJobStore((s) => s.systemInfo);
+  const fetchSystemInfo = useJobStore((s) => s.fetchSystemInfo);
   const [includeLocalForAuto, setIncludeLocalForAuto] = useState(false);
   const [autoNotice, setAutoNotice] = useState<{ summary: string; detail?: string } | null>(null);
   const [ollamaDetailsOpen, setOllamaDetailsOpen] = useState(false);
   const [estimateOpen, setEstimateOpen] = useState(true);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [applyingUpdate, setApplyingUpdate] = useState(false);
+  const [updateResult, setUpdateResult] = useState<UpdateApplyResponse | null>(null);
+
+  const effectiveUpdate = updateStatus ?? systemInfo?.update ?? null;
+
+  const onCheckUpdates = async () => {
+    setCheckingUpdate(true);
+    setUpdateResult(null);
+    try {
+      const res = await api.checkForUpdates();
+      setUpdateStatus(res);
+      await fetchSystemInfo();
+    } catch (e: any) {
+      setUpdateStatus({
+        current_version: systemInfo?.version || '1.5.0',
+        current_commit: '',
+        branch: '',
+        update_available: false,
+        latest_version: systemInfo?.version || '1.5.0',
+        latest_commit: '',
+        commits_behind: 0,
+        error: e.message || 'Check failed',
+      });
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
+
+  const onApplyUpdate = async () => {
+    setApplyingUpdate(true);
+    setUpdateResult(null);
+    try {
+      const res = await api.applyUpdate();
+      setUpdateResult(res);
+      if (res.updated) {
+        const refreshed = await api.checkForUpdates().catch(() => null);
+        if (refreshed) setUpdateStatus(refreshed);
+        await fetchSystemInfo();
+      }
+    } catch (e: any) {
+      setUpdateResult({
+        updated: false,
+        previous_version: systemInfo?.version || '1.5.0',
+        new_version: systemInfo?.version || '1.5.0',
+        new_commit: '',
+        requirements_updated: false,
+        frontend_rebuilt: false,
+        restart_required: false,
+        message: e.message || 'Update failed',
+      });
+    } finally {
+      setApplyingUpdate(false);
+    }
+  };
 
   const runCheck = async (target: AppSettings | null = draft) => {
     if (!target) return;
@@ -1372,23 +1429,103 @@ export const SettingsScreen: React.FC = () => {
         </div>
 
         <section className={`${card} lg:col-span-4 flex flex-col justify-between`}>
-          <div className="space-y-3">
-            <div className="border-b border-line pb-3">
-              <h2 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-                <Stethoscope className="w-4 h-4 text-indigo-400" />
-                {t('settings.diagnostics')}
-              </h2>
-              <p className="text-[11px] text-zinc-400 mt-1">{t('settings.diagnosticsHint')}</p>
+          <div className="space-y-4">
+            <div className="space-y-3">
+              <div className="border-b border-line pb-3">
+                <h2 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+                  <Stethoscope className="w-4 h-4 text-indigo-400" />
+                  {t('settings.diagnostics')}
+                </h2>
+                <p className="text-[11px] text-zinc-400 mt-1">{t('settings.diagnosticsHint')}</p>
+              </div>
+              <a
+                href={api.getServerLogUrl()}
+                download
+                data-testid="server-log"
+                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200 transition-colors"
+              >
+                <ScrollText className="w-3.5 h-3.5" />
+                {t('settings.serverLog')}
+              </a>
             </div>
-            <a
-              href={api.getServerLogUrl()}
-              download
-              data-testid="server-log"
-              className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200 transition-colors"
-            >
-              <ScrollText className="w-3.5 h-3.5" />
-              {t('settings.serverLog')}
-            </a>
+
+            {/* Software Version & Git Updates */}
+            <div className="pt-3 border-t border-line/60 space-y-2.5 text-xs" data-testid="settings-update-section">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-semibold text-zinc-200">{t('settings.updater.title')}</span>
+                <span className="px-2 py-0.5 rounded bg-sunken border border-line text-[11px] font-mono text-zinc-300" dir="ltr">
+                  v{effectiveUpdate?.current_version || systemInfo?.version || '1.5.0'}
+                  {effectiveUpdate?.current_commit ? ` (${effectiveUpdate.current_commit})` : ''}
+                </span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={onCheckUpdates}
+                  disabled={checkingUpdate || applyingUpdate}
+                  data-testid="check-updates-btn"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sunken hover:bg-zinc-800 border border-line disabled:opacity-40 text-[11px] font-medium text-zinc-200 cursor-pointer transition-colors"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${checkingUpdate ? 'animate-spin' : ''}`} />
+                  <span>{checkingUpdate ? t('settings.updater.checking') : t('settings.updater.checkBtn')}</span>
+                </button>
+
+                {effectiveUpdate?.update_available && !updateResult?.updated && (
+                  <button
+                    type="button"
+                    onClick={onApplyUpdate}
+                    disabled={applyingUpdate || checkingUpdate}
+                    data-testid="apply-update-btn"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-[11px] font-semibold text-white cursor-pointer transition-colors"
+                  >
+                    {applyingUpdate ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                    <span>{applyingUpdate ? t('settings.updater.applying') : t('settings.updater.applyBtn')}</span>
+                  </button>
+                )}
+              </div>
+
+              {(updateResult || effectiveUpdate) && (
+                <div className="text-[11px]" data-testid="update-status-text">
+                  {updateResult ? (
+                    <p className={updateResult.updated ? 'text-emerald-300' : 'text-amber-300'}>
+                      {updateResult.updated
+                        ? t('settings.updater.appliedRestart', {
+                            version: updateResult.new_version,
+                            commit: updateResult.new_commit,
+                          })
+                        : updateResult.skipped_reason === 'dirty_worktree'
+                          ? t('settings.updater.skippedDirty')
+                          : updateResult.message}
+                    </p>
+                  ) : effectiveUpdate?.error ? (
+                    <p className="text-amber-300">
+                      {t('settings.updater.checkFailed', { error: effectiveUpdate.error })}
+                    </p>
+                  ) : effectiveUpdate?.update_available ? (
+                    <p className="text-emerald-300 flex flex-wrap items-center gap-1.5">
+                      <span>
+                        {effectiveUpdate.update_kind === 'release'
+                          ? t('settings.updater.availableRelease', { version: effectiveUpdate.latest_version })
+                          : t('settings.updater.availableCommits', { count: effectiveUpdate.commits_behind })}
+                      </span>
+                      {effectiveUpdate.release_url && (
+                        <a
+                          href={effectiveUpdate.release_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-0.5 text-indigo-400 hover:text-indigo-300 underline"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                    </p>
+                  ) : (
+                    <p className="text-zinc-400">{t('settings.updater.upToDate')}</p>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="pt-3 border-t border-line/60 flex flex-wrap gap-2">

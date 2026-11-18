@@ -539,4 +539,71 @@ describe('Multi-Provider AI Settings & Key Vault UI', () => {
     expect((view.getByTestId('model-card-translation-model') as HTMLSelectElement).value).toBe('gemini-3.8-flash');
     expect((view.getByTestId('model-card-translation-flex') as HTMLInputElement).checked).toBe(true);
   });
+
+  it('displays version badge in Sidebar and supports in-app Git update check and apply flow', async () => {
+    vi.spyOn(api, 'listJobs').mockResolvedValue([]);
+    vi.spyOn(api, 'getOllamaStatus').mockResolvedValue({
+      installed: false, running: false, models: [], selected_model: null, recommended_model: 'qwen2.5:7b',
+      download_url: 'https://ollama.com/download', installing: false, step: null, error: null,
+    });
+    vi.spyOn(api, 'estimateCost').mockResolvedValue({
+      duration_seconds: 2700, segments: 630, stages: {}, total_cost_usd: 0.05,
+    });
+
+    useJobStore.setState((prev) => ({
+      systemInfo: {
+        ...prev.systemInfo!,
+        version: '1.5.0',
+        update: {
+          current_version: '1.5.0',
+          current_commit: 'abc1234',
+          branch: 'main',
+          update_available: true,
+          update_kind: 'release',
+          latest_version: '1.6.0',
+          latest_commit: 'def5678',
+          commits_behind: 0,
+          target_ref: 'v1.6.0',
+        },
+      },
+    }));
+
+    const sb = render(<Sidebar />);
+    expect(sb.getByTestId('sidebar-version-badge').textContent).toContain('v1.5.0');
+    expect(sb.getByTestId('sidebar-update-badge')).toBeTruthy();
+
+    const checkSpy = vi.spyOn(api, 'checkForUpdates').mockResolvedValue({
+      current_version: '1.5.0',
+      current_commit: 'abc1234',
+      branch: 'main',
+      update_available: true,
+      update_kind: 'release',
+      latest_version: '1.6.0',
+      latest_commit: 'def5678',
+      commits_behind: 0,
+      target_ref: 'v1.6.0',
+      release_url: 'https://github.com/talevi83/SubBuildStudio/releases/tag/v1.6.0',
+      error: null,
+    });
+    const applySpy = vi.spyOn(api, 'applyUpdate').mockResolvedValue({
+      updated: true,
+      previous_version: '1.5.0',
+      new_version: '1.6.0',
+      new_commit: 'def5678',
+      requirements_updated: false,
+      frontend_rebuilt: true,
+      restart_required: true,
+      message: 'Updated to v1.6.0 (def5678).',
+    });
+
+    const view = render(<SettingsScreen />);
+    expect(view.getByTestId('settings-update-section')).toBeTruthy();
+    fireEvent.click(view.getByTestId('check-updates-btn'));
+    await waitFor(() => expect(checkSpy).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(view.getByTestId('update-status-text').textContent).toContain('v1.6.0'));
+
+    fireEvent.click(view.getByTestId('apply-update-btn'));
+    await waitFor(() => expect(applySpy).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(view.getByTestId('update-status-text').textContent).toContain('v1.6.0'));
+  });
 });

@@ -1,5 +1,5 @@
 """
-SubBuild Studio desktop launcher - the entry point of the packaged "SubBuild Studio.exe".
+SubBuild Studio desktop launcher (invoked via run.bat / run.sh --window).
 
 Starts the FastAPI backend inside this process and shows the studio in its own desktop window
 (pywebview on Microsoft Edge WebView2, which ships with Windows 10/11), with an icon in the
@@ -7,20 +7,19 @@ system tray. Without WebView2 - or with --browser - the studio opens in the defa
 instead, and the tray icon is the way back to it.
 
 User data (.env with the API key, storage/ with projects, settings and logs, the window's
-size and the studio's own preferences) is kept outside the program folder, so rebuilding or
-replacing the program never touches it:
-  1. %SUBBUILD_HOME%, if set
-  2. a "data" folder next to the .exe (portable mode - create the folder to opt in)
+size and the studio's own preferences) is kept outside the program directory by default, so
+updating or switching branches never touches it:
+  1. %SUBBUILD_HOME%, if set (run.bat / run.sh point this to backend/)
+  2. a "data" folder in the program root (portable mode - create the folder to opt in)
   3. %LOCALAPPDATA%\\SubBuild Studio
 
-Also runs from source:  python packaging/launcher.py [--browser] [--no-tray] [--no-browser]
+Also runs directly from source:  python packaging/launcher.py [--browser] [--no-tray] [--no-browser]
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-import multiprocessing
 import os
 import secrets
 import shutil
@@ -36,7 +35,6 @@ from pathlib import Path
 from typing import Callable, Optional
 
 APP_NAME = "SubBuild Studio"
-FROZEN = getattr(sys, "frozen", False)
 WINDOWS = sys.platform == "win32"
 STARTUP_TIMEOUT = 180  # seconds; the first start preloads the CUDA libraries, which can be slow
 ACTIVE_STATUSES = {"QUEUED", "PROBING", "EXTRACTING_AUDIO", "TRANSCRIBING",
@@ -69,9 +67,7 @@ h1{font-size:18px;font-weight:600;margin:0 0 6px}p{font-size:12px;color:#a1a1aa;
 # ----------------------------------------------------------------------------- paths
 
 def bundle_dir() -> Path:
-    """Root of the bundled resources (PyInstaller's _internal folder, or the repo from source)."""
-    if FROZEN:
-        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    """Root of the repository / application directory."""
     return Path(__file__).resolve().parent.parent
 
 
@@ -80,7 +76,7 @@ def resource(*parts: str) -> Path:
 
 
 def program_dir() -> Path:
-    return Path(sys.executable).resolve().parent if FROZEN else bundle_dir()
+    return bundle_dir()
 
 
 def data_dir() -> Path:
@@ -95,7 +91,7 @@ def data_dir() -> Path:
     elif sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support"
     else:
-        base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+        base = Path.home() / ".local" / "share" if not os.environ.get("XDG_DATA_HOME") else Path(os.environ["XDG_DATA_HOME"])
     target = base / APP_NAME
     legacy = base / "SubForge Studio"  # the app's name before the rebrand: keep users' data
     if not target.exists() and legacy.is_dir():
@@ -109,7 +105,7 @@ def data_dir() -> Path:
 # ----------------------------------------------------------------------------- process setup
 
 def redirect_stdio(home: Path) -> None:
-    """A windowed .exe has no console: send print/tracebacks/progress bars to launcher.log."""
+    """A windowed pythonw.exe launcher has no console: send print/tracebacks to launcher.log."""
     if sys.stdout is not None and sys.stderr is not None:
         return
     log = home / "launcher.log"
@@ -124,9 +120,8 @@ def redirect_stdio(home: Path) -> None:
 
 
 def hide_child_consoles() -> None:
-    """Without this every ffmpeg/ffprobe/nvidia-smi call would flash a black console window."""
-    # pythonw.exe (run.bat) has no console either
-    if not (WINDOWS and (FROZEN or Path(sys.executable).name.lower() == "pythonw.exe")):
+    """Without this every ffmpeg/ffprobe/nvidia-smi/git call would flash a black console window."""
+    if not (WINDOWS and Path(sys.executable).name.lower() == "pythonw.exe"):
         return
     create_no_window = 0x08000000
     original_init = subprocess.Popen.__init__
@@ -149,11 +144,11 @@ def prepare_environment(home: Path) -> Path:
     # The backend reads ./.env and keeps ./storage relative to the working directory
     os.chdir(home)
     os.environ.setdefault("SUBBUILD_FRONTEND_DIST", str(resource("frontend", "dist")))
-    ffmpeg_dir = resource("ffmpeg")
-    if ffmpeg_dir.is_dir():  # bundled ffmpeg/ffprobe win over whatever is on PATH
-        os.environ["PATH"] = str(ffmpeg_dir) + os.pathsep + os.environ.get("PATH", "")
-    if not FROZEN:
-        sys.path.insert(0, str(resource("backend")))
+    for ffmpeg_dir in (resource("packaging", "ffmpeg"), resource("ffmpeg")):
+        if ffmpeg_dir.is_dir():  # optional local ffmpeg overrides PATH
+            os.environ["PATH"] = str(ffmpeg_dir) + os.pathsep + os.environ.get("PATH", "")
+            break
+    sys.path.insert(0, str(resource("backend")))
     return env_file
 
 
@@ -257,7 +252,7 @@ def confirm_stop(url: str, action: str) -> bool:
 
 
 def spawn_again(extra_args: list) -> None:
-    args = [sys.executable] if FROZEN else [sys.executable, str(Path(__file__).resolve())]
+    args = [sys.executable, str(Path(__file__).resolve())]
     subprocess.Popen(args + extra_args, cwd=str(program_dir()))
 
 
@@ -665,7 +660,6 @@ def run_window(server: ServerThread, url: str, home: Path, env_file: Path) -> No
 
 def main() -> int:
     global SESSION_TOKEN
-    multiprocessing.freeze_support()
     parser = argparse.ArgumentParser(prog=APP_NAME)
     parser.add_argument("--browser", action="store_true", help="open the studio in the browser, not in its own window")
     parser.add_argument("--no-tray", action="store_true", help="run in the foreground without a tray icon or window")
