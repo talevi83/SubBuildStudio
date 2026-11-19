@@ -357,3 +357,38 @@ def test_release_notes_are_fetched_for_the_tag_being_offered():
 def test_read_version_file(tmp_path: Path):
     assert updater.read_version_file(_make_fake_repo(tmp_path, version="2.0.1")) == "2.0.1"
     assert updater.read_version_file(tmp_path / "missing") == "0.0.0"
+
+
+def test_signed_tags_are_required_only_when_turned_on(tmp_path: Path, monkeypatch):
+    repo = _make_fake_repo(tmp_path)
+    monkeypatch.delenv("SUBBUILD_REQUIRE_SIGNED_TAGS", raising=False)
+    assert updater.require_signed_tags(repo) is False
+    (repo / "backend" / ".env").write_text("PORT=8000\nSUBBUILD_REQUIRE_SIGNED_TAGS=true  # on\n", encoding="utf-8")
+    assert updater.require_signed_tags(repo) is True
+    monkeypatch.setenv("SUBBUILD_REQUIRE_SIGNED_TAGS", "0")  # the environment wins over .env
+    assert updater.require_signed_tags(repo) is False
+
+
+@pytest.mark.parametrize("signed", [True, False])
+def test_an_unsigned_tag_is_not_installed_when_signatures_are_required(tmp_path: Path, monkeypatch, signed):
+    repo = _make_fake_repo(tmp_path)
+    monkeypatch.setenv("SUBBUILD_REQUIRE_SIGNED_TAGS", "1")
+    calls = []
+    fake = _git_fake(calls)
+
+    def run_git(root, *args, timeout=4.0):
+        if args and args[0] == "verify-tag":
+            calls.append(" ".join(args))
+            return (0, "", "") if signed else (1, "", "error: no signature found")
+        return fake(root, *args, timeout=timeout)
+
+    with (
+        patch.object(updater, "check_for_updates", return_value=_RELEASE),
+        patch.object(updater, "_run_git", side_effect=run_git),
+    ):
+        res = updater.apply_update(repo, auto_mode=True, rebuild_frontend=False)
+    assert "verify-tag v1.6.0" in calls
+    assert res["updated"] is signed
+    assert any(c.startswith("merge --ff-only") for c in calls) is signed
+    if not signed:
+        assert res["skipped_reason"] == "unsigned_tag"

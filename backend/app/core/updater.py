@@ -335,6 +335,24 @@ def _rebuild_frontend(root: Path, run_npm_install: bool) -> bool:
     return True
 
 
+_TRUE = {"1", "true", "yes", "on"}
+
+
+def require_signed_tags(root: Path) -> bool:
+    """SUBBUILD_REQUIRE_SIGNED_TAGS from the environment or backend/.env (read directly: this module
+    also runs as a launch-time CLI, before the app's settings exist)."""
+    value = os.environ.get("SUBBUILD_REQUIRE_SIGNED_TAGS")
+    if value is None:
+        try:
+            for line in (root / "backend" / ".env").read_text(encoding="utf-8", errors="replace").splitlines():
+                key, sep, raw = line.partition("=")
+                if sep and key.strip().upper() == "SUBBUILD_REQUIRE_SIGNED_TAGS":
+                    value = raw.split("#", 1)[0].strip().strip("'\"")
+        except OSError:
+            value = None
+    return (value or "").strip().lower() in _TRUE
+
+
 def _release_branch(root: Path) -> Optional[str]:
     for ref in RELEASE_BRANCHES:
         rc, _, _ = _run_git(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", timeout=4.0)
@@ -453,6 +471,14 @@ def apply_update(
         base_reply["message"] = f"Skipped update: release {target_ref} is not part of {release_branch}."
         logger.warning("Updater apply skipped: %s is not an ancestor of %s", target_ref, release_branch)
         return base_reply
+    if require_signed_tags(root):
+        sig_rc, _, sig_err = _run_git(root, "verify-tag", target_ref, timeout=15.0)
+        if sig_rc != 0:
+            base_reply["skipped_reason"] = "unsigned_tag"
+            base_reply["message"] = (f"Skipped update: release {target_ref} has no valid signature "
+                                     f"(SUBBUILD_REQUIRE_SIGNED_TAGS is on).")
+            logger.warning("Updater apply skipped: git verify-tag %s failed: %s", target_ref, sig_err)
+            return base_reply
 
     pull_rc, pull_out, pull_err = _run_git(root, "merge", "--ff-only", target_ref, timeout=30.0)
 
