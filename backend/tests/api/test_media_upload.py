@@ -5,6 +5,7 @@ import os
 import uuid
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 import app.api.routes_media as media
@@ -12,6 +13,15 @@ from app.api.routes_media import _display_name, _parse_range
 from app.core.config import settings
 from app.models.schemas import ProbeResponse
 from tests.fixtures.builders import wait_for_job
+
+
+@pytest.fixture(autouse=True)
+def _plenty_of_disk_space(monkeypatch):
+    """The upload guard checks the real free space of the temp and uploads folders; on a nearly full
+    disk these tests would get 507 instead of testing deduplication (test_upload_limits covers 507)."""
+    import app.core.upload_limits as limits
+
+    monkeypatch.setattr(limits, "_free_bytes", lambda _path: 10**15)
 
 
 def test_range_parsing():
