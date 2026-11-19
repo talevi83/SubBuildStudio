@@ -392,3 +392,74 @@ def test_an_unsigned_tag_is_not_installed_when_signatures_are_required(tmp_path:
     assert any(c.startswith("merge --ff-only") for c in calls) is signed
     if not signed:
         assert res["skipped_reason"] == "unsigned_tag"
+
+
+# ------------------------------------------------------------------ VERSION comes from the tags
+
+_PLACEHOLDER = "$Format:%(describe:tags=true,match=v[0-9]*)$\n"
+
+
+@pytest.mark.parametrize("content, expected", [
+    ("v2.1.0\n", "2.1.0"),                # zip of a release (GitHub fills in the tag)
+    ("v2.1.0-3-gabc1234\n", "2.1.0"),     # zip of a later commit
+    ("2.0.1\n", "2.0.1"),                 # an older, hand-written file
+])
+def test_version_file_as_filled_in_by_github(tmp_path: Path, content, expected):
+    (tmp_path / "VERSION").write_text(content, encoding="utf-8")
+    assert updater.read_version_file(tmp_path) == expected
+    assert updater.get_current_version_info(tmp_path)["current_version"] == expected
+
+
+def test_in_a_git_checkout_the_placeholder_is_ignored_and_the_tag_wins(tmp_path: Path):
+    repo = _make_fake_repo(tmp_path)
+    (repo / "VERSION").write_text(_PLACEHOLDER, encoding="utf-8")
+
+    def fake_git(root, *args, timeout=4.0):
+        return (0, "v2.1.0", "") if args[:1] == ("describe",) else (0, "", "")
+
+    with patch.object(updater, "_run_git", side_effect=fake_git):
+        assert updater.read_version_file(repo) == "2.1.0"
+        assert updater.get_current_version_info(repo)["current_version"] == "2.1.0"
+
+
+def test_without_tags_or_a_filled_in_file_the_version_is_unknown(tmp_path: Path):
+    (tmp_path / "VERSION").write_text(_PLACEHOLDER, encoding="utf-8")
+    assert updater.read_version_file(tmp_path) == "0.0.0"
+    with patch.object(updater, "_run_git", return_value=(128, "", "not a git repository")):
+        assert updater.get_current_version_info(tmp_path)["current_version"] == "0.0.0"
+
+
+def _git_version() -> tuple:
+    import re
+    import subprocess
+
+    out = subprocess.run(["git", "--version"], capture_output=True, text=True).stdout
+    match = re.search(r"(\d+)\.(\d+)", out)
+    return tuple(int(x) for x in match.groups()) if match else (0, 0)
+
+
+@pytest.mark.skipif(_git_version() < (2, 35), reason="%(describe:tags=...) needs git 2.35+ (GitHub's is newer)")
+def test_a_release_zip_carries_its_version(tmp_path: Path):
+    import io
+    import subprocess
+    import tarfile
+
+    repo_root = Path(updater.get_repo_root())
+    assert (repo_root / "VERSION").read_text(encoding="utf-8") == _PLACEHOLDER
+    assert "VERSION export-subst" in (repo_root / ".gitattributes").read_text(encoding="utf-8")
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(tmp_path), *args], capture_output=True, check=True).stdout
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "VERSION").write_text(_PLACEHOLDER, encoding="utf-8")
+    (tmp_path / ".gitattributes").write_text("VERSION export-subst\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-q", "-m", "init")
+    git("tag", "v2.1.0")  # lightweight, like the tags GitHub's website creates
+    archive = tarfile.open(fileobj=io.BytesIO(git("archive", "--format=tar", "v2.1.0")))
+    extracted = tmp_path / "zip"
+    archive.extractall(extracted, filter="data")
+    assert updater.read_version_file(extracted) == "2.1.0"

@@ -155,7 +155,7 @@ SubBuild Studio/
 ├── install.bat / run.bat       # One-click Windows installer & launcher
 ├── install.sh / run.sh         # One-click Linux & macOS installer & launcher
 ├── install.command / run.command # Double-clickable macOS Finder wrappers
-├── VERSION                     # Semantic version baseline used by the Git/Release auto-updater
+├── VERSION                     # Filled in by GitHub in release zips; Git checkouts read the version from tags
 ├── packaging/                  # Source-based desktop window & tray launcher, icon generator, desktop shortcuts
 ├── backend/
 │   ├── .env.example            # Configuration template (copy to .env)
@@ -374,7 +374,7 @@ SubBuild Studio runs directly from the Git repository via `run.bat` (Windows) or
 
 ### Automatic Updates (`VERSION`, `backend/app/core/updater.py`)
 1. **Pre-launch check (`run.bat` / `run.sh`):** Every launch invokes `python -m app.core.updater --auto --no-frontend-build` before checking frontend builds and starting the server.
-   - Compares local [`VERSION`](VERSION) and Git tags against published `origin` semver release tags (`vX.Y.Z`) only, ignoring raw unreleased commits on development/main branches.
+   - Compares the installed version (the newest local Git tag; in a release zip, [`VERSION`](VERSION), which GitHub fills in from the tag - never edit it by hand) against published `origin` semver release tags (`vX.Y.Z`) only, ignoring raw unreleased commits on development/main branches.
    - **Offline & developer-safe:** Network errors never block startup. In `--auto` mode, pulls are skipped automatically if you are on a feature branch (non-`main`) or have uncommitted tracked edits (`dirty_worktree`), and `--ff-only` prevents unexpected merges.
    - **Dependency & UI sync:** Automatically syncs `requirements.txt` changes if updated, while `run.bat` / `run.sh` rebuild `frontend/dist` whenever frontend files change.
    - **Skip update check:** Pass `--no-update` (`run.bat --no-update` / `./run.sh --no-update`) or set `SUBBUILD_NO_UPDATE=1`.

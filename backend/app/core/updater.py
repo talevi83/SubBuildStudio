@@ -92,26 +92,44 @@ def _format_semver(ver: Tuple[int, int, int]) -> str:
     return f"{ver[0]}.{ver[1]}.{ver[2]}"
 
 
-def read_version_file(repo_root: Optional[Path] = None) -> str:
-    """The version in the `VERSION` file ("2.0.1"), or "0.0.0" when it is missing (no Git calls)."""
+_LEADING_SEMVER_RE = re.compile(r"^\s*v?(\d+\.\d+\.\d+)")
+
+
+def _version_from_file(root: Path) -> str:
+    """The version written in `VERSION` ("2.1.0"), or "" when it holds none.
+
+    The file is never edited by hand. It contains a `$Format:%(describe...)$` placeholder that Git
+    fills in when GitHub builds a release's zip (export-subst in .gitattributes): "v2.1.0", or
+    "v2.1.0-3-gabc1234" for a zip of a later commit. In a Git checkout the placeholder stays as it is
+    and the version comes from the tags instead.
+    """
     try:
-        raw = ((repo_root or get_repo_root()) / "VERSION").read_text(encoding="utf-8").strip().lstrip("vV")
+        raw = (root / "VERSION").read_text(encoding="utf-8")
     except OSError:
-        return "0.0.0"
-    return raw if parse_semver(raw) else "0.0.0"
+        return ""
+    match = _LEADING_SEMVER_RE.match(raw)
+    return match.group(1) if match else ""
+
+
+def read_version_file(repo_root: Optional[Path] = None) -> str:
+    """The installed version without network access: from `VERSION` (zip downloads), else the
+    newest tag of the Git checkout, else "0.0.0"."""
+    root = repo_root or get_repo_root()
+    version = _version_from_file(root)
+    if version:
+        return version
+    if (root / ".git").exists():
+        rc, out, _ = _run_git(root, "describe", "--tags", "--abbrev=0", timeout=2.0)
+        if rc == 0 and parse_semver(out):
+            return _format_semver(parse_semver(out))  # type: ignore[arg-type]
+    return "0.0.0"
 
 
 def get_current_version_info(repo_root: Optional[Path] = None) -> Dict[str, str]:
     """Read local `VERSION` and Git HEAD/tag metadata without network access."""
     root = repo_root or get_repo_root()
 
-    file_ver_raw = ""
-    version_file = root / "VERSION"
-    if version_file.is_file():
-        try:
-            file_ver_raw = version_file.read_text(encoding="utf-8").strip().lstrip("vV")
-        except OSError:
-            file_ver_raw = ""
+    file_ver_raw = _version_from_file(root)
 
     git_tag = ""
     rc_tag, out_tag, _ = _run_git(root, "describe", "--tags", "--abbrev=0", timeout=2.0)
@@ -133,7 +151,7 @@ def get_current_version_info(repo_root: Optional[Path] = None) -> Dict[str, str]
     elif tag_tuple:
         current_version = _format_semver(tag_tuple)
     else:
-        current_version = file_ver_raw or git_tag.lstrip("vV") or "0.0.0"
+        current_version = "0.0.0"
 
     return {
         "current_version": current_version,

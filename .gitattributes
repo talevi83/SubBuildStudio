@@ -3,3 +3,5 @@
 # Unix / macOS shell scripts need LF line endings
 *.sh text eol=lf
 *.command text eol=lf
+# VERSION is filled in by Git when GitHub builds a release zip (see backend/app/core/updater.py)
+VERSION export-subst
