@@ -1,9 +1,11 @@
-import json
+import asyncio
 import logging
-from typing import Dict, Set, Any
+from typing import Any, Dict, Optional, Set
 from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
+
+SEND_TIMEOUT_SECONDS = 5.0
 
 
 class ConnectionManager:
@@ -34,18 +36,26 @@ class ConnectionManager:
         if not subscribers:
             return
 
-        dead_connections = set()
-        for ws in subscribers:
+        async def _send(ws: WebSocket) -> Optional[WebSocket]:
             if ws not in self._connections.get(job_id, ()):
-                continue
+                return None
             try:
-                await ws.send_json(payload)
+                # The pipeline awaits this: a client that stopped reading (a suspended window, a
+                # half-open connection) must not stall the job, so it is dropped instead.
+                await asyncio.wait_for(ws.send_json(payload), timeout=SEND_TIMEOUT_SECONDS)
+                return None
             except Exception as e:
-                logger.warning(f"Failed to send WS message for job {job_id}: {e}")
-                dead_connections.add(ws)
+                logger.warning(f"Failed to send WS message for job {job_id}: {e!r}")
+                return ws
 
-        for ws in dead_connections:
-            self.disconnect(job_id, ws)
+        dead = await asyncio.gather(*(_send(ws) for ws in subscribers))
+        for ws in dead:
+            if ws is not None:
+                self.disconnect(job_id, ws)
+                try:
+                    await asyncio.wait_for(ws.close(code=1011), timeout=1.0)
+                except Exception:
+                    pass
 
 
 ws_manager = ConnectionManager()

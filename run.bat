@@ -59,7 +59,15 @@ for /f %%i in ('powershell -NoProfile -Command "$b=(Get-Item 'frontend\dist\inde
 if not "%NEED_BUILD%"=="1" goto :frontend_ready
 echo [4/5] Building frontend studio...
 pushd frontend
-if not exist "node_modules" call npm install
+:: (Re)install packages when node_modules is missing or older than package.json / package-lock.json
+:: (npm writes node_modules\.package-lock.json on every install) - e.g. after an update added a package
+set NEED_INSTALL=0
+if not exist "node_modules\.package-lock.json" set NEED_INSTALL=1
+if "%NEED_INSTALL%"=="0" for /f %%i in ('powershell -NoProfile -Command "$m=(Get-Item 'node_modules\.package-lock.json').LastWriteTime; $s=(Get-Item 'package.json','package-lock.json' | Sort-Object LastWriteTime -Descending | Select-Object -First 1).LastWriteTime; if ($s -gt $m) {1} else {0}"') do set NEED_INSTALL=%%i
+if "%NEED_INSTALL%"=="1" (
+    echo       Installing frontend packages...
+    call npm install
+)
 call npm run build
 set BUILD_RESULT=%ERRORLEVEL%
 popd

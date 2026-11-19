@@ -3,6 +3,7 @@ import hashlib
 import os
 import re
 import shutil
+import threading
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -150,6 +151,23 @@ def _find_existing_upload(
     return None
 
 
+# Two identical uploads finishing at the same moment must not each find the other and delete
+# themselves (both jobs would then point at a file that no longer exists).
+_dedupe_lock = threading.Lock()
+
+
+def _keep_one_copy(upload_dest: Path, name: str, sha256: str) -> Path:
+    """The file to use for a finished upload: an identical earlier one (this copy is removed) or this one."""
+    with _dedupe_lock:
+        size = upload_dest.stat().st_size
+        existing = _find_existing_upload(name, size, sha256, exclude=upload_dest)
+        if existing is not None:
+            upload_dest.unlink(missing_ok=True)
+            return existing
+        _remember_sha256(upload_dest, sha256)
+        return upload_dest
+
+
 async def _probe_upload(path: Path) -> ProbeResponse:
     res = await probe_media_file(str(path))
     res.file_name = _display_name(path.name)
@@ -250,13 +268,7 @@ async def upload_media_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Failed to save uploaded file: {exc}")
 
     # Same file uploaded before? Keep one copy only when the content hash also matches.
-    size = upload_dest.stat().st_size
-    existing = await asyncio.to_thread(_find_existing_upload, clean_name, size, sha256, exclude=upload_dest)
-    if existing is not None:
-        upload_dest.unlink(missing_ok=True)
-        upload_dest = existing
-    else:
-        _remember_sha256(upload_dest, sha256)
+    upload_dest = await asyncio.to_thread(_keep_one_copy, upload_dest, clean_name, sha256)
 
     try:
         return await _probe_upload(upload_dest)

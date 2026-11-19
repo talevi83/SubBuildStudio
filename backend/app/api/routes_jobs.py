@@ -250,6 +250,9 @@ async def create_job(req: JobCreate, session: Session = Depends(get_session)):
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"Target video file not found: {req.video_path}")
 
+    if (req.onscreen_position or "").strip() and req.onscreen_position.strip() not in _VALID_ONSCREEN_POSITIONS:
+        raise HTTPException(status_code=400, detail=f"Unknown onscreen_position: {req.onscreen_position}")
+
     job_id = f"job_{uuid.uuid4().hex[:10]}"
     resolved = path.resolve()
     syncing = req.sync_cues is not None
@@ -277,7 +280,7 @@ async def create_job(req: JobCreate, session: Session = Depends(get_session)):
         detect_onscreen_text=req.detect_onscreen_text,
         onscreen_sensitivity=req.onscreen_sensitivity,
         allow_onscreen_overlap=req.allow_onscreen_overlap,
-        onscreen_position=req.onscreen_position or getattr(saved_settings, "onscreen_position", "top_center"),
+        onscreen_position=(req.onscreen_position or "").strip() or getattr(saved_settings, "onscreen_position", "top_center"),
         convert_to_metric=(
             req.convert_to_metric
             if req.convert_to_metric is not None
@@ -366,8 +369,7 @@ def update_job_settings(job_id: str, req: JobSettingsUpdate, session: Session = 
 def delete_segments_bulk(job_id: str, segment_ids: List[int], session: Session = Depends(get_session)):
     """Delete multiple subtitle lines by ID and renumber remaining lines."""
     job = _get_job_or_404(session, job_id)
-    if job.status in ACTIVE_STATUSES:
-        raise HTTPException(status_code=409, detail="The job is still running; delete lines when it has finished")
+    _require_not_running(job, "delete lines")
     if not segment_ids:
         rows = _ordered_rows(session, job_id)
         return SegmentsChangeResponse(changed=0, segments=[_segment_to_schema(r) for r in rows])
@@ -803,8 +805,7 @@ def _timecode(seconds: float) -> str:
 def create_segment(job_id: str, req: SegmentCreate, session: Session = Depends(get_session)):
     """Add a subtitle line by hand. It must not overlap an existing line; lines are renumbered."""
     job = _get_job_or_404(session, job_id)
-    if job.status in ACTIVE_STATUSES:
-        raise HTTPException(status_code=409, detail="The job is still running; add lines when it has finished")
+    _require_not_running(job, "add lines")
     start, end = round(req.start_time, 3), round(req.end_time, 3)
     if start < 0:
         raise HTTPException(status_code=422, detail="The start time cannot be negative")
@@ -864,8 +865,7 @@ def create_segment(job_id: str, req: SegmentCreate, session: Session = Depends(g
 def delete_segment(job_id: str, segment_id: int, session: Session = Depends(get_session)):
     """Delete a subtitle line by user request and renumber subsequent lines."""
     job = _get_job_or_404(session, job_id)
-    if job.status in ACTIVE_STATUSES:
-        raise HTTPException(status_code=409, detail="The job is still running; delete lines when it has finished")
+    _require_not_running(job, "delete lines")
     seg = session.get(SubtitleSegmentRecord, segment_id)
     if not seg or seg.job_id != job_id:
         raise HTTPException(status_code=404, detail="Subtitle segment not found")
@@ -921,8 +921,7 @@ def split_segment(
 ):
     """Split one subtitle segment into two consecutive segments and renumber."""
     job = _get_job_or_404(session, job_id)
-    if job.status in ACTIVE_STATUSES:
-        raise HTTPException(status_code=409, detail="The job is still running; split lines when it has finished")
+    _require_not_running(job, "split lines")
     seg = session.get(SubtitleSegmentRecord, segment_id)
     if not seg or seg.job_id != job_id:
         raise HTTPException(status_code=404, detail="Subtitle segment not found")
@@ -982,13 +981,28 @@ def split_segment(
     return SegmentsChangeResponse(changed=2, created_id=second.id, segments=[_segment_to_schema(r) for r in rows])
 
 
+def _lane(row: SubtitleSegmentRecord) -> str:
+    """On-screen text is shown in its own place and may overlap dialogue; everything else shares one lane."""
+    return "ON_SCREEN" if row.segment_type == "ON_SCREEN" else "MAIN"
+
+
+def _are_neighbours(rows: List[SubtitleSegmentRecord], targets: List[SubtitleSegmentRecord]) -> bool:
+    """True when `targets` are one lane's consecutive lines (in time order)."""
+    lanes = {_lane(t) for t in targets}
+    if len(lanes) != 1:
+        return False
+    lane = lanes.pop()
+    order = [r.id for r in rows if _lane(r) == lane]
+    positions = sorted(order.index(t.id) for t in targets)
+    return positions == list(range(positions[0], positions[0] + len(positions)))
+
+
 @router.post("/{job_id}/segments/merge", response_model=SegmentsChangeResponse)
 @_history_locked
 def merge_segments(job_id: str, req: MergeSegmentsRequest, session: Session = Depends(get_session)):
     """Merge 2 or more subtitle segments into one combined cue and renumber."""
     job = _get_job_or_404(session, job_id)
-    if job.status in ACTIVE_STATUSES:
-        raise HTTPException(status_code=409, detail="The job is still running; merge lines when it has finished")
+    _require_not_running(job, "merge lines")
 
     targets = session.exec(
         select(SubtitleSegmentRecord).where(
@@ -999,6 +1013,12 @@ def merge_segments(job_id: str, req: MergeSegmentsRequest, session: Session = De
     targets.sort(key=lambda r: (r.start_time, r.end_time, r.index))
     if len(targets) < 2:
         raise HTTPException(status_code=400, detail="Select at least 2 lines to merge")
+    if not _are_neighbours(_ordered_rows(session, job_id), targets):
+        # Merging #1 and #4 would make one line that covers #2 and #3 (overlapping subtitles)
+        raise HTTPException(
+            status_code=400,
+            detail="Only neighbouring lines can be merged (on-screen text and dialogue are merged separately)",
+        )
 
     recording = _history_begin(session, job)
     first = targets[0]
@@ -1040,8 +1060,7 @@ def merge_segments(job_id: str, req: MergeSegmentsRequest, session: Session = De
 def shift_segments(job_id: str, req: ShiftSegmentsRequest, session: Session = Depends(get_session)):
     """Shift timestamps of all or selected subtitle segments by offset_seconds (+/-)."""
     job = _get_job_or_404(session, job_id)
-    if job.status in ACTIVE_STATUSES:
-        raise HTTPException(status_code=409, detail="The job is still running; shift lines when it has finished")
+    _require_not_running(job, "shift lines")
     if abs(req.offset_seconds) < 0.001 or abs(req.offset_seconds) > 86400:
         raise HTTPException(status_code=422, detail="Offset must be between 0.001s and 86400s in magnitude")
 

@@ -47,7 +47,9 @@ class AppSettings(BaseModel):
     glossary: GeminiCallSettings
     vision: GeminiCallSettings = Field(description="Reads on-screen text from video frames")
     vision_media_resolution: Literal["low", "medium", "high"] = "medium"
-    onscreen_position: Literal["top_center", "top_left", "top_right", "middle_left", "middle_right"] = "top_center"
+    onscreen_position: Literal[
+        "top_center", "top_left", "top_right", "middle_left", "middle_right", "middle_center"
+    ] = "top_center"
     convert_to_metric: bool = False
     remove_sdh_speakers: bool = False
     skip_end_credits: bool = True

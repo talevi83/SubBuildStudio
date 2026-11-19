@@ -89,7 +89,7 @@ const EditableText: React.FC<{
 
   // Save pending edits if the row unmounts (e.g. search filter changes) or before Export / Undo
   useEffect(() => {
-    const unregister = registerPendingFlush(flush);
+    const unregister = registerPendingFlush(flush, () => dirty.current);
     return () => {
       unregister();
       flush();
@@ -368,9 +368,7 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                if (window.confirm(t('table.confirmDeleteRow', { index: seg.index }))) {
-                  onDelete(seg);
-                }
+                onDelete(seg); // no question asked: the toast that follows offers Undo
               }}
               title={t('table.deleteRow', { index: seg.index })}
               aria-label={t('table.deleteRow', { index: seg.index })}

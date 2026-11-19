@@ -21,6 +21,8 @@ import type {
   HistoryRestoreResult,
 } from '../types';
 import { getItemWithLegacy } from '../utils/legacyStorage';
+import type { MessageKey } from '../i18n';
+import { buildSearchPattern, DEFAULT_SEARCH_OPTIONS, planReplacements, type SearchOptions } from '../utils/textSearch';
 
 const CONFIG_STORAGE_KEY = 'subbuild.pipelineConfig';
 
@@ -158,6 +160,9 @@ interface JobState {
   splitSegment: (segmentId: number, splitTime?: number) => Promise<string | null>;
   /** Merge 2+ lines into one combined line */
   mergeSegments: (segmentIds: number[]) => Promise<string | null>;
+  /** A short confirmation shown at the bottom (e.g. "Line #4 deleted"), optionally with Undo */
+  notice: Notice | null;
+  clearNotice: () => void;
   /** Shift all or selected lines by offsetSeconds */
   shiftSegments: (offsetSeconds: number, segmentIds?: number[]) => Promise<string | null>;
   /** Update onscreen_position on the active job and persist it */
@@ -199,7 +204,13 @@ interface JobState {
   deleteJobs: (jobIds: string[]) => Promise<void>;
   deleteAllJobs: () => Promise<void>;
   updateSegment: (segmentId: number, patch: SegmentPatch) => Promise<void>;
-  replaceAll: (search: string, replacement: string, column: 'original' | 'translated', isRegex?: boolean) => Promise<number>;
+  /** Replace in every line; `options` is the search options, or just "use regex" (older callers) */
+  replaceAll: (
+    search: string,
+    replacement: string,
+    column: 'original' | 'translated',
+    options?: boolean | Partial<SearchOptions>
+  ) => Promise<number>;
   saveGlossary: (glossary: Glossary, profile?: string) => Promise<boolean>;
   retimeActiveJob: () => Promise<void>;
   moveSegment: (segmentId: number, toPosition: number) => Promise<void>;
@@ -213,20 +224,37 @@ interface JobState {
   disconnectWebSocket: () => void;
 }
 
+export interface Notice {
+  id: number;
+  key: MessageKey;
+  vars?: Record<string, string | number>;
+  /** Offer "Undo" (the change is one step of the edit history) */
+  undo?: boolean;
+}
+
 let activeSocket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempts = 0;
 /** Segment saves still on their way: undo and export wait for them, so a late autosave can't race */
 const inflightSaves = new Set<Promise<unknown>>();
 const pendingFlushCallbacks = new Set<() => void>();
+const pendingDirtyChecks = new Set<() => boolean>();
+
 let historyRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Register a synchronous flush callback from an EditableText cell so Export / Undo can flush before saving. */
-export const registerPendingFlush = (fn: () => void): (() => void) => {
+export const registerPendingFlush = (fn: () => void, isDirty?: () => boolean): (() => void) => {
   pendingFlushCallbacks.add(fn);
+  if (isDirty) pendingDirtyChecks.add(isDirty);
   return () => {
     pendingFlushCallbacks.delete(fn);
+    if (isDirty) pendingDirtyChecks.delete(isDirty);
   };
+};
+
+/** Flush pending inline edits right away (no waiting), e.g. when the window is being closed. */
+export const flushPendingEditsNow = (): void => {
+  for (const flush of [...pendingFlushCallbacks]) flush();
 };
 
 const flushAllPendingEdits = async () => {
@@ -238,12 +266,19 @@ const flushAllPendingEdits = async () => {
   }
 };
 
-const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-const mergeSegments = (segments: SubtitleSegment[], updates: SubtitleSegment[]): SubtitleSegment[] => {
-  const byIndex = new Map(updates.map((u) => [u.index, u]));
-  return segments.map((s) => (byIndex.has(s.index) ? { ...s, ...byIndex.get(s.index)! } : s));
+/** Apply updates from the server: by row id when both sides have one (line numbers can change), else by number. */
+export const mergeSegments = (segments: SubtitleSegment[], updates: SubtitleSegment[]): SubtitleSegment[] => {
+  const byId = new Map(updates.filter((u) => u.id != null).map((u) => [u.id!, u]));
+  const byIndex = new Map(updates.filter((u) => u.id == null).map((u) => [u.index, u]));
+  return segments.map((s) => {
+    const update = (s.id != null ? byId.get(s.id) : undefined) ?? byIndex.get(s.index);
+    // The row keeps its own number and times; a batch only carries the translation result
+    return update ? { ...s, ...update, index: s.index, start_time: s.start_time, end_time: s.end_time } : s;
+  });
 };
+
+/** True while an inline edit is waiting to be saved or a save is on its way. */
+export const hasUnsavedEdits = (): boolean => inflightSaves.size > 0 || [...pendingDirtyChecks].some((isDirty) => isDirty());
 
 export const useJobStore = create<JobState>((set, get) => {
   /** Apply a change to the active job and mirror status/progress into the sidebar list. */
@@ -396,6 +431,8 @@ export const useJobStore = create<JobState>((set, get) => {
     undo: () => runHistoryAction((id) => api.undo(id)),
     redo: () => runHistoryAction((id) => api.redo(id)),
     restoreHistory: (entryId) => runHistoryAction((id) => api.restoreHistory(id, entryId)),
+    notice: null,
+    clearNotice: () => set({ notice: null }),
     insertDraft: null,
     openInsert: (draft) => {
       const job = get().activeJob;
@@ -423,15 +460,22 @@ export const useJobStore = create<JobState>((set, get) => {
     deleteSegment: async (segmentId) => {
       const job = get().activeJob;
       if (!job) return 'No project is open';
+      const deletedIndex = job.segments.find((s) => s.id === segmentId)?.index;
       try {
+        await flushAllPendingEdits();
         const res = await api.deleteSegment(job.id, segmentId);
         if (get().activeJob?.id !== job.id) return null;
         patchActiveJob({ segments: res.segments });
-        set({ selectedSegmentIndex: null });
+        set({
+          selectedSegmentIndex: null,
+          notice: { id: Date.now(), key: 'ux.rowDeleted', vars: { index: deletedIndex ?? '' }, undo: true },
+        });
         scheduleHistoryRefresh();
         return null;
       } catch (e: unknown) {
-        return e instanceof Error ? e.message : String(e);
+        const msg = e instanceof Error ? e.message : String(e);
+        set({ error: msg });
+        return msg;
       }
     },
     deleteSegments: async (segmentIds) => {
@@ -442,11 +486,16 @@ export const useJobStore = create<JobState>((set, get) => {
         const res = await api.deleteSegments(job.id, segmentIds);
         if (get().activeJob?.id !== job.id) return null;
         patchActiveJob({ segments: res.segments });
-        set({ selectedSegmentIndex: null });
+        set({
+          selectedSegmentIndex: null,
+          notice: { id: Date.now(), key: 'ux.rowsDeleted', vars: { count: res.changed }, undo: true },
+        });
         scheduleHistoryRefresh();
         return null;
       } catch (e: unknown) {
-        return e instanceof Error ? e.message : String(e);
+        const msg = e instanceof Error ? e.message : String(e);
+        set({ error: msg });
+        return msg;
       }
     },
     splitSegment: async (segmentId, splitTime) => {
@@ -594,6 +643,7 @@ export const useJobStore = create<JobState>((set, get) => {
           activeJob: job,
           history: null,
           isLoading: false,
+          notice: null,
           insertDraft: null,
           selectedSegmentIndex: null,
           problemFilter: 'NONE',
@@ -639,6 +689,7 @@ export const useJobStore = create<JobState>((set, get) => {
       set({
         activeJob: null,
         history: null,
+        notice: null,
         probeResult: null,
         insertDraft: null,
         syncFile: null,
@@ -885,39 +936,20 @@ export const useJobStore = create<JobState>((set, get) => {
       }
     },
 
-    replaceAll: async (search, replacement, column, isRegex) => {
+    replaceAll: async (search, replacement, column, options) => {
       await flushAllPendingEdits();
       const { activeJob } = get();
       if (!activeJob || !search) return 0;
-      let pattern: RegExp;
-      try {
-        if (isRegex) {
-          const match = search.match(/^\/(.*)\/([a-z]*)$/s);
-          if (match) {
-            const flags = match[2].includes('g') ? match[2] : match[2] + 'g';
-            pattern = new RegExp(match[1], flags);
-          } else {
-            pattern = new RegExp(search, 'gi');
-          }
-        } else {
-          pattern = new RegExp(escapeRegExp(search), 'gi');
-        }
-      } catch (e: any) {
-        set({ error: e.message });
+      const opts = { ...DEFAULT_SEARCH_OPTIONS, ...(typeof options === 'boolean' ? { useRegex: options } : options) };
+      const { regex, error } = buildSearchPattern(search, opts);
+      if (!regex) {
+        if (error) set({ error });
         return 0;
       }
       const field = column === 'translated' ? 'translated_text' : 'original_text';
-      const patches = activeJob.segments
-        .filter((s) => s.id && (s[field] || '').match(pattern))
-        .map((s) => {
-          const currentText = s[field] || '';
-          const newText = isRegex
-            ? currentText.replace(pattern, replacement ?? '')
-            : currentText.replace(pattern, () => replacement ?? '');
-          return { id: s.id!, currentText, newText };
-        })
-        .filter(({ currentText, newText }) => newText !== currentText)
-        .map(({ id, newText }) => ({ id, [field]: newText }));
+      const patches = planReplacements(activeJob.segments, field, regex, replacement ?? '', opts.useRegex).map(
+        ({ id, after }) => ({ id, [field]: after })
+      );
       if (patches.length === 0) return 0;
       set((s) => ({ savingCount: s.savingCount + 1 }));
       try {

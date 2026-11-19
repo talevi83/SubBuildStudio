@@ -1,3 +1,4 @@
+import asyncio
 import threading
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
@@ -109,6 +110,26 @@ class PipelineContext:
     def raise_if_cancelled(self) -> None:
         if self.cancel_flag.is_set():
             raise PipelineCancelled()
+
+    async def run_cancellable(self, awaitable: Any, poll_seconds: float = 0.25) -> Any:
+        """Await `awaitable`, but stop it within ~poll_seconds of a cancel request.
+
+        An AI request can take minutes; without this, Cancel would only take effect when the
+        request in flight returns. The work is cancelled and PipelineCancelled is raised.
+        """
+        task = asyncio.ensure_future(awaitable)
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=poll_seconds)
+                if done:
+                    return task.result()
+                if self.cancel_flag.is_set():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                    raise PipelineCancelled()
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
 
     @property
     def effective_source_language(self) -> Optional[str]:

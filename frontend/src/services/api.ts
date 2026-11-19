@@ -7,14 +7,44 @@ const API_BASE = '/api';
 const NOT_SIGNED_IN =
   'This window is not signed in to the running SubBuild Studio. Open the studio from its desktop shortcut or tray icon, or use the link printed in the console that started it.';
 
+/**
+ * The message to show for a failed request. FastAPI sends `detail` as a string for our own errors,
+ * but as a list of `{loc, msg}` objects when the request didn't pass validation (HTTP 422).
+ */
+export function errorDetail(body: unknown, fallback: string): string {
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((d) => {
+        if (typeof d === 'string') return d;
+        const item = d as { loc?: unknown[]; msg?: unknown };
+        if (typeof item?.msg !== 'string') return null;
+        const field = Array.isArray(item.loc) ? item.loc.filter((p) => p !== 'body' && p !== 'query').join('.') : '';
+        return field ? `${field}: ${item.msg}` : item.msg;
+      })
+      .filter((p): p is string => !!p);
+    if (parts.length) return parts.join('; ');
+  }
+  return fallback;
+}
+
 async function request<T>(url: string, init?: RequestInit, fallbackError = 'Request failed'): Promise<T> {
   const res = await fetch(url, init);
   if (res.status === 401) throw new Error(NOT_SIGNED_IN);
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: fallbackError }));
-    throw new Error(typeof err.detail === 'string' ? err.detail : fallbackError);
+    const err = await res.json().catch(() => null);
+    throw new Error(errorDetail(err, fallbackError));
   }
   return res.json();
+}
+
+/** Thrown when the user cancels an upload (or the duplicate check before it). */
+export class UploadCancelled extends Error {
+  constructor() {
+    super('Upload cancelled');
+    this.name = 'UploadCancelled';
+  }
 }
 
 const json = (method: string, body: unknown): RequestInit => ({
@@ -41,23 +71,33 @@ export const api = {
   },
 
   /** Returns the probe of an identical earlier upload (same name + size + SHA-256 content hash), or null. */
-  async findExistingUpload(file: File): Promise<ProbeResponse | null> {
+  async findExistingUpload(
+    file: File,
+    options: { signal?: AbortSignal; onProgress?: (fraction: number) => void } = {}
+  ): Promise<ProbeResponse | null> {
     // Hashing reads the whole file, which takes as long as uploading it. Only do it when an
     // earlier upload with the same name and size exists (if the check fails, hash anyway).
     const candidates = await request<{ count: number }>(
       `${API_BASE}/media/upload/candidates?${new URLSearchParams({ name: file.name, size: String(file.size) })}`
     ).catch(() => null);
     if (candidates && candidates.count === 0) return null;
-    const sha256 = await hashBlobSha256(file);
+    const sha256 = await hashBlobSha256(file, options);
+    if (options.signal?.aborted) throw new UploadCancelled();
     if (!sha256) return null;
     const params = new URLSearchParams({ name: file.name, size: String(file.size), sha256 });
     return request<ProbeResponse | null>(`${API_BASE}/media/upload/existing?${params}`).catch(() => null);
   },
 
   /** Upload with progress reporting (fetch() can't report upload progress). */
-  uploadFile(file: File, onProgress?: (fraction: number) => void): Promise<ProbeResponse> {
+  uploadFile(file: File, onProgress?: (fraction: number) => void, signal?: AbortSignal): Promise<ProbeResponse> {
     return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new UploadCancelled());
+        return;
+      }
       const xhr = new XMLHttpRequest();
+      signal?.addEventListener('abort', () => xhr.abort(), { once: true });
+      xhr.onabort = () => reject(new UploadCancelled());
       xhr.open('POST', `${API_BASE}/media/upload`);
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
@@ -70,7 +110,8 @@ export const api = {
           /* ignore */
         }
         if (xhr.status >= 200 && xhr.status < 300) resolve(body);
-        else reject(new Error(body?.detail || 'Upload failed'));
+        else if (xhr.status === 401) reject(new Error(NOT_SIGNED_IN));
+        else reject(new Error(errorDetail(body, 'Upload failed')));
       };
       xhr.onerror = () => reject(new Error('Upload failed (network error)'));
       const formData = new FormData();
@@ -139,7 +180,8 @@ export const api = {
   updateSegment(jobId: string, segmentId: number, patch: SegmentPatch): Promise<SubtitleSegment> {
     return request(
       `${API_BASE}/jobs/${jobId}/segments/${segmentId}`,
-      json('PATCH', patch),
+      // keepalive: an edit saved as the window closes still reaches the server
+      { ...json('PATCH', patch), keepalive: true },
       'Failed to update subtitle segment'
     );
   },

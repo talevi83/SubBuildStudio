@@ -18,6 +18,7 @@ import { ProblemFilterSelect } from './table/ProblemFilterSelect';
 import { TableActions } from './table/TableActions';
 import { QaPanel } from './table/QaPanel';
 import { SelectionBar, type RowTranslateOptions } from './table/SelectionBar';
+import { areNeighbours } from './table/mergeRules';
 import { useSegmentFilters } from './table/useSegmentFilters';
 import { useRowSelection } from './table/useRowSelection';
 import { useVirtualRows } from './table/useVirtualRows';
@@ -59,6 +60,8 @@ export const SubtitleTable: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const deferredSearchTerm = useDeferredValue(searchTerm);
   const [useRegex, setUseRegex] = useState(false);
+  const [matchCase, setMatchCase] = useState(false);
+  const [wholeWord, setWholeWord] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [tagFilter, setTagFilter] = useState<string>('ALL');
   const [replaceResult, setReplaceResult] = useState<string | null>(null);
@@ -117,6 +120,8 @@ export const SubtitleTable: React.FC = () => {
     tagFilter,
     searchTerm: deferredSearchTerm,
     useRegex,
+    matchCase,
+    wholeWord,
   });
 
   const isLive = segments.length > 0 && segments.some((s) => !s.id);
@@ -139,6 +144,8 @@ export const SubtitleTable: React.FC = () => {
     handleSelectFromStart,
     checkedRangeBounds,
   } = useRowSelection(filteredSegments, `${activeJob?.id ?? ''}:${jobFinished}`);
+  // Neighbours in the whole project, not just the filtered view: rows hidden by a filter count too
+  const checkedAreNeighbours = useMemo(() => areNeighbours(segments, checked), [segments, checked]);
   const {
     scrollContainerRef,
     handleTableScroll,
@@ -212,15 +219,14 @@ export const SubtitleTable: React.FC = () => {
   );
 
   const handleDeleteSelected = async () => {
-    if (checked.size === 0) return;
-    if (!window.confirm(t('table.confirmDeleteSelectedRows', { count: checked.size }))) return;
+    if (checked.size === 0) return; // no question asked: the toast that follows offers Undo
     const ids = [...checked];
     setChecked(new Set());
     await deleteSegments(ids);
   };
 
   const handleMergeSelected = async () => {
-    if (checked.size < 2) return;
+    if (checked.size < 2 || !checkedAreNeighbours) return;
     const ids = [...checked];
     setChecked(new Set());
     await mergeSegments(ids);
@@ -264,6 +270,10 @@ export const SubtitleTable: React.FC = () => {
           onSearchChange={setSearchTerm}
           useRegex={useRegex}
           onToggleRegex={() => setUseRegex((v) => !v)}
+          matchCase={matchCase}
+          onToggleMatchCase={() => setMatchCase((v) => !v)}
+          wholeWord={wholeWord}
+          onToggleWholeWord={() => setWholeWord((v) => !v)}
           regexError={regexError}
           isLive={isLive}
           onResult={showReplaceResult}
@@ -361,6 +371,7 @@ export const SubtitleTable: React.FC = () => {
           onTranslate={translateRows}
           onOpenNote={() => setRowsDialog(true)}
           canMerge={canInsert}
+          mergeBlockedReason={checkedAreNeighbours ? undefined : t('table.mergeNotNeighbours')}
           onMerge={() => void handleMergeSelected()}
           canDelete={canInsert}
           onDelete={() => void handleDeleteSelected()}

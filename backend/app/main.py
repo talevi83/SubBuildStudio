@@ -23,6 +23,7 @@ from app.core.upload_limits import UploadLimitGuard
 from app.core.database import init_db
 from app.core.housekeeping import cleanup_storage, uploads_dir
 from app.core.ws_manager import ws_manager
+from app.core.updater import read_version_file
 from app.api import routes_system, routes_media, routes_jobs, routes_export, routes_settings, routes_glossary, routes_storage, routes_history
 from app.pipeline.orchestrator import recover_interrupted_jobs
 
@@ -37,6 +38,12 @@ async def lifespan(app: FastAPI):
     """Application startup and shutdown events."""
     logger.info("Initializing SubBuild Studio Database...")
     init_db()
+    try:
+        from app.core.provider_keys import encrypt_vault_at_rest
+
+        encrypt_vault_at_rest()
+    except Exception as e:  # never block startup; the vault keeps working unencrypted
+        logger.warning(f"Could not encrypt the key vault: {e}")
     recovered = recover_interrupted_jobs()
     if recovered:
         logger.warning(f"Recovered {recovered} job(s) interrupted by a restart.")
@@ -73,7 +80,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="SubBuild Studio API",
     description="Professional local video subtitling, transcription & translation pipeline.",
-    version="1.0.0",
+    version=read_version_file(),
     lifespan=lifespan,
 )
 

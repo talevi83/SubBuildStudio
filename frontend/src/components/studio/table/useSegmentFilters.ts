@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import type { ProblemFilter, SubtitleSegment } from '../../../types';
+import { buildSearchPattern, hasMatch } from '../../../utils/textSearch';
 
 /** Matches 3+ consecutive ASCII Latin letters left inside an RTL translation */
 const LATIN_WORD_RE = /[A-Za-z]{3,}/;
@@ -33,6 +34,8 @@ export interface SegmentFilterOptions {
   /** Already deferred by the caller (useDeferredValue) */
   searchTerm: string;
   useRegex: boolean;
+  matchCase?: boolean;
+  wholeWord?: boolean;
 }
 
 /** Problem / tag / text filters of the subtitle table, plus the counts shown in the filter menus. */
@@ -47,6 +50,8 @@ export function useSegmentFilters({
   tagFilter,
   searchTerm,
   useRegex,
+  matchCase = false,
+  wholeWord = false,
 }: SegmentFilterOptions) {
   const isUntranslated = useCallback(
     (s: SubtitleSegment) =>
@@ -102,20 +107,10 @@ export function useSegmentFilters({
     return { onscreen, comms, foreign, anyTagged };
   }, [segments]);
 
-  const { regex: searchRegex, error: regexError } = useMemo(() => {
-    if (!useRegex || !searchTerm) return { regex: null, error: null };
-    try {
-      const match = searchTerm.match(/^\/(.*)\/([a-z]*)$/s);
-      if (match) {
-        // Strip 'g' flag so RegExp.prototype.test() remains stateless across segments
-        const flags = match[2] ? match[2].replace(/g/g, '') : 'i';
-        return { regex: new RegExp(match[1], flags), error: null };
-      }
-      return { regex: new RegExp(searchTerm, 'i'), error: null };
-    } catch (err) {
-      return { regex: null, error: err instanceof Error ? err.message : String(err) };
-    }
-  }, [useRegex, searchTerm]);
+  const { regex: searchRegex, error: regexError } = useMemo(
+    () => buildSearchPattern(searchTerm.trim() ? searchTerm : '', { useRegex, matchCase, wholeWord }),
+    [useRegex, matchCase, wholeWord, searchTerm]
+  );
 
   const filteredSegments = useMemo(() => {
     let list = segments;
@@ -131,22 +126,12 @@ export function useSegmentFilters({
         list = list.filter((s) => s.segment_type === tagFilter);
       }
     }
-    if (!searchTerm) return list;
-    if (useRegex) {
-      if (regexError || !searchRegex) return [];
-      return list.filter(
-        (s) => searchRegex.test(s.original_text) || (s.translated_text ? searchRegex.test(s.translated_text) : false)
-      );
-    }
     if (!searchTerm.trim()) return list;
-    const term = searchTerm.toLowerCase();
-    return list.filter(
-      (s) => s.original_text.toLowerCase().includes(term) || s.translated_text?.toLowerCase().includes(term)
-    );
+    if (regexError || !searchRegex) return [];
+    return list.filter((s) => hasMatch(searchRegex, s.original_text) || hasMatch(searchRegex, s.translated_text));
   }, [
     segments,
     searchTerm,
-    useRegex,
     searchRegex,
     regexError,
     problemFilter,

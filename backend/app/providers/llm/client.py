@@ -169,7 +169,18 @@ async def _post_json_with_retry(
                     continue
                 if resp.status_code >= 400:
                     raise RuntimeError(f"{provider_label} HTTP {resp.status_code}: {resp.text[:400]}")
-                return resp.json()
+                try:
+                    data = resp.json()
+                except ValueError:
+                    # e.g. a proxy's or captive portal's HTML page answering with 200
+                    raise RuntimeError(
+                        f"{provider_label} returned a response that is not JSON "
+                        f"(HTTP {resp.status_code}, {resp.headers.get('content-type') or 'no content type'}): "
+                        f"{resp.text[:200]!r}"
+                    ) from None
+                if not isinstance(data, dict):
+                    raise RuntimeError(f"{provider_label} returned unexpected JSON ({type(data).__name__})")
+                return data
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_exc_desc = str(exc).strip() or type(exc).__name__
                 if attempt < max_attempts - 1:

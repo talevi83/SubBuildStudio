@@ -94,7 +94,7 @@ def export_srt(
     job_id: str,
     use_translated: bool = Query(False, description="Export translated subtitle text if True"),
     apply_rtl: bool = Query(True, description="Apply BiDi RTL marks for Hebrew/Arabic"),
-    max_chars_per_line: Optional[int] = Query(None, description="Line length limit"),
+    max_chars_per_line: Optional[int] = Query(None, ge=10, le=200, description="Line length limit"),
     bilingual: bool = Query(False, description="Export both original and translated text in each cue"),
     session: Session = Depends(get_session),
 ):
@@ -107,7 +107,7 @@ def export_vtt(
     job_id: str,
     use_translated: bool = Query(False, description="Export translated subtitle text if True"),
     apply_rtl: bool = Query(True, description="Apply BiDi RTL marks for Hebrew/Arabic"),
-    max_chars_per_line: Optional[int] = Query(None, description="Line length limit"),
+    max_chars_per_line: Optional[int] = Query(None, ge=10, le=200, description="Line length limit"),
     bilingual: bool = Query(False, description="Export both original and translated text in each cue"),
     session: Session = Depends(get_session),
 ):

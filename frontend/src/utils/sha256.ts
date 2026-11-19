@@ -134,15 +134,23 @@ const toHex = (buf: ArrayBuffer) =>
  * SHA-256 of a file or blob as lowercase hex, reading it slice by slice so memory use stays at
  * one chunk. Returns null if the file cannot be read.
  */
-export async function hashBlobSha256(blob: Blob): Promise<string | null> {
+export async function hashBlobSha256(
+  blob: Blob,
+  options: { signal?: AbortSignal; onProgress?: (fraction: number) => void } = {}
+): Promise<string | null> {
+  const { signal, onProgress } = options;
   try {
     if (blob.size <= ONE_SHOT_LIMIT && globalThis.crypto?.subtle) {
-      return toHex(await globalThis.crypto.subtle.digest('SHA-256', await blob.arrayBuffer()));
+      const digest = toHex(await globalThis.crypto.subtle.digest('SHA-256', await blob.arrayBuffer()));
+      onProgress?.(1);
+      return signal?.aborted ? null : digest;
     }
     const hasher = new Sha256();
     for (let start = 0; start < blob.size; start += CHUNK_BYTES) {
+      if (signal?.aborted) return null;
       const chunk = await blob.slice(start, Math.min(start + CHUNK_BYTES, blob.size)).arrayBuffer();
       hasher.update(new Uint8Array(chunk));
+      onProgress?.(Math.min(1, (start + chunk.byteLength) / blob.size));
     }
     return hasher.digestHex();
   } catch {

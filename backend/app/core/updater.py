@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -23,7 +24,10 @@ from typing import Any, Dict, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 GITHUB_REPO = "talevi83/SubBuildStudio"
-GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+GITHUB_RELEASE_BY_TAG_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/{{tag}}"
+# Release tags are only trusted when they point at a commit that is already on one of these branches
+# (an accidental or rogue tag on some other branch is never installed automatically).
+RELEASE_BRANCHES = ("origin/main", "origin/master")
 _SEMVER_RE = re.compile(r"^\s*v?(\d+)\.(\d+)\.(\d+)\s*$")
 
 _cached_update_status: Optional[Dict[str, Any]] = None
@@ -88,6 +92,15 @@ def _format_semver(ver: Tuple[int, int, int]) -> str:
     return f"{ver[0]}.{ver[1]}.{ver[2]}"
 
 
+def read_version_file(repo_root: Optional[Path] = None) -> str:
+    """The version in the `VERSION` file ("2.0.1"), or "0.0.0" when it is missing (no Git calls)."""
+    try:
+        raw = ((repo_root or get_repo_root()) / "VERSION").read_text(encoding="utf-8").strip().lstrip("vV")
+    except OSError:
+        return "0.0.0"
+    return raw if parse_semver(raw) else "0.0.0"
+
+
 def get_current_version_info(repo_root: Optional[Path] = None) -> Dict[str, str]:
     """Read local `VERSION` and Git HEAD/tag metadata without network access."""
     root = repo_root or get_repo_root()
@@ -120,7 +133,7 @@ def get_current_version_info(repo_root: Optional[Path] = None) -> Dict[str, str]
     elif tag_tuple:
         current_version = _format_semver(tag_tuple)
     else:
-        current_version = file_ver_raw or git_tag.lstrip("vV") or "1.5.0"
+        current_version = file_ver_raw or git_tag.lstrip("vV") or "0.0.0"
 
     return {
         "current_version": current_version,
@@ -130,11 +143,11 @@ def get_current_version_info(repo_root: Optional[Path] = None) -> Dict[str, str]
     }
 
 
-def _fetch_github_release_metadata(timeout: float = 2.0) -> Tuple[Optional[str], Optional[str]]:
-    """Best-effort query for release page URL & concise notes; returns (None, None) on error."""
+def _fetch_github_release_metadata(tag: str, timeout: float = 2.0) -> Tuple[Optional[str], Optional[str]]:
+    """Best-effort query for the release page URL & concise notes of `tag`; (None, None) on error."""
     try:
         req = urllib.request.Request(
-            GITHUB_LATEST_RELEASE_API,
+            GITHUB_RELEASE_BY_TAG_API.format(tag=urllib.parse.quote(tag, safe="")),
             headers={"Accept": "application/vnd.github+json", "User-Agent": "SubBuild-Studio-Updater"},
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -222,7 +235,7 @@ def check_for_updates(repo_root: Optional[Path] = None, timeout: float = 4.0) ->
     current_tuple = parse_semver(current_version) or (0, 0, 0)
     if best_tuple is not None and best_tag is not None and best_tuple > current_tuple:
         latest_ver = _format_semver(best_tuple)
-        release_url, release_notes = _fetch_github_release_metadata(timeout=min(timeout, 2.0))
+        release_url, release_notes = _fetch_github_release_metadata(best_tag, timeout=min(timeout, 2.0))
         if not release_url:
             release_url = f"https://github.com/{GITHUB_REPO}/releases/tag/{best_tag}"
         result.update(
@@ -322,6 +335,91 @@ def _rebuild_frontend(root: Path, run_npm_install: bool) -> bool:
     return True
 
 
+_TRUE = {"1", "true", "yes", "on"}
+
+
+_FALSE = {"0", "false", "no", "off"}
+# The SSH keys allowed to sign releases (git's "allowed signers" format), at the root of the app.
+# The copy already installed is the one a new release is checked against, so a release can't swap
+# in its own key: a compromised GitHub account can push code and tags, but can't sign them.
+RELEASE_SIGNERS_FILE = "release-signers"
+
+
+def require_signed_tags(root: Path) -> bool:
+    """Whether a release must carry a valid signature before it is installed.
+
+    SUBBUILD_REQUIRE_SIGNED_TAGS (environment, then backend/.env - read directly: this module also
+    runs as a launch-time CLI, before the app's settings exist) decides when it is set; otherwise
+    signatures are required as soon as the installed copy has a release-signers file.
+    """
+    value = os.environ.get("SUBBUILD_REQUIRE_SIGNED_TAGS")
+    if value is None:
+        try:
+            for line in (root / "backend" / ".env").read_text(encoding="utf-8", errors="replace").splitlines():
+                key, sep, raw = line.partition("=")
+                if sep and key.strip().upper() == "SUBBUILD_REQUIRE_SIGNED_TAGS":
+                    value = raw.split("#", 1)[0].strip().strip("'\"")
+        except OSError:
+            value = None
+    value = (value or "").strip().lower()
+    if value in _TRUE:
+        return True
+    if value in _FALSE:
+        return False
+    return (root / RELEASE_SIGNERS_FILE).is_file()
+
+
+def verify_release_tag(root: Path, tag: str) -> Tuple[bool, str]:
+    """(signature ok, git's message) for `tag`, checked against the installed release-signers file
+    (or, without one, against this machine's own git signing configuration)."""
+    signers = root / RELEASE_SIGNERS_FILE
+    args = ["verify-tag", tag]
+    if signers.is_file():
+        args = ["-c", f"gpg.ssh.allowedSignersFile={signers.resolve().as_posix()}", *args]
+    rc, out, err = _run_git(root, *args, timeout=15.0)
+    return rc == 0, (err or out).strip()
+
+
+def _release_branch(root: Path) -> Optional[str]:
+    for ref in RELEASE_BRANCHES:
+        rc, _, _ = _run_git(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", timeout=4.0)
+        if rc == 0:
+            return ref
+    return None
+
+
+def _roll_back(
+    root: Path,
+    old_commit: str,
+    base_reply: Dict[str, Any],
+    reason: str,
+    reinstall_requirements: bool,
+    rebuild_frontend_after: bool,
+    pkg_changed: bool,
+) -> Dict[str, Any]:
+    """Return the working copy to `old_commit` after a failed update step (best effort)."""
+    reply = dict(base_reply)
+    reply["skipped_reason"] = reason
+    what = "installing the new Python packages" if reason == "dependency_install_failed" else "building the new interface"
+    if not old_commit:
+        reply["message"] = f"Update failed while {what}, and the previous version is unknown. Reinstall SubBuild Studio."
+        logger.error("Updater: %s and no previous commit to roll back to", reason)
+        return reply
+    rc, _, err = _run_git(root, "reset", "--keep", old_commit, timeout=30.0)
+    if rc != 0:
+        reply["message"] = (f"Update failed while {what}, and going back to the previous version failed too "
+                            f"({err or 'git reset'}). Run 'git reset --keep {old_commit[:12]}' in the app folder.")
+        logger.error("Updater: rollback to %s failed: %s", old_commit[:12], err)
+        return reply
+    if reinstall_requirements:
+        _install_backend_requirements(root)
+    if rebuild_frontend_after:
+        _rebuild_frontend(root, run_npm_install=pkg_changed)
+    reply["message"] = f"Update failed while {what}; kept the previous version. Details are in the server log."
+    logger.warning("Updater: %s; rolled back to %s", reason, old_commit[:12])
+    return reply
+
+
 def apply_update(
     repo_root: Optional[Path] = None,
     auto_mode: bool = False,
@@ -388,6 +486,27 @@ def apply_update(
         logger.warning("Updater fetch failed for %s: %s", target_ref, base_reply["message"])
         return base_reply
 
+    release_branch = _release_branch(root)
+    if release_branch is None:
+        base_reply["skipped_reason"] = "no_release_branch"
+        base_reply["message"] = "Skipped update: the remote main branch could not be found."
+        logger.warning("Updater apply skipped (target=%s): no origin/main or origin/master", target_ref)
+        return base_reply
+    anc_rc, _, _ = _run_git(root, "merge-base", "--is-ancestor", target_ref, release_branch, timeout=15.0)
+    if anc_rc != 0:
+        base_reply["skipped_reason"] = "tag_not_on_main"
+        base_reply["message"] = f"Skipped update: release {target_ref} is not part of {release_branch}."
+        logger.warning("Updater apply skipped: %s is not an ancestor of %s", target_ref, release_branch)
+        return base_reply
+    if require_signed_tags(root):
+        signed, detail = verify_release_tag(root, target_ref)
+        if not signed:
+            base_reply["skipped_reason"] = "unsigned_tag"
+            base_reply["message"] = f"Skipped update: release {target_ref} has no valid signature."
+            logger.warning("Updater apply skipped: git verify-tag %s failed: %s", target_ref, detail)
+            return base_reply
+        logger.info("Updater: release %s is signed by a trusted key (%s)", target_ref, detail[:200])
+
     pull_rc, pull_out, pull_err = _run_git(root, "merge", "--ff-only", target_ref, timeout=30.0)
 
     if pull_rc != 0:
@@ -401,13 +520,25 @@ def apply_update(
     after_info = get_current_version_info(root)
     new_full_commit = after_info["full_commit"]
 
+    req_changed = req_before != req_after and req_after is not None
+    pkg_changed = pkg_before != pkg_after
     req_updated = False
-    if req_before != req_after and req_after is not None:
+    if req_changed:
         req_updated = _install_backend_requirements(root)
+        if not req_updated:
+            # New code without its dependencies would not start: go back to the version that worked
+            return _roll_back(root, old_full_commit, base_reply, "dependency_install_failed",
+                              reinstall_requirements=True, rebuild_frontend_after=False, pkg_changed=False)
 
     fe_rebuilt = False
-    if rebuild_frontend and _frontend_needs_rebuild(root, old_full_commit, new_full_commit, pkg_before != pkg_after):
-        fe_rebuilt = _rebuild_frontend(root, run_npm_install=(pkg_before != pkg_after))
+    if rebuild_frontend and _frontend_needs_rebuild(root, old_full_commit, new_full_commit, pkg_changed):
+        fe_rebuilt = _rebuild_frontend(root, run_npm_install=pkg_changed)
+        if not fe_rebuilt and not (root / "frontend" / "dist" / "index.html").is_file():
+            # vite empties frontend/dist before building: a build that failed midway leaves no UI at
+            # all. (When it failed before starting - e.g. npm missing - the previous UI still works.)
+            return _roll_back(root, old_full_commit, base_reply, "frontend_build_failed",
+                              reinstall_requirements=req_changed, rebuild_frontend_after=True,
+                              pkg_changed=pkg_changed)
 
     _cached_update_status = {
         "current_version": after_info["current_version"],

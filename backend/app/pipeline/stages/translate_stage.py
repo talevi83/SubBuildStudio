@@ -179,9 +179,9 @@ class TranslateStage(PipelineStage):
                 extra = {"known_glossary": known} if known else {}
                 ctx.glossary = merge_glossary(
                     known,
-                    await translator.build_glossary(
+                    await ctx.run_cancellable(translator.build_glossary(
                         all_segments, source_lang, target_lang, ctx.context_notes or "", **extra
-                    ),
+                    )),
                 )
                 if known and ctx.glossary:
                     # The series profile grows with every episode: new characters are added, the rest stays
@@ -237,7 +237,7 @@ class TranslateStage(PipelineStage):
                 # Translate continuous spoken dialogue first without interleaved ON_SCREEN titles
                 # interrupting multi-segment sentences, then translate ON_SCREEN titles with full context.
                 spoken_context = [s for s in all_segments if (s.segment_type or "DIALOGUE") != "ON_SCREEN"]
-                await translator.translate_segments(
+                await ctx.run_cancellable(translator.translate_segments(
                     segments=spoken_to_translate,
                     source_lang=source_lang,
                     target_lang=target_lang,
@@ -246,8 +246,8 @@ class TranslateStage(PipelineStage):
                     on_batch_complete=_on_batch_complete,
                     glossary=ctx.glossary,
                     context_segments=spoken_context,
-                )
-                await translator.translate_segments(
+                ))
+                await ctx.run_cancellable(translator.translate_segments(
                     segments=onscreen_to_translate,
                     source_lang=source_lang,
                     target_lang=target_lang,
@@ -256,9 +256,9 @@ class TranslateStage(PipelineStage):
                     on_batch_complete=_on_batch_complete,
                     glossary=ctx.glossary,
                     context_segments=all_segments,
-                )
+                ))
             else:
-                await translator.translate_segments(
+                await ctx.run_cancellable(translator.translate_segments(
                     segments=to_translate,
                     source_lang=source_lang,
                     target_lang=target_lang,
@@ -267,7 +267,7 @@ class TranslateStage(PipelineStage):
                     on_batch_complete=_on_batch_complete,
                     glossary=ctx.glossary,
                     context_segments=all_segments,
-                )
+                ))
         except TranslationAborted as e:
             for b in to_translate:
                 if not b.translated_text:

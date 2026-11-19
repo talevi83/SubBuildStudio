@@ -25,6 +25,14 @@ const selectClass =
 
 type Step = PipelineTask;
 const STEPS: Step[] = ['translation', 'glossary', 'vision'];
+/** Why the updater did not update (UpdateApplyResponse.skipped_reason), in the UI's language */
+const UPDATE_SKIP_MESSAGES: Record<string, MessageKey> = {
+  dirty_worktree: 'settings.updater.skippedDirty',
+  tag_not_on_main: 'settings.updater.skippedNotOnMain',
+  unsigned_tag: 'settings.updater.skippedUnsigned',
+  dependency_install_failed: 'settings.updater.rolledBackDeps',
+  frontend_build_failed: 'settings.updater.rolledBackFrontend',
+};
 const AI_PROVIDERS: AIProvider[] = ['google', 'openai', 'anthropic', 'ollama'];
 
 function filterModelsForStepAndKey(
@@ -1494,9 +1502,9 @@ export const SettingsScreen: React.FC = () => {
                             version: updateResult.new_version,
                             commit: updateResult.new_commit,
                           })
-                        : updateResult.skipped_reason === 'dirty_worktree'
-                          ? t('settings.updater.skippedDirty')
-                          : updateResult.message}
+                        : (updateResult.skipped_reason && UPDATE_SKIP_MESSAGES[updateResult.skipped_reason]
+                          ? t(UPDATE_SKIP_MESSAGES[updateResult.skipped_reason])
+                          : updateResult.message)}
                     </p>
                   ) : effectiveUpdate?.error ? (
                     <p className="text-amber-300">

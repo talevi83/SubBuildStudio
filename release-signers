@@ -1,0 +1,4 @@
+# Keys allowed to sign SubBuild Studio releases (git tag -s). Checked by the updater before it
+# installs a release: see RELEASE_SIGNERS_FILE in backend/app/core/updater.py.
+# Format: <principal> namespaces="git" <key type> <public key>
+talevi83@gmail.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBkRIFujxmnFQqnhphDa7jwtTxHOSg07Oz+wShVBWIUU

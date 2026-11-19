@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useJobStore } from '../../store/useJobStore';
+import { confirmDialog } from '../../store/useDialogStore';
 import { useUiStore } from '../../store/useUiStore';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import {
@@ -76,7 +77,13 @@ export const Sidebar: React.FC = () => {
     if (jobs.length === 0 || deletingBulk) return;
     const anyUpload = jobs.some((j) => j.is_upload);
     const extra = anyUpload ? `\n\n${t('sidebar.confirmDeleteUpload')}` : '';
-    if (!confirm(`${t('sidebar.confirmClearAll', { count: jobs.length })}${extra}`)) return;
+    const ok = await confirmDialog({
+      title: t('sidebar.confirmClearAll', { count: jobs.length }),
+      message: extra.trim() || undefined,
+      confirmLabel: t('ux.delete'),
+      danger: true,
+    });
+    if (!ok) return;
     setDeletingBulk(true);
     try {
       await deleteAllJobs();
@@ -92,7 +99,13 @@ export const Sidebar: React.FC = () => {
     if (ids.length === 0 || deletingBulk) return;
     const anyUpload = jobs.some((j) => selectedJobIds.has(j.id) && j.is_upload);
     const extra = anyUpload ? `\n\n${t('sidebar.confirmDeleteUpload')}` : '';
-    if (!confirm(`${t('sidebar.confirmDeleteSelected', { count: ids.length })}${extra}`)) return;
+    const ok = await confirmDialog({
+      title: t('sidebar.confirmDeleteSelected', { count: ids.length }),
+      message: extra.trim() || undefined,
+      confirmLabel: t('ux.delete'),
+      danger: true,
+    });
+    if (!ok) return;
     setDeletingBulk(true);
     try {
       await deleteJobs(ids);
@@ -295,12 +308,15 @@ export const Sidebar: React.FC = () => {
                     {job.file_name}
                   </span>
                   <button
-                    onClick={(e) => {
+                    onClick={async (e) => {
                       e.stopPropagation();
-                      const extra = job.is_upload ? `\n\n${t('sidebar.confirmDeleteUpload')}` : '';
-                      if (confirm(`${t('sidebar.confirmDelete', { name: job.file_name })}${extra}`)) {
-                        deleteJob(job.id);
-                      }
+                      const ok = await confirmDialog({
+                        title: t('sidebar.confirmDelete', { name: job.file_name }),
+                        message: job.is_upload ? t('sidebar.confirmDeleteUpload') : undefined,
+                        confirmLabel: t('ux.delete'),
+                        danger: true,
+                      });
+                      if (ok) deleteJob(job.id);
                     }}
                     className="opacity-0 group-hover:opacity-100 text-zinc-400 hover:text-rose-400 p-0.5 rounded transition-opacity"
                     title={t('sidebar.deleteTitle')}

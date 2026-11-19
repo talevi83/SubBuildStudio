@@ -1,5 +1,6 @@
 """
-Multi-provider API key vault stored in ``storage/provider_keys.json`` with private-file ACLs.
+Multi-provider API key vault stored in ``storage/provider_keys.json`` with private-file ACLs,
+encrypted at rest with Windows DPAPI where available (see ``secret_store.py``).
 
 Supports multiple saved keys per AI provider (``google``, ``openai``, ``anthropic``, ``ollama``)
 with user-defined labels, default selection, masked API previews, and backwards-compatible
@@ -7,8 +8,10 @@ fallback to ``GEMINI_API_KEY`` from ``.env``.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import os
 import re
 import threading
 import uuid
@@ -18,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlparse
 
+from app.core import secret_store
 from app.core.config import settings
 from app.core.private_files import write_private_text
 
@@ -82,26 +86,111 @@ def mask_secret(secret: Optional[str]) -> Optional[str]:
     return f"{clean[:4]}••••••••{clean[-4:]}"
 
 
+def _backup_path() -> Path:
+    return _vault_path().with_name("provider_keys.json.bak")
+
+
+_PROTECTION = "dpapi"
+
+
+def _encode_vault(rows: List[Dict[str, Any]]) -> str:
+    """The vault file's text: encrypted with DPAPI where available (see secret_store.py)."""
+    plain = json.dumps({"version": 1, "keys": rows}, indent=2)
+    if not secret_store.available():
+        return plain
+    sealed = secret_store.protect(plain.encode("utf-8"))
+    return json.dumps({"version": 2, "protection": _PROTECTION,
+                       "data": base64.b64encode(sealed).decode("ascii")}, indent=2)
+
+
+def _is_encrypted(data: Any) -> bool:
+    return isinstance(data, dict) and data.get("protection") == _PROTECTION
+
+
+def _parse_vault(path: Path) -> Optional[List[Dict[str, Any]]]:
+    """The rows of a vault file, or None when it can't be read as one."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if _is_encrypted(data):
+        try:
+            data = json.loads(secret_store.unprotect(base64.b64decode(data.get("data") or "")).decode("utf-8"))
+        except (secret_store.SecretStoreError, ValueError, OSError) as e:
+            logger.error(f"{path.name} could not be decrypted ({e}). It can only be read by the Windows "
+                         f"account and PC that saved it.")
+            return None
+    if isinstance(data, dict) and isinstance(data.get("keys"), list):
+        return [row for row in data["keys"] if isinstance(row, dict)]
+    if isinstance(data, list):
+        return [row for row in data if isinstance(row, dict)]
+    return None
+
+
 def _read_raw() -> List[Dict[str, Any]]:
     path = _vault_path()
     if not path.exists():
         return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and isinstance(data.get("keys"), list):
-            return [row for row in data["keys"] if isinstance(row, dict)]
-        if isinstance(data, list):
-            return [row for row in data if isinstance(row, dict)]
-    except Exception as e:
-        logger.warning(f"Ignoring unreadable {path.name} ({e})")
+    rows = _parse_vault(path)
+    if rows is not None:
+        return rows
+    backup = _backup_path()
+    rows = _parse_vault(backup) if backup.exists() else None
+    if rows is not None:
+        logger.error(f"{path.name} is unreadable; using the previous copy ({backup.name})")
+        return rows
+    logger.error(f"{path.name} is unreadable and there is no usable backup; saved API keys are unavailable")
     return []
+
+
+def _set_aside_corrupt_vault(path: Path) -> None:
+    """Keep an unreadable vault for manual recovery instead of overwriting it with the next save."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    target = path.with_name(f"provider_keys.corrupt-{stamp}.json")
+    try:
+        os.replace(path, target)
+        logger.error(f"Moved the unreadable {path.name} to {target.name}")
+    except OSError as e:
+        logger.warning(f"Could not set aside the unreadable {path.name}: {e}")
 
 
 def _write_raw(rows: List[Dict[str, Any]]) -> None:
     path = _vault_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps({"version": 1, "keys": rows}, indent=2)
-    write_private_text(path, payload)
+    if path.exists():
+        if _parse_vault(path) is not None:
+            # The last good version: _read_raw falls back to it if the vault is ever damaged
+            try:
+                write_private_text(_backup_path(), path.read_text(encoding="utf-8"))
+            except OSError as e:
+                logger.warning(f"Could not back up {path.name}: {e}")
+        else:
+            _set_aside_corrupt_vault(path)
+    write_private_text(path, _encode_vault(rows))
+
+
+def encrypt_vault_at_rest() -> bool:
+    """Startup: re-save a plain-text vault (from before encryption, or another OS) encrypted.
+    The backup copy is replaced too, so no plain-text copy of the keys is left. True if it did."""
+    path = _vault_path()
+    if not secret_store.available() or not path.exists():
+        return False
+    with _lock:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False  # damaged: _read_raw / _write_raw deal with it
+        if _is_encrypted(raw):
+            return False
+        rows = _parse_vault(path)
+        if rows is None:
+            return False
+        sealed = _encode_vault(rows)
+        write_private_text(path, sealed)
+        if _backup_path().exists():
+            write_private_text(_backup_path(), sealed)
+    logger.info("Encrypted the saved API keys with Windows DPAPI")
+    return True
 
 
 def _public_record(row: Dict[str, Any], source: str = "vault") -> Dict[str, Any]:

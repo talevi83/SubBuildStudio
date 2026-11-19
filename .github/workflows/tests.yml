@@ -2,8 +2,8 @@ name: Tests
 
 on:
   push:
-    # staging = the integration branch: all automation runs on it before it is merged into main
-    branches: [main, staging]
+    branches: [main]
+  # Every change reaches main through a pull request; its checks run here before the merge
   pull_request:
   workflow_dispatch:   # כפתור "Run workflow" ידני בלשונית Actions
 

@@ -120,7 +120,9 @@ def test_saving_the_api_key_writes_a_private_env(tmp_path, monkeypatch):
     finally:
         config.settings.gemini_api_key = old
     assert "GEMINI_API_KEY=AIzaTest" in env.read_text(encoding="utf-8")
-    assert calls == [env]
+    # The new content is written to a locked-down temp file next to .env that then replaces it
+    assert len(calls) == 1 and calls[0].parent == env.parent and calls[0].name.startswith("..env.")
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".env"]  # no temp file left behind
 
 
 def test_launcher_token_file_is_private(tmp_path, monkeypatch):
@@ -136,7 +138,8 @@ def test_launcher_token_file_is_private(tmp_path, monkeypatch):
     monkeypatch.setattr(pf, "restrict_to_owner", lambda p: calls.append(Path(p).name) or True)
     token = launcher.new_session_token(tmp_path)
     assert (tmp_path / ".session-token").read_text(encoding="utf-8") == token
-    assert calls == [".session-token"]
+    assert len(calls) == 1 and calls[0].startswith("..session-token.")
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".session-token"]
 
 
 # ------------------------------------------------------------------ ollama

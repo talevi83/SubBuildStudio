@@ -1,7 +1,8 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { api } from '../../services/api';
+import { api, UploadCancelled } from '../../services/api';
 import { useJobStore } from '../../store/useJobStore';
 import { useT } from '../../i18n';
+import { localizeError } from '../../i18n/serverErrors';
 import { formatClock } from '../../utils/time';
 import { pickLocalMediaFile, readClipboardText, resolveDroppedFilePath } from '../../utils/desktop';
 import { PasteContextMenu } from '../common/PasteContextMenu';
@@ -15,6 +16,9 @@ export const MediaDropzone: React.FC = () => {
   const [isProbing, setIsProbing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  // Hashing a big file to find an earlier identical upload can take as long as uploading it
+  const [hashProgress, setHashProgress] = useState<number | null>(null);
+  const uploadAbort = useRef<AbortController | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pathInputRef = useRef<HTMLInputElement | null>(null);
   const [pasteMenu, setPasteMenu] = useState<{ x: number; y: number } | null>(null);
@@ -71,20 +75,25 @@ export const MediaDropzone: React.FC = () => {
   const handleFileUpload = async (file: File) => {
     setIsProbing(true);
     setError(null);
+    const controller = new AbortController();
+    uploadAbort.current = controller;
     try {
       // Same file uploaded before? Reuse it instead of copying gigabytes again.
-      const existing = await api.findExistingUpload(file);
+      const existing = await api.findExistingUpload(file, { signal: controller.signal, onProgress: setHashProgress });
+      setHashProgress(null);
       if (existing) {
         setProbeResult(existing);
         return;
       }
       setUploadProgress(0);
-      setProbeResult(await api.uploadFile(file, setUploadProgress));
+      setProbeResult(await api.uploadFile(file, setUploadProgress, controller.signal));
     } catch (err: any) {
-      setError(err.message || t('dropzone.uploadFailed'));
+      setError(err instanceof UploadCancelled ? t('dropzone.uploadCancelled') : err.message || t('dropzone.uploadFailed'));
     } finally {
+      uploadAbort.current = null;
       setIsProbing(false);
       setUploadProgress(null);
+      setHashProgress(null);
     }
   };
 
@@ -168,14 +177,32 @@ export const MediaDropzone: React.FC = () => {
           <div className="mt-3 w-full max-w-sm space-y-1.5">
             <div className="flex items-center justify-center gap-2 text-xs text-indigo-400 font-medium">
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              {uploadProgress !== null && uploadProgress < 1
-                ? t('dropzone.uploading', { percent: Math.round(uploadProgress * 100) })
-                : t('dropzone.inspectingMedia')}
+              {hashProgress !== null
+                ? t('dropzone.checkingDuplicate', { percent: Math.round(hashProgress * 100) })
+                : uploadProgress !== null && uploadProgress < 1
+                  ? t('dropzone.uploading', { percent: Math.round(uploadProgress * 100) })
+                  : t('dropzone.inspectingMedia')}
             </div>
-            {uploadProgress !== null && (
+            {(uploadProgress !== null || hashProgress !== null) && (
               <div className="h-1.5 rounded-full bg-line overflow-hidden" dir="ltr">
-                <div className="h-full bg-indigo-500 transition-all" style={{ width: `${uploadProgress * 100}%` }} />
+                <div
+                  className="h-full bg-indigo-500 transition-all"
+                  style={{ width: `${(hashProgress ?? uploadProgress ?? 0) * 100}%` }}
+                />
               </div>
+            )}
+            {(hashProgress !== null || (uploadProgress !== null && uploadProgress < 1)) && (
+              <button
+                type="button"
+                data-testid="upload-cancel"
+                onClick={(e) => {
+                  e.stopPropagation(); // the drop area opens the file picker on click
+                  uploadAbort.current?.abort();
+                }}
+                className="px-3 py-1 rounded-md border border-line text-[11px] text-zinc-300 hover:border-rose-500/60 hover:text-rose-300 cursor-pointer"
+              >
+                {t('dropzone.cancel')}
+              </button>
             )}
           </div>
         )}
@@ -222,7 +249,7 @@ export const MediaDropzone: React.FC = () => {
       {error && (
         <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs flex items-center gap-2">
           <AlertCircle className="w-4 h-4 flex-shrink-0" />
-          <span>{error}</span>
+          <span>{localizeError(error, t)}</span>
         </div>
       )}
 
