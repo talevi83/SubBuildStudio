@@ -335,6 +335,51 @@ def _rebuild_frontend(root: Path, run_npm_install: bool) -> bool:
     return True
 
 
+_TRUE = {"1", "true", "yes", "on"}
+
+
+_FALSE = {"0", "false", "no", "off"}
+# The SSH keys allowed to sign releases (git's "allowed signers" format), at the root of the app.
+# The copy already installed is the one a new release is checked against, so a release can't swap
+# in its own key: a compromised GitHub account can push code and tags, but can't sign them.
+RELEASE_SIGNERS_FILE = "release-signers"
+
+
+def require_signed_tags(root: Path) -> bool:
+    """Whether a release must carry a valid signature before it is installed.
+
+    SUBBUILD_REQUIRE_SIGNED_TAGS (environment, then backend/.env - read directly: this module also
+    runs as a launch-time CLI, before the app's settings exist) decides when it is set; otherwise
+    signatures are required as soon as the installed copy has a release-signers file.
+    """
+    value = os.environ.get("SUBBUILD_REQUIRE_SIGNED_TAGS")
+    if value is None:
+        try:
+            for line in (root / "backend" / ".env").read_text(encoding="utf-8", errors="replace").splitlines():
+                key, sep, raw = line.partition("=")
+                if sep and key.strip().upper() == "SUBBUILD_REQUIRE_SIGNED_TAGS":
+                    value = raw.split("#", 1)[0].strip().strip("'\"")
+        except OSError:
+            value = None
+    value = (value or "").strip().lower()
+    if value in _TRUE:
+        return True
+    if value in _FALSE:
+        return False
+    return (root / RELEASE_SIGNERS_FILE).is_file()
+
+
+def verify_release_tag(root: Path, tag: str) -> Tuple[bool, str]:
+    """(signature ok, git's message) for `tag`, checked against the installed release-signers file
+    (or, without one, against this machine's own git signing configuration)."""
+    signers = root / RELEASE_SIGNERS_FILE
+    args = ["verify-tag", tag]
+    if signers.is_file():
+        args = ["-c", f"gpg.ssh.allowedSignersFile={signers.resolve().as_posix()}", *args]
+    rc, out, err = _run_git(root, *args, timeout=15.0)
+    return rc == 0, (err or out).strip()
+
+
 def _release_branch(root: Path) -> Optional[str]:
     for ref in RELEASE_BRANCHES:
         rc, _, _ = _run_git(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", timeout=4.0)
@@ -453,6 +498,14 @@ def apply_update(
         base_reply["message"] = f"Skipped update: release {target_ref} is not part of {release_branch}."
         logger.warning("Updater apply skipped: %s is not an ancestor of %s", target_ref, release_branch)
         return base_reply
+    if require_signed_tags(root):
+        signed, detail = verify_release_tag(root, target_ref)
+        if not signed:
+            base_reply["skipped_reason"] = "unsigned_tag"
+            base_reply["message"] = f"Skipped update: release {target_ref} has no valid signature."
+            logger.warning("Updater apply skipped: git verify-tag %s failed: %s", target_ref, detail)
+            return base_reply
+        logger.info("Updater: release %s is signed by a trusted key (%s)", target_ref, detail[:200])
 
     pull_rc, pull_out, pull_err = _run_git(root, "merge", "--ff-only", target_ref, timeout=30.0)
 

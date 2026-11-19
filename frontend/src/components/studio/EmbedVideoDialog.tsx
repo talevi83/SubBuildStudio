@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../../services/api';
+import { confirmDialog } from '../../store/useDialogStore';
 import type { EmbedFontSize, EmbedMode, EmbedQuality, EmbedVideoStatus } from '../../types';
 import { useT } from '../../i18n';
 import { CheckCircle2, Download, Film, Flame, Layers, Loader2, X, XCircle } from 'lucide-react';
@@ -87,7 +88,12 @@ export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslat
       };
       let result = await api.startEmbedVideo(jobId, options);
       if (result.state === 'exists') {
-        if (!confirm(t('toolbar.confirmOverwrite', { path: result.path }))) return;
+        const replace = await confirmDialog({
+          title: t('toolbar.confirmOverwrite', { path: result.path }),
+          confirmLabel: t('ux.replaceFile'),
+          danger: true,
+        });
+        if (!replace) return;
         result = await api.startEmbedVideo(jobId, { ...options, overwrite: true });
       }
       setStatus(result);

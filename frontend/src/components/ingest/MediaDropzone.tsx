@@ -2,6 +2,7 @@ import React, { useCallback, useRef, useState } from 'react';
 import { api, UploadCancelled } from '../../services/api';
 import { useJobStore } from '../../store/useJobStore';
 import { useT } from '../../i18n';
+import { localizeError } from '../../i18n/serverErrors';
 import { formatClock } from '../../utils/time';
 import { pickLocalMediaFile, readClipboardText, resolveDroppedFilePath } from '../../utils/desktop';
 import { PasteContextMenu } from '../common/PasteContextMenu';
@@ -248,7 +249,7 @@ export const MediaDropzone: React.FC = () => {
       {error && (
         <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs flex items-center gap-2">
           <AlertCircle className="w-4 h-4 flex-shrink-0" />
-          <span>{error}</span>
+          <span>{localizeError(error, t)}</span>
         </div>
       )}
 

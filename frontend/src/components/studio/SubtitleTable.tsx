@@ -60,6 +60,8 @@ export const SubtitleTable: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const deferredSearchTerm = useDeferredValue(searchTerm);
   const [useRegex, setUseRegex] = useState(false);
+  const [matchCase, setMatchCase] = useState(false);
+  const [wholeWord, setWholeWord] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [tagFilter, setTagFilter] = useState<string>('ALL');
   const [replaceResult, setReplaceResult] = useState<string | null>(null);
@@ -118,6 +120,8 @@ export const SubtitleTable: React.FC = () => {
     tagFilter,
     searchTerm: deferredSearchTerm,
     useRegex,
+    matchCase,
+    wholeWord,
   });
 
   const isLive = segments.length > 0 && segments.some((s) => !s.id);
@@ -215,8 +219,7 @@ export const SubtitleTable: React.FC = () => {
   );
 
   const handleDeleteSelected = async () => {
-    if (checked.size === 0) return;
-    if (!window.confirm(t('table.confirmDeleteSelectedRows', { count: checked.size }))) return;
+    if (checked.size === 0) return; // no question asked: the toast that follows offers Undo
     const ids = [...checked];
     setChecked(new Set());
     await deleteSegments(ids);
@@ -267,6 +270,10 @@ export const SubtitleTable: React.FC = () => {
           onSearchChange={setSearchTerm}
           useRegex={useRegex}
           onToggleRegex={() => setUseRegex((v) => !v)}
+          matchCase={matchCase}
+          onToggleMatchCase={() => setMatchCase((v) => !v)}
+          wholeWord={wholeWord}
+          onToggleWholeWord={() => setWholeWord((v) => !v)}
           regexError={regexError}
           isLive={isLive}
           onResult={showReplaceResult}

@@ -38,6 +38,12 @@ async def lifespan(app: FastAPI):
     """Application startup and shutdown events."""
     logger.info("Initializing SubBuild Studio Database...")
     init_db()
+    try:
+        from app.core.provider_keys import encrypt_vault_at_rest
+
+        encrypt_vault_at_rest()
+    except Exception as e:  # never block startup; the vault keeps working unencrypted
+        logger.warning(f"Could not encrypt the key vault: {e}")
     recovered = recover_interrupted_jobs()
     if recovered:
         logger.warning(f"Recovered {recovered} job(s) interrupted by a restart.")

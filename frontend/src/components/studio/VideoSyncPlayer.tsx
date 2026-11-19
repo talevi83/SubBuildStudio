@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import { desktopApi } from '../../utils/desktop';
 import { useJobStore } from '../../store/useJobStore';
+import { useUiStore } from '../../store/useUiStore';
 import { api } from '../../services/api';
 import { isRtlLanguage } from '../../types';
 import { findSegmentAt, formatClock, isTypingTarget } from '../../utils/time';
@@ -23,7 +24,6 @@ export const VideoSyncPlayer: React.FC = () => {
   const [duration, setDuration] = useState(activeJob?.video_duration || 0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [videoError, setVideoError] = useState<string | null>(null);
-  const [showHelp, setShowHelp] = useState(false);
 
   const onscreenPos = activeJob?.onscreen_position || 'top_center';
 
@@ -198,6 +198,7 @@ export const VideoSyncPlayer: React.FC = () => {
       if (!v) return;
       const state = useJobStore.getState();
       if (state.insertDraft) return; // the "add a line" dialog is open
+      if (document.querySelector('[aria-modal="true"]')) return; // a dialog has the keyboard
       const job = state.activeJob;
 
       // Target for [ and ]: the selected subtitle, else the one under the playhead
@@ -230,6 +231,37 @@ export const VideoSyncPlayer: React.FC = () => {
         case 'f':
           toggleFullscreen();
           break;
+        case 'ArrowUp':
+        case 'ArrowDown': {
+          // Previous / next subtitle line: select it and jump to its start
+          if (!job || job.segments.length === 0) break;
+          e.preventDefault();
+          const sorted = [...job.segments].sort((a, b) => a.start_time - b.start_time || a.index - b.index);
+          const current = target();
+          let pos = current ? sorted.indexOf(current) : -1;
+          if (pos < 0) {
+            // Between lines: "next" is the first line starting after the playhead, "previous" the one before it
+            const found = sorted.findIndex((s) => s.start_time > v.currentTime);
+            const after = found < 0 ? sorted.length : found;
+            pos = e.key === 'ArrowDown' ? after - 1 : after;
+          }
+          const next = sorted[Math.max(0, Math.min(sorted.length - 1, pos + (e.key === 'ArrowDown' ? 1 : -1)))];
+          state.setSelectedSegmentIndex(next.index);
+          v.currentTime = next.start_time;
+          break;
+        }
+        case 's':
+        case 'S': {
+          // Split the line under the playhead (or the selected one) at the playhead
+          const seg = target();
+          const tNow = v.currentTime;
+          if (seg?.id && tNow > seg.start_time + 0.15 && tNow < seg.end_time - 0.15) {
+            e.preventDefault();
+            v.pause();
+            void state.splitSegment(seg.id, Number(tNow.toFixed(3)));
+          }
+          break;
+        }
         case 'n':
         case 'N':
           e.preventDefault();
@@ -436,29 +468,15 @@ export const VideoSyncPlayer: React.FC = () => {
           {formatClock(currentTime)} / {formatClock(duration)}
         </span>
 
-        <div className="relative">
-          <button
-            onClick={() => setShowHelp((v) => !v)}
-            className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors cursor-pointer"
-            title={t('player.shortcuts')}
-          >
-            <Keyboard className="w-4 h-4" />
-          </button>
-          {showHelp && (
-            <div
-              className="absolute bottom-full end-0 mb-2 w-64 p-3 rounded-lg bg-surface border border-line shadow-xl text-[11px] text-zinc-300 space-y-1 z-20"
-              dir="auto"
-            >
-              <div><kbd className="text-indigo-300">Space</kbd> / <kbd className="text-indigo-300">K</kbd> — {t('player.helpPlay')}</div>
-              <div><kbd className="text-indigo-300">← →</kbd> — {t('player.helpSeek')}</div>
-              <div><kbd className="text-indigo-300">[</kbd> — {t('player.helpStart')}</div>
-              <div><kbd className="text-indigo-300">]</kbd> — {t('player.helpEnd')}</div>
-              <div><kbd className="text-indigo-300">F</kbd> — {t('player.helpFullscreen')}</div>
-              <div><kbd className="text-indigo-300">N</kbd> — {t('player.helpInsert')}</div>
-              <div className="text-zinc-500 pt-1">{t('player.helpTarget')}</div>
-            </div>
-          )}
-        </div>
+        <button
+          onClick={() => useUiStore.getState().setShortcutsOpen(true)}
+          className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors cursor-pointer"
+          title={`${t('player.shortcuts')} (?)`}
+          aria-label={t('player.shortcuts')}
+          data-testid="open-shortcuts"
+        >
+          <Keyboard className="w-4 h-4" />
+        </button>
         <button
           onClick={toggleFullscreen}
           className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors cursor-pointer"

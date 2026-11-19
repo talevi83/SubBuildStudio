@@ -42,6 +42,9 @@ interface UiState {
   setLanguage: (language: Language) => void;
   setTheme: (theme: Theme) => void;
   setView: (view: View) => void;
+  /** The keyboard shortcuts window ("?") */
+  shortcutsOpen: boolean;
+  setShortcutsOpen: (open: boolean) => void;
 }
 
 export const useUiStore = create<UiState>((set, get) => ({
@@ -59,4 +62,6 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({ theme });
   },
   setView: (view) => set({ view }),
+  shortcutsOpen: false,
+  setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
 }));
