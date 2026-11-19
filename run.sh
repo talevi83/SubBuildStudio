@@ -93,7 +93,11 @@ if [[ "$NEED_BUILD" -eq 1 ]]; then
         exit 1
     fi
     pushd frontend >/dev/null
-    if [[ ! -d "node_modules" ]]; then
+    # (Re)install when node_modules is missing or older than package.json / package-lock.json
+    # (npm writes node_modules/.package-lock.json on every install) - e.g. after an update added a package
+    if [[ ! -f "node_modules/.package-lock.json" ]] || [[ "package.json" -nt "node_modules/.package-lock.json" ]] \
+        || [[ "package-lock.json" -nt "node_modules/.package-lock.json" ]]; then
+        echo "      Installing frontend packages..."
         npm install
     fi
     npm run build
