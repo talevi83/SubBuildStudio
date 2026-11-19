@@ -9,6 +9,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from app.core.config import settings
+from app.core.private_files import write_text_atomic
 from app.utils.filenames import defuse_reserved
 
 _MAX_NAME = 80
@@ -50,7 +51,7 @@ def save_profile(name: str, glossary: Dict[str, Any]) -> None:
     if not name:
         raise ValueError("Profile name is empty")
     _dir().mkdir(parents=True, exist_ok=True)
-    _path(name).write_text(json.dumps(glossary, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_text_atomic(_path(name), json.dumps(glossary, ensure_ascii=False, indent=2))
 
 
 def merge_glossary(known: Optional[Dict[str, Any]], fresh: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

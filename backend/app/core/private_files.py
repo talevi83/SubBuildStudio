@@ -8,12 +8,15 @@ let every signed-in user read it. Writing such a file:
 * Windows: the inherited permissions are removed and only the current user gets access (icacls);
 * elsewhere: mode 0600.
 
-The file is created empty and locked down *before* the secret is written into it.
-Best effort: a failure is logged, never raised (the app must still start).
+The secret goes into a new temporary file next to the target that is locked down *before* anything
+is written into it; the finished file then replaces the target in one step (os.replace), so a crash
+or a full disk mid-write never leaves a half-written vault or .env behind.
+Locking down is best effort: a failure is logged, never raised (the app must still start).
 """
 import functools
 import logging
 import os
+import secrets
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -70,14 +73,40 @@ def restrict_to_owner(path: Path) -> bool:
         return False
 
 
+def _temp_sibling(path: Path) -> Path:
+    return path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+
+
+def _replace_with(path: Path, tmp: Path, text: str) -> None:
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)  # the file keeps the temp file's (locked-down) permissions
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def write_text_atomic(path: Path, text: str) -> None:
+    """Replace `path` with `text` in one step: readers see the old or the new file, never half of one."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _replace_with(path, _temp_sibling(path), text)
+
+
 def write_private_text(path: Path, text: str) -> None:
     """Write `text` to `path` so that only the current user can read it (see the module doc)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        if os.name == "nt":
-            path.touch()
-        else:
-            os.close(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600))
-    restrict_to_owner(path)
-    path.write_text(text, encoding="utf-8")
+    tmp = _temp_sibling(path)
+    if os.name == "nt":
+        tmp.touch()
+    else:
+        os.close(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    restrict_to_owner(tmp)
+    _replace_with(path, tmp, text)

@@ -32,32 +32,34 @@ def get_history(job_id: str, session: Session = Depends(get_session)):
     return HistoryResponse(**history.listing(session, job))
 
 
+def _locked_restore(session: Session, job_id: str, action) -> HistoryRestoreResponse:
+    """Load the job and check it is idle *inside* the job's lock: an autosave or a translation run
+    that started a moment ago must be seen (a job loaded before waiting would have a stale cursor)."""
+    with history.job_lock(job_id):
+        session.expire_all()
+        job = _get_job_or_404(session, job_id)
+        _require_idle(job)
+        action(job)
+        return _result(session, job)
+
+
 @router.post("/{job_id}/history/undo", response_model=HistoryRestoreResponse)
 def undo(job_id: str, session: Session = Depends(get_session)):
-    job = _get_job_or_404(session, job_id)
-    _require_idle(job)
-    with history.job_lock(job_id):
-        history.step(session, job, -1)
-    return _result(session, job)
+    return _locked_restore(session, job_id, lambda job: history.step(session, job, -1))
 
 
 @router.post("/{job_id}/history/redo", response_model=HistoryRestoreResponse)
 def redo(job_id: str, session: Session = Depends(get_session)):
-    job = _get_job_or_404(session, job_id)
-    _require_idle(job)
-    with history.job_lock(job_id):
-        history.step(session, job, +1)
-    return _result(session, job)
+    return _locked_restore(session, job_id, lambda job: history.step(session, job, +1))
 
 
 @router.post("/{job_id}/history/{entry_id}/restore", response_model=HistoryRestoreResponse)
 def restore(job_id: str, entry_id: int, session: Session = Depends(get_session)):
     """Jump to any step. Later steps stay available until a new edit is made."""
-    job = _get_job_or_404(session, job_id)
-    _require_idle(job)
-    with history.job_lock(job_id):
+    def _restore(job: Job) -> None:
         try:
             history.restore(session, job, entry_id)
         except history.HistoryError as e:
             raise HTTPException(status_code=404, detail=str(e))
-    return _result(session, job)
+
+    return _locked_restore(session, job_id, _restore)

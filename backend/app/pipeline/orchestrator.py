@@ -4,7 +4,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Coroutine, Dict, List, Optional, Set
+from typing import Any, Coroutine, Dict, List, Optional, Set, Tuple
 
 from sqlmodel import Session, select
 
@@ -119,6 +119,11 @@ def recover_interrupted_jobs() -> int:
         return len(stale)
 
 
+def _norm_text(value: Optional[str]) -> str:
+    """Text as compared for "did the user change this line?" (no RTL marks, None == "")."""
+    return strip_directional_marks(value) if value else ""
+
+
 def _segment_payload(job_id: str, seg: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": seg.get("id"),
@@ -170,6 +175,13 @@ class PipelineOrchestrator:
         self._history_recorded = False
         self._prior_usage_dict: Optional[Dict[str, Any]] = None
         self._ctx: Optional[PipelineContext] = None
+        # segment id -> (original_text, translated_text) as this run last saw them in the database.
+        # Text can be edited while a translation runs; a row whose text no longer matches was changed
+        # by the user and must not be overwritten by a translation of the old text.
+        self._known_text: Dict[int, Tuple[str, str]] = {}
+        # Rows found edited by the user during this run: never written by it again (a retried batch
+        # for the same line would otherwise overwrite the edit the second time around)
+        self._user_owned: Set[int] = set()
         active_pipelines[job_id] = self
 
     # ------------------------------------------------------------------ control
@@ -302,6 +314,7 @@ class PipelineOrchestrator:
                     }
                     for s in job.segments
                 ]
+                self._remember_text(ctx.refined_segments)
                 self._segments_saved = True
             self._ctx = ctx
             return ctx
@@ -457,7 +470,48 @@ class PipelineOrchestrator:
             session.commit()
             for s, rec in zip(segments, records):
                 s["id"] = rec.id
+        self._known_text = {}
+        self._remember_text(segments)
         self._segments_saved = True
+
+    def _remember_text(self, segments: List[Dict[str, Any]]) -> None:
+        for s in segments:
+            if s.get("id") is not None:
+                self._known_text[s["id"]] = (_norm_text(s.get("original_text")), _norm_text(s.get("translated_text")))
+
+    def _edited_by_user(self, row: SubtitleSegmentRecord) -> bool:
+        if row.id is None:
+            return False
+        if row.id in self._user_owned:
+            return True
+        known = self._known_text.get(row.id)
+        if known is None or (_norm_text(row.original_text), _norm_text(row.translated_text)) == known:
+            return False
+        self._user_owned.add(row.id)
+        return True
+
+    def _adopt_user_edits(self, segments: List[Dict[str, Any]]) -> int:
+        """Copy lines the user edited while this run was going into `segments` before they replace the
+        stored rows (a translation run that split lines saves the whole list). Returns how many."""
+        ids = [s["id"] for s in segments if s.get("id") is not None]
+        if not ids:
+            return 0
+        adopted = 0
+        by_id = {s["id"]: s for s in segments if s.get("id") is not None}
+        with Session(engine) as session:
+            for row in session.exec(
+                select(SubtitleSegmentRecord).where(
+                    SubtitleSegmentRecord.job_id == self.job_id, SubtitleSegmentRecord.id.in_(ids)
+                )
+            ).all():
+                if self._edited_by_user(row):
+                    seg = by_id[row.id]
+                    seg["original_text"] = row.original_text
+                    seg["translated_text"] = row.translated_text
+                    seg["translation_failed"] = bool(row.translation_failed)
+                    seg["cps"] = row.cps
+                    adopted += 1
+        return adopted
 
     async def _persist_translations(self, batch: List[TranslatableSegment]) -> None:
         """Write translated batches as they arrive, so nothing is lost on a crash."""
@@ -494,26 +548,52 @@ class PipelineOrchestrator:
                 ).all():
                     matched.append((row.index, row))
 
+            seg_by_id = {
+                s["id"]: s for s in (self._ctx.refined_segments if self._ctx is not None else []) or []
+                if s.get("id") is not None
+            }
+            stored: Dict[int, Dict[str, Any]] = {}
             for idx, row in matched:
                 b = by_index[idx]
-                row.translated_text = b.translated_text
-                row.translation_failed = b.translation_failed
-                row.cps = calculate_cps(b.translated_text or row.original_text, max(0.1, row.end_time - row.start_time))
-                session.add(row)
+                if self._edited_by_user(row):
+                    # Changed by the user while this batch was being translated: their text wins. A
+                    # source line that changed and has no translation yet is left for "Retranslate failed".
+                    if not _norm_text(row.translated_text):
+                        row.translation_failed = True
+                        session.add(row)
+                    seg = seg_by_id.get(row.id)
+                    if seg is not None:
+                        seg["original_text"] = row.original_text
+                        seg["translated_text"] = row.translated_text
+                        seg["translation_failed"] = bool(row.translation_failed)
+                        seg["cps"] = row.cps
+                    logger.info(f"Kept the user's edit of line #{row.index} (not overwritten by the translation)")
+                else:
+                    row.translated_text = b.translated_text
+                    row.translation_failed = b.translation_failed
+                    row.cps = calculate_cps(b.translated_text or row.original_text, max(0.1, row.end_time - row.start_time))
+                    session.add(row)
+                stored[idx] = {
+                    "id": row.id,
+                    "original_text": row.original_text,
+                    "translated_text": row.translated_text,
+                    "translation_failed": bool(row.translation_failed),
+                }
             session.commit()
-            ids = {idx: row.id for idx, row in matched}
+            for value in stored.values():
+                self._known_text[value["id"]] = (_norm_text(value["original_text"]), _norm_text(value["translated_text"]))
         await self._broadcast({
             "event": "BATCH_TRANSLATED",
             "segments_batch": [
                 {
-                    "id": ids.get(b.index),
+                    "id": stored.get(b.index, {}).get("id"),
                     "job_id": self.job_id,
                     "index": b.index,
                     "start_time": b.start_time,
                     "end_time": b.end_time,
-                    "original_text": b.original_text,
-                    "translated_text": b.translated_text,
-                    "translation_failed": b.translation_failed,
+                    "original_text": stored.get(b.index, {}).get("original_text", b.original_text),
+                    "translated_text": stored.get(b.index, {}).get("translated_text", b.translated_text),
+                    "translation_failed": stored.get(b.index, {}).get("translation_failed", b.translation_failed),
                     "segment_type": b.segment_type,
                 }
                 for b in batch
@@ -621,6 +701,8 @@ class PipelineOrchestrator:
                     if ctx.glossary is not None:
                         self._update_job(glossary_json=json.dumps(ctx.glossary, ensure_ascii=False))
                     if any(s.get("id") is None for s in ctx.refined_segments):
+                        # Lines were split: the whole list replaces the stored rows, so keep edits first
+                        self._adopt_user_edits(ctx.refined_segments)
                         self._save_segments(ctx.refined_segments)
                         await self._broadcast({
                             "event": "SEGMENTS_REFINED",
