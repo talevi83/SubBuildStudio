@@ -50,8 +50,10 @@ public class StudioEditorPage extends BasePage {
     private static final By REPLACE_INPUT = By.cssSelector("input[placeholder*='Replace'], input[placeholder*='החלפה']");
     private static final By REPLACE_COL_SELECT = By.xpath(
             "//input[contains(@placeholder,'Replace') or contains(@placeholder,'החלפה')]/ancestor::div[contains(@class,'flex items-center gap-2')][1]/select");
-    private static final By REPLACE_ALL_BTN = By.xpath(
-            "//input[contains(@placeholder,'Replace') or contains(@placeholder,'החלפה')]/ancestor::div[contains(@class,'flex items-center gap-2')][1]/button");
+    private static final By REPLACE_ALL_BTN = By.cssSelector("[data-testid='replace-all']");
+    // "Replace all" first shows the lines that will change; nothing is saved until this is clicked
+    private static final By REPLACE_PREVIEW = By.cssSelector("[data-testid='replace-preview']");
+    private static final By REPLACE_CONFIRM_BTN = By.cssSelector("[data-testid='replace-confirm']");
 
     public StudioEditorPage(WebDriver driver) {
         super(driver);
@@ -158,6 +160,9 @@ public class StudioEditorPage extends BasePage {
         clearAndType(REPLACE_INPUT, replaceWith);
         selectByValue(REPLACE_COL_SELECT, "original");
         click(REPLACE_ALL_BTN);
+        waitVisible(REPLACE_PREVIEW);
+        click(REPLACE_CONFIRM_BTN);
+        waitInvisible(REPLACE_PREVIEW);
         waitVisible(By.cssSelector("div.bg-sunken span.text-indigo-300"));
         clearAndType(SEARCH_INPUT, "");
         wait.until(d -> d.findElements(SUBTITLE_ROWS).size() > 1);
