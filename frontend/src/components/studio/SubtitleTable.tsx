@@ -18,6 +18,7 @@ import { ProblemFilterSelect } from './table/ProblemFilterSelect';
 import { TableActions } from './table/TableActions';
 import { QaPanel } from './table/QaPanel';
 import { SelectionBar, type RowTranslateOptions } from './table/SelectionBar';
+import { areNeighbours } from './table/mergeRules';
 import { useSegmentFilters } from './table/useSegmentFilters';
 import { useRowSelection } from './table/useRowSelection';
 import { useVirtualRows } from './table/useVirtualRows';
@@ -139,6 +140,8 @@ export const SubtitleTable: React.FC = () => {
     handleSelectFromStart,
     checkedRangeBounds,
   } = useRowSelection(filteredSegments, `${activeJob?.id ?? ''}:${jobFinished}`);
+  // Neighbours in the whole project, not just the filtered view: rows hidden by a filter count too
+  const checkedAreNeighbours = useMemo(() => areNeighbours(segments, checked), [segments, checked]);
   const {
     scrollContainerRef,
     handleTableScroll,
@@ -220,7 +223,7 @@ export const SubtitleTable: React.FC = () => {
   };
 
   const handleMergeSelected = async () => {
-    if (checked.size < 2) return;
+    if (checked.size < 2 || !checkedAreNeighbours) return;
     const ids = [...checked];
     setChecked(new Set());
     await mergeSegments(ids);
@@ -361,6 +364,7 @@ export const SubtitleTable: React.FC = () => {
           onTranslate={translateRows}
           onOpenNote={() => setRowsDialog(true)}
           canMerge={canInsert}
+          mergeBlockedReason={checkedAreNeighbours ? undefined : t('table.mergeNotNeighbours')}
           onMerge={() => void handleMergeSelected()}
           canDelete={canInsert}
           onDelete={() => void handleDeleteSelected()}

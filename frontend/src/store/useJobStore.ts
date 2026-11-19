@@ -219,14 +219,23 @@ let reconnectAttempts = 0;
 /** Segment saves still on their way: undo and export wait for them, so a late autosave can't race */
 const inflightSaves = new Set<Promise<unknown>>();
 const pendingFlushCallbacks = new Set<() => void>();
+const pendingDirtyChecks = new Set<() => boolean>();
+
 let historyRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Register a synchronous flush callback from an EditableText cell so Export / Undo can flush before saving. */
-export const registerPendingFlush = (fn: () => void): (() => void) => {
+export const registerPendingFlush = (fn: () => void, isDirty?: () => boolean): (() => void) => {
   pendingFlushCallbacks.add(fn);
+  if (isDirty) pendingDirtyChecks.add(isDirty);
   return () => {
     pendingFlushCallbacks.delete(fn);
+    if (isDirty) pendingDirtyChecks.delete(isDirty);
   };
+};
+
+/** Flush pending inline edits right away (no waiting), e.g. when the window is being closed. */
+export const flushPendingEditsNow = (): void => {
+  for (const flush of [...pendingFlushCallbacks]) flush();
 };
 
 const flushAllPendingEdits = async () => {
@@ -240,10 +249,19 @@ const flushAllPendingEdits = async () => {
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const mergeSegments = (segments: SubtitleSegment[], updates: SubtitleSegment[]): SubtitleSegment[] => {
-  const byIndex = new Map(updates.map((u) => [u.index, u]));
-  return segments.map((s) => (byIndex.has(s.index) ? { ...s, ...byIndex.get(s.index)! } : s));
+/** Apply updates from the server: by row id when both sides have one (line numbers can change), else by number. */
+export const mergeSegments = (segments: SubtitleSegment[], updates: SubtitleSegment[]): SubtitleSegment[] => {
+  const byId = new Map(updates.filter((u) => u.id != null).map((u) => [u.id!, u]));
+  const byIndex = new Map(updates.filter((u) => u.id == null).map((u) => [u.index, u]));
+  return segments.map((s) => {
+    const update = (s.id != null ? byId.get(s.id) : undefined) ?? byIndex.get(s.index);
+    // The row keeps its own number and times; a batch only carries the translation result
+    return update ? { ...s, ...update, index: s.index, start_time: s.start_time, end_time: s.end_time } : s;
+  });
 };
+
+/** True while an inline edit is waiting to be saved or a save is on its way. */
+export const hasUnsavedEdits = (): boolean => inflightSaves.size > 0 || [...pendingDirtyChecks].some((isDirty) => isDirty());
 
 export const useJobStore = create<JobState>((set, get) => {
   /** Apply a change to the active job and mirror status/progress into the sidebar list. */
@@ -424,6 +442,7 @@ export const useJobStore = create<JobState>((set, get) => {
       const job = get().activeJob;
       if (!job) return 'No project is open';
       try {
+        await flushAllPendingEdits();
         const res = await api.deleteSegment(job.id, segmentId);
         if (get().activeJob?.id !== job.id) return null;
         patchActiveJob({ segments: res.segments });
@@ -431,7 +450,9 @@ export const useJobStore = create<JobState>((set, get) => {
         scheduleHistoryRefresh();
         return null;
       } catch (e: unknown) {
-        return e instanceof Error ? e.message : String(e);
+        const msg = e instanceof Error ? e.message : String(e);
+        set({ error: msg });
+        return msg;
       }
     },
     deleteSegments: async (segmentIds) => {
@@ -446,7 +467,9 @@ export const useJobStore = create<JobState>((set, get) => {
         scheduleHistoryRefresh();
         return null;
       } catch (e: unknown) {
-        return e instanceof Error ? e.message : String(e);
+        const msg = e instanceof Error ? e.message : String(e);
+        set({ error: msg });
+        return msg;
       }
     },
     splitSegment: async (segmentId, splitTime) => {

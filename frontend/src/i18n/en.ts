@@ -119,6 +119,9 @@ export const en = {
     dropHint:
       'Supports MKV, MP4, WebM, AVI, MOV. In the desktop window, dragged files resolve directly to their local path with zero upload.',
     uploading: 'Uploading... {percent}%',
+    checkingDuplicate: 'Checking for an earlier upload of this file... {percent}%',
+    cancel: 'Cancel',
+    uploadCancelled: 'Upload cancelled',
     inspectingMedia: 'Inspecting media...',
     probed: 'Ready: {name} ({size} MB, {duration})',
     probeFailed: 'Failed to inspect the video file',
@@ -433,6 +436,7 @@ export const en = {
     splitRow: 'Split line #{index} in two',
     mergeSelected: 'Merge ({count})',
     mergeSelectedTitle: 'Merge selected lines into one subtitle',
+    mergeNotNeighbours: 'Only neighbouring lines can be merged (on-screen text and dialogue are merged separately)',
     shiftTimes: 'Shift times',
     shiftTimesTitle: 'Shift subtitle timestamps forward or backward (all lines, or only selected lines)',
     shiftOffsetLabel: 'Offset (seconds)',

@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { useJobStore } from './store/useJobStore';
+import { flushPendingEditsNow, hasUnsavedEdits, useJobStore } from './store/useJobStore';
 import { useUiStore, applyToDocument } from './store/useUiStore';
 import { useSettingsStore } from './store/useSettingsStore';
 import { useT } from './i18n';
@@ -24,7 +24,11 @@ const ErrorToast: React.FC = () => {
   const t = useT();
   if (!error) return null;
   return (
-    <div className="fixed bottom-4 end-4 z-50 max-w-md p-3 pe-8 rounded-lg bg-rose-950/90 border border-rose-500/40 text-rose-200 text-xs shadow-xl">
+    <div
+      role="alert"
+      aria-live="assertive"
+      className="fixed bottom-4 end-4 z-50 max-w-md p-3 pe-8 rounded-lg bg-rose-950/90 border border-rose-500/40 text-rose-200 text-xs shadow-xl whitespace-pre-line"
+    >
       {error}
       <button onClick={clearError} className="absolute top-2 end-2 text-rose-300 hover:text-rose-200" aria-label={t('app.dismiss')}>
         ✕
@@ -49,6 +53,28 @@ export const App: React.FC = () => {
   useEffect(() => {
     loadSettings();
   }, [loadSettings, view]);
+
+  // Closing the window (or reloading) right after typing: save the pending edit now, and ask the
+  // browser to confirm while a save is still on its way (the request is sent with keepalive).
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      const unsaved = hasUnsavedEdits();
+      flushPendingEditsNow();
+      if (unsaved) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') flushPendingEditsNow();
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    document.addEventListener('visibilitychange', onHide);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      document.removeEventListener('visibilitychange', onHide);
+    };
+  }, []);
 
   // The shell is exactly one viewport tall and manages its own scrolling. If anything (a focus
   // jump, scrollIntoView...) still scrolls the document itself, snap it back instead of leaving

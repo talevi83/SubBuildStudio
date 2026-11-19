@@ -121,6 +121,9 @@ export const he: Messages = {
     dropHint:
       'נתמכים MKV, MP4, WebM, AVI, MOV. בחלון התוכנה גרירת קובץ טוענת את הנתיב המקומי מיידית וללא שכפול.',
     uploading: 'מעלה... {percent}%',
+    checkingDuplicate: 'בודק אם הקובץ כבר הועלה בעבר... {percent}%',
+    cancel: 'ביטול',
+    uploadCancelled: 'ההעלאה בוטלה',
     inspectingMedia: 'בודק את הקובץ...',
     probed: 'מוכן: {name} ({size} MB, {duration})',
     probeFailed: 'בדיקת קובץ הווידאו נכשלה',
@@ -435,6 +438,7 @@ export const he: Messages = {
     splitRow: 'פצל שורה #{index} לשתיים',
     mergeSelected: 'אחד ({count})',
     mergeSelectedTitle: 'אחד את השורות המסומנות לכתובית אחת',
+    mergeNotNeighbours: 'אפשר למזג רק שורות סמוכות (טקסט על המסך ודיאלוג ממוזגים בנפרד)',
     shiftTimes: 'הזזת זמנים',
     shiftTimesTitle: 'הזזת זמני הכתוביות קדימה או אחורה (כל השורות, או רק המסומנות)',
     shiftOffsetLabel: 'היסט (שניות)',

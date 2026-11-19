@@ -89,7 +89,7 @@ const EditableText: React.FC<{
 
   // Save pending edits if the row unmounts (e.g. search filter changes) or before Export / Undo
   useEffect(() => {
-    const unregister = registerPendingFlush(flush);
+    const unregister = registerPendingFlush(flush, () => dirty.current);
     return () => {
       unregister();
       flush();

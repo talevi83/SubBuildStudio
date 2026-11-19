@@ -22,6 +22,8 @@ interface SelectionBarProps {
   onTranslate: (opts: RowTranslateOptions) => void;
   onOpenNote: () => void;
   canMerge?: boolean;
+  /** Set when the checked rows can't be merged (e.g. not neighbours): the button is shown disabled */
+  mergeBlockedReason?: string;
   onMerge?: () => void;
   canDelete: boolean;
   onDelete: () => void;
@@ -38,6 +40,7 @@ export const SelectionBar: React.FC<SelectionBarProps> = ({
   onTranslate,
   onOpenNote,
   canMerge = false,
+  mergeBlockedReason,
   onMerge,
   canDelete,
   onDelete,
@@ -121,9 +124,10 @@ export const SelectionBar: React.FC<SelectionBarProps> = ({
         <button
           type="button"
           onClick={onMerge}
-          title={t('table.mergeSelectedTitle')}
+          disabled={!!mergeBlockedReason}
+          title={mergeBlockedReason || t('table.mergeSelectedTitle')}
           data-testid="rows-merge"
-          className="flex items-center gap-1 px-2 py-1 rounded border border-indigo-500/40 text-indigo-200 hover:bg-indigo-500/15 cursor-pointer"
+          className="flex items-center gap-1 px-2 py-1 rounded border border-indigo-500/40 text-indigo-200 hover:bg-indigo-500/15 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
         >
           <Merge className="w-3 h-3" />
           {t('table.mergeSelected', { count })}
