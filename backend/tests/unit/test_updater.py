@@ -463,3 +463,209 @@ def test_a_release_zip_carries_its_version(tmp_path: Path):
     extracted = tmp_path / "zip"
     archive.extractall(extracted, filter="data")
     assert updater.read_version_file(extracted) == "2.1.0"
+
+
+# ------------------------------------------------------------------ non-git (ZIP release) updater
+
+
+def _make_non_git_install(tmp_path: Path, version: str = "1.5.0") -> Path:
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "VERSION").write_text(f"{version}\n", encoding="utf-8")
+    (root / "backend").mkdir()
+    (root / "backend" / "requirements.txt").write_text("fastapi==0.100\n", encoding="utf-8")
+    (root / "backend" / ".env").write_text("SECRET=keep\n", encoding="utf-8")
+    (root / "frontend").mkdir()
+    (root / "frontend" / "package.json").write_text('{"name":"frontend"}\n', encoding="utf-8")
+    (root / "frontend" / "dist").mkdir()
+    (root / "frontend" / "dist" / "index.html").write_text("<html/>", encoding="utf-8")
+    return root
+
+
+def _build_release_zip(zip_path: Path, top_dir: str, files: dict[str, str]) -> Path:
+    import zipfile
+
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for rel, content in files.items():
+            zf.writestr(f"{top_dir}/{rel}", content)
+    return zip_path
+
+
+def test_check_for_updates_without_git_uses_github_tags_api(tmp_path: Path):
+    root = _make_non_git_install(tmp_path, version="1.5.0")
+    tags = {
+        "v1.5.0": "1111111" + "0" * 33,
+        "v1.6.0": "2222222" + "0" * 33,
+    }
+    with (
+        patch.object(updater, "_fetch_github_tags", return_value=(tags, None)),
+        patch.object(
+            updater,
+            "_fetch_github_release_metadata",
+            return_value=("https://example.com/v1.6.0", "ZIP release notes"),
+        ),
+    ):
+        res = updater.check_for_updates(root)
+
+    assert res["error"] is None
+    assert res["update_available"] is True
+    assert res["update_kind"] == "release"
+    assert res["latest_version"] == "1.6.0"
+    assert res["latest_commit"] == "2222222"
+    assert res["target_ref"] == "v1.6.0"
+    assert res["release_url"] == "https://example.com/v1.6.0"
+    assert res["release_notes"] == "ZIP release notes"
+
+
+def test_check_for_updates_without_git_handles_offline_gracefully(tmp_path: Path):
+    root = _make_non_git_install(tmp_path, version="1.5.0")
+    with patch.object(updater, "_fetch_github_tags", return_value=(None, "URLError: offline")):
+        res = updater.check_for_updates(root)
+
+    assert res["update_available"] is False
+    assert "offline" in (res["error"] or "")
+
+
+def test_apply_update_without_git_downloads_zip_and_preserves_user_files(tmp_path: Path, monkeypatch):
+    import io
+
+    monkeypatch.delenv("SUBBUILD_REQUIRE_SIGNED_TAGS", raising=False)
+    root = _make_non_git_install(tmp_path, version="1.5.0")
+    zip_file = _build_release_zip(
+        tmp_path / "release.zip",
+        "SubBuildStudio-1.6.0",
+        {
+            "VERSION": "v1.6.0\n",
+            "backend/requirements.txt": "fastapi==0.101\n",
+            "backend/app/new_file.py": "VALUE = 1\n",
+            "backend/.env": "SECRET=overwritten\n",
+        },
+    )
+
+    class _FakeZipResp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+    release_status = {
+        "current_version": "1.5.0",
+        "current_commit": "",
+        "branch": "",
+        "update_available": True,
+        "update_kind": "release",
+        "latest_version": "1.6.0",
+        "latest_commit": "5555555",
+        "commits_behind": 0,
+        "target_ref": "v1.6.0",
+        "release_url": None,
+        "release_notes": None,
+        "error": None,
+    }
+
+    with (
+        patch.object(updater, "check_for_updates", return_value=release_status),
+        patch.object(updater, "_verify_github_tag_on_main", return_value=(True, "origin/main")),
+        patch.object(updater.urllib.request, "urlopen", return_value=_FakeZipResp(zip_file.read_bytes())),
+        patch.object(updater, "_install_backend_requirements", return_value=True) as mock_pip,
+    ):
+        res = updater.apply_update(root, auto_mode=True, rebuild_frontend=False)
+
+    assert res["updated"] is True
+    assert res["previous_version"] == "1.5.0"
+    assert res["new_version"] == "1.6.0"
+    assert res["new_commit"] == "5555555"
+    assert res["requirements_updated"] is True
+    assert res["restart_required"] is True
+    mock_pip.assert_called_once_with(root)
+    assert (root / "backend" / "app" / "new_file.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert (root / "backend" / ".env").read_text(encoding="utf-8") == "SECRET=keep\n"
+
+
+def test_apply_update_without_git_rolls_back_on_failed_dependency_install(tmp_path: Path, monkeypatch):
+    import zipfile
+
+    monkeypatch.delenv("SUBBUILD_REQUIRE_SIGNED_TAGS", raising=False)
+    root = _make_non_git_install(tmp_path, version="1.5.0")
+    zip_file = _build_release_zip(
+        tmp_path / "release.zip",
+        "SubBuildStudio-1.6.0",
+        {
+            "VERSION": "v1.6.0\n",
+            "backend/requirements.txt": "fastapi==0.101\n",
+            "backend/app/new_file.py": "VALUE = 1\n",
+        },
+    )
+
+    def fake_extract(_tag: str, temp_dir: Path, timeout: float = 60.0):
+        dest = temp_dir / "extracted"
+        with zipfile.ZipFile(zip_file) as zf:
+            zf.extractall(dest)
+        return dest / "SubBuildStudio-1.6.0", None
+
+    release_status = {
+        "current_version": "1.5.0",
+        "current_commit": "",
+        "branch": "",
+        "update_available": True,
+        "update_kind": "release",
+        "latest_version": "1.6.0",
+        "latest_commit": "5555555",
+        "commits_behind": 0,
+        "target_ref": "v1.6.0",
+        "release_url": None,
+        "release_notes": None,
+        "error": None,
+    }
+
+    with (
+        patch.object(updater, "check_for_updates", return_value=release_status),
+        patch.object(updater, "_verify_github_tag_on_main", return_value=(True, "origin/main")),
+        patch.object(updater, "_download_and_extract_release_zip", side_effect=fake_extract),
+        patch.object(updater, "_install_backend_requirements", return_value=False) as mock_pip,
+    ):
+        res = updater.apply_update(root, auto_mode=True, rebuild_frontend=False)
+
+    assert res["updated"] is False
+    assert res["skipped_reason"] == "dependency_install_failed"
+    assert mock_pip.call_count == 2
+    assert (root / "VERSION").read_text(encoding="utf-8") == "1.5.0\n"
+    assert (root / "backend" / "requirements.txt").read_text(encoding="utf-8") == "fastapi==0.100\n"
+    assert not (root / "backend" / "app" / "new_file.py").exists()
+
+
+def test_apply_update_without_git_skips_tag_not_on_main_and_unsigned_tag(tmp_path: Path, monkeypatch):
+    root = _make_non_git_install(tmp_path, version="1.5.0")
+    release_status = {
+        "current_version": "1.5.0",
+        "current_commit": "",
+        "branch": "",
+        "update_available": True,
+        "update_kind": "release",
+        "latest_version": "1.6.0",
+        "latest_commit": "5555555",
+        "commits_behind": 0,
+        "target_ref": "v1.6.0",
+        "release_url": None,
+        "release_notes": None,
+        "error": None,
+    }
+
+    with (
+        patch.object(updater, "check_for_updates", return_value=release_status),
+        patch.object(updater, "_verify_github_tag_on_main", return_value=(False, "origin/main")),
+    ):
+        res_branch = updater.apply_update(root, auto_mode=True, rebuild_frontend=False)
+    assert res_branch["updated"] is False
+    assert res_branch["skipped_reason"] == "tag_not_on_main"
+
+    monkeypatch.setenv("SUBBUILD_REQUIRE_SIGNED_TAGS", "1")
+    with (
+        patch.object(updater, "check_for_updates", return_value=release_status),
+        patch.object(updater, "_verify_github_tag_on_main", return_value=(True, "origin/main")),
+        patch.object(updater, "verify_release_tag", return_value=(False, "bad sig")),
+    ):
+        res_sig = updater.apply_update(root, auto_mode=True, rebuild_frontend=False)
+    assert res_sig["updated"] is False
+    assert res_sig["skipped_reason"] == "unsigned_tag"

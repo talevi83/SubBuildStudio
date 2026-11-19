@@ -16,8 +16,11 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -25,10 +28,33 @@ logger = logging.getLogger(__name__)
 
 GITHUB_REPO = "talevi83/SubBuildStudio"
 GITHUB_RELEASE_BY_TAG_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/{{tag}}"
+GITHUB_TAGS_API = f"https://api.github.com/repos/{GITHUB_REPO}/tags?per_page=100"
+GITHUB_COMPARE_API = f"https://api.github.com/repos/{GITHUB_REPO}/compare/{{base}}...{{head}}"
+GITHUB_TAG_REF_API = f"https://api.github.com/repos/{GITHUB_REPO}/git/ref/tags/{{tag}}"
+GITHUB_TAG_OBJ_API = f"https://api.github.com/repos/{GITHUB_REPO}/git/tags/{{sha}}"
+GITHUB_RELEASE_ZIP_URL = f"https://api.github.com/repos/{GITHUB_REPO}/zipball/refs/tags/{{tag}}"
 # Release tags are only trusted when they point at a commit that is already on one of these branches
 # (an accidental or rogue tag on some other branch is never installed automatically).
 RELEASE_BRANCHES = ("origin/main", "origin/master")
 _SEMVER_RE = re.compile(r"^\s*v?(\d+)\.(\d+)\.(\d+)\s*$")
+_DESCRIBE_COMMIT_RE = re.compile(r"^\s*v?\d+\.\d+\.\d+(?:-\d+-g([0-9a-fA-F]{7,40}))")
+_PROTECTED_ZIP_PATHS = (
+    ".git",
+    ".env",
+    "backend/.env",
+    "backend/.session-token",
+    "backend/storage",
+    "backend/.venv",
+    ".venv",
+    "storage",
+    "data",
+    "frontend/node_modules",
+    "node_modules",
+    "frontend/dist",
+    "webview",
+    "window.json",
+    "launcher.log",
+)
 
 _cached_update_status: Optional[Dict[str, Any]] = None
 
@@ -111,6 +137,16 @@ def _version_from_file(root: Path) -> str:
     return match.group(1) if match else ""
 
 
+def _commit_from_version_file(root: Path) -> str:
+    """Commit hash embedded in `VERSION` (e.g., `v2.1.0-3-gabc1234` -> `abc1234`), or ''."""
+    try:
+        raw = (root / "VERSION").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    match = _DESCRIBE_COMMIT_RE.match(raw)
+    return match.group(1) if match else ""
+
+
 def read_version_file(repo_root: Optional[Path] = None) -> str:
     """The installed version without network access: from `VERSION` (zip downloads), else the
     newest tag of the Git checkout, else "0.0.0"."""
@@ -132,15 +168,31 @@ def get_current_version_info(repo_root: Optional[Path] = None) -> Dict[str, str]
     file_ver_raw = _version_from_file(root)
 
     git_tag = ""
-    rc_tag, out_tag, _ = _run_git(root, "describe", "--tags", "--abbrev=0", timeout=2.0)
-    if rc_tag == 0 and out_tag:
-        git_tag = out_tag
+    short_sha = ""
+    full_sha = ""
+    branch = ""
+    if (root / ".git").exists():
+        rc_tag, out_tag, _ = _run_git(root, "describe", "--tags", "--abbrev=0", timeout=2.0)
+        if rc_tag == 0 and out_tag:
+            git_tag = out_tag
 
-    _, short_sha, _ = _run_git(root, "rev-parse", "--short", "HEAD", timeout=2.0)
-    _, full_sha, _ = _run_git(root, "rev-parse", "HEAD", timeout=2.0)
-    rc_br, branch, _ = _run_git(root, "rev-parse", "--abbrev-ref", "HEAD", timeout=2.0)
-    if rc_br != 0:
-        branch = ""
+        rc_short, out_short, _ = _run_git(root, "rev-parse", "--short", "HEAD", timeout=2.0)
+        if rc_short == 0 and out_short:
+            short_sha = out_short
+
+        rc_full, out_full, _ = _run_git(root, "rev-parse", "HEAD", timeout=2.0)
+        if rc_full == 0 and out_full:
+            full_sha = out_full
+
+        rc_br, out_br, _ = _run_git(root, "rev-parse", "--abbrev-ref", "HEAD", timeout=2.0)
+        if rc_br == 0 and out_br:
+            branch = out_br
+
+    if not short_sha:
+        version_commit = _commit_from_version_file(root)
+        if version_commit:
+            short_sha = version_commit[:7]
+            full_sha = full_sha or version_commit
 
     file_tuple = parse_semver(file_ver_raw)
     tag_tuple = parse_semver(git_tag)
@@ -161,15 +213,43 @@ def get_current_version_info(repo_root: Optional[Path] = None) -> Dict[str, str]
     }
 
 
+def _github_get_json(url: str, timeout: float = 4.0) -> Any:
+    """Perform a GitHub REST API GET request and return parsed JSON."""
+    req = urllib.request.Request(
+        url,
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "SubBuild-Studio-Updater"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", errors="replace"))
+
+
+def _fetch_github_tags(timeout: float = 4.0) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+    """Fetch remote semver tags and their commit SHAs via the GitHub API."""
+    try:
+        data = _github_get_json(GITHUB_TAGS_API, timeout=timeout)
+        if not isinstance(data, list):
+            return None, "Unexpected response from GitHub tags API"
+        tag_shas: Dict[str, str] = {}
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            if parse_semver(name) is None:
+                continue
+            sha = str((item.get("commit") or {}).get("sha") or "")
+            tag_shas[name] = sha
+        return tag_shas, None
+    except Exception as exc:
+        return None, str(exc) or "Unable to contact GitHub API"
+
+
 def _fetch_github_release_metadata(tag: str, timeout: float = 2.0) -> Tuple[Optional[str], Optional[str]]:
     """Best-effort query for the release page URL & concise notes of `tag`; (None, None) on error."""
     try:
-        req = urllib.request.Request(
+        data = _github_get_json(
             GITHUB_RELEASE_BY_TAG_API.format(tag=urllib.parse.quote(tag, safe="")),
-            headers={"Accept": "application/vnd.github+json", "User-Agent": "SubBuild-Studio-Updater"},
+            timeout=timeout,
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace"))
         html_url = data.get("html_url")
         body = (data.get("body") or "").strip()
         if len(body) > 500:
@@ -210,35 +290,38 @@ def check_for_updates(repo_root: Optional[Path] = None, timeout: float = 4.0) ->
         "error": None,
     }
 
-    if not (root / ".git").exists():
-        result["error"] = "Not a Git checkout"
-        logger.info("Updater check skipped: %s", result["error"])
-        _cached_update_status = dict(result)
-        return result
+    if (root / ".git").exists():
+        rc, out, err = _run_git(root, "ls-remote", "--tags", "origin", timeout=timeout)
+        if rc != 0:
+            result["error"] = err or "Unable to contact remote repository"
+            logger.info("Updater check failed (v%s): %s", current_version, result["error"])
+            _cached_update_status = dict(result)
+            return result
 
-    rc, out, err = _run_git(root, "ls-remote", "--tags", "origin", timeout=timeout)
-    if rc != 0:
-        result["error"] = err or "Unable to contact remote repository"
-        logger.info("Updater check failed (v%s): %s", current_version, result["error"])
-        _cached_update_status = dict(result)
-        return result
-
-    # Parse remote semver release tags (preferring dereferenced annotated ^{} SHAs)
-    tag_shas: Dict[str, str] = {}
-    for line in out.splitlines():
-        parts = line.strip().split()
-        if len(parts) < 2:
-            continue
-        sha, ref = parts[0], parts[1]
-        if not ref.startswith("refs/tags/"):
-            continue
-        raw_tag = ref[len("refs/tags/") :]
-        if raw_tag.endswith("^{}"):
-            tag_name = raw_tag[:-3]
-            if parse_semver(tag_name) is not None:
-                tag_shas[tag_name] = sha
-        elif parse_semver(raw_tag) is not None:
-            tag_shas.setdefault(raw_tag, sha)
+        # Parse remote semver release tags (preferring dereferenced annotated ^{} SHAs)
+        tag_shas: Dict[str, str] = {}
+        for line in out.splitlines():
+            parts = line.strip().split()
+            if len(parts) < 2:
+                continue
+            sha, ref = parts[0], parts[1]
+            if not ref.startswith("refs/tags/"):
+                continue
+            raw_tag = ref[len("refs/tags/") :]
+            if raw_tag.endswith("^{}"):
+                tag_name = raw_tag[:-3]
+                if parse_semver(tag_name) is not None:
+                    tag_shas[tag_name] = sha
+            elif parse_semver(raw_tag) is not None:
+                tag_shas.setdefault(raw_tag, sha)
+    else:
+        fetched_tags, err = _fetch_github_tags(timeout=timeout)
+        if fetched_tags is None:
+            result["error"] = err or "Unable to contact remote repository"
+            logger.info("Updater check failed (v%s): %s", current_version, result["error"])
+            _cached_update_status = dict(result)
+            return result
+        tag_shas = fetched_tags
 
     best_tag: Optional[str] = None
     best_tuple: Optional[Tuple[int, int, int]] = None
@@ -387,9 +470,113 @@ def require_signed_tags(root: Path) -> bool:
     return (root / RELEASE_SIGNERS_FILE).is_file()
 
 
+def _verify_github_tag_on_main(tag: str, timeout: float = 10.0) -> Tuple[Optional[bool], str]:
+    """Check via GitHub Compare API whether `tag` is an ancestor of `main` or `master`."""
+    encoded_tag = urllib.parse.quote(tag, safe="")
+    for branch in ("main", "master"):
+        url = GITHUB_COMPARE_API.format(base=branch, head=encoded_tag)
+        try:
+            data = _github_get_json(url, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                continue
+            logger.warning("Updater: compare check failed for %s (%s): %s", branch, tag, exc)
+            continue
+        except Exception as exc:
+            logger.warning("Updater: compare check failed for %s (%s): %s", branch, tag, exc)
+            continue
+        if isinstance(data, dict):
+            status = data.get("status")
+            if status in ("behind", "identical"):
+                return True, f"origin/{branch}"
+            if status in ("ahead", "diverged"):
+                return False, f"origin/{branch}"
+    return None, ""
+
+
+def _verify_ssh_signature_payload(signers_file: Path, payload: str, signature: str) -> Tuple[bool, str]:
+    """Verify a Git SSH signature (`payload` + `signature`) against `signers_file` using `ssh-keygen`."""
+    ssh_keygen = shutil.which("ssh-keygen")
+    if not ssh_keygen:
+        return False, "ssh-keygen not found on PATH"
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        sig_path = tmp_dir / "tag.sig"
+        sig_path.write_bytes(signature.encode("utf-8"))
+        rc, out, err = _run_cmd(
+            [ssh_keygen, "-Y", "find-principals", "-f", str(signers_file), "-s", str(sig_path)],
+            cwd=tmp_dir,
+            timeout=10.0,
+        )
+        principals = [ln.strip() for ln in out.splitlines() if ln.strip()]
+        if rc != 0 or not principals:
+            return False, (err or out or "No matching principal in release-signers").strip()
+        principal = principals[0]
+        try:
+            proc = subprocess.run(
+                [
+                    ssh_keygen,
+                    "-Y",
+                    "verify",
+                    "-f",
+                    str(signers_file),
+                    "-I",
+                    principal,
+                    "-n",
+                    "git",
+                    "-s",
+                    str(sig_path),
+                ],
+                input=payload.encode("utf-8"),
+                capture_output=True,
+                timeout=10.0,
+                creationflags=_subprocess_flags(),
+            )
+            detail = (
+                proc.stderr.decode("utf-8", errors="replace")
+                or proc.stdout.decode("utf-8", errors="replace")
+            ).strip()
+            return proc.returncode == 0, detail
+        except Exception as exc:
+            return False, str(exc)
+
+
+def _verify_github_release_tag_signature(root: Path, tag: str, timeout: float = 15.0) -> Tuple[bool, str]:
+    """Verify a release tag's Git signature via GitHub's Git Tags API (and local `release-signers`)."""
+    try:
+        ref_data = _github_get_json(
+            GITHUB_TAG_REF_API.format(tag=urllib.parse.quote(tag, safe="")),
+            timeout=timeout,
+        )
+        obj = (ref_data.get("object") or {}) if isinstance(ref_data, dict) else {}
+        if obj.get("type") != "tag" or not obj.get("sha"):
+            return False, "Tag is not a signed annotated tag"
+        tag_data = _github_get_json(
+            GITHUB_TAG_OBJ_API.format(sha=urllib.parse.quote(str(obj["sha"]), safe="")),
+            timeout=timeout,
+        )
+    except Exception as exc:
+        return False, str(exc) or "Failed to fetch tag signature from GitHub API"
+
+    ver = (tag_data.get("verification") or {}) if isinstance(tag_data, dict) else {}
+    sig = (ver.get("signature") or "").strip()
+    payload = ver.get("payload") or ""
+    if not sig or not payload:
+        return False, "error: no signature found"
+    if f"\ntag {tag}\n" not in payload:
+        return False, "error: tag payload mismatch"
+
+    signers = root / RELEASE_SIGNERS_FILE
+    if signers.is_file():
+        return _verify_ssh_signature_payload(signers, payload, sig)
+    return bool(ver.get("verified")), str(ver.get("reason") or "")
+
+
 def verify_release_tag(root: Path, tag: str) -> Tuple[bool, str]:
-    """(signature ok, git's message) for `tag`, checked against the installed release-signers file
-    (or, without one, against this machine's own git signing configuration)."""
+    """(signature ok, verification detail) for `tag`, checked against the installed release-signers file
+    (or, without one, against this machine's own git signing configuration / GitHub verification)."""
+    if not (root / ".git").exists():
+        return _verify_github_release_tag_signature(root, tag)
     signers = root / RELEASE_SIGNERS_FILE
     args = ["verify-tag", tag]
     if signers.is_file():
@@ -404,6 +591,250 @@ def _release_branch(root: Path) -> Optional[str]:
         if rc == 0:
             return ref
     return None
+
+
+def _is_protected_rel_path(rel_posix: str) -> bool:
+    clean = rel_posix.strip("/")
+    return any(clean == p or clean.startswith(f"{p}/") for p in _PROTECTED_ZIP_PATHS)
+
+
+def _download_and_extract_release_zip(
+    tag: str, temp_dir: Path, timeout: float = 60.0
+) -> Tuple[Optional[Path], Optional[str]]:
+    """Download the GitHub release ZIP for `tag` and safely extract it into `temp_dir`."""
+    zip_path = temp_dir / "release.zip"
+    extract_dir = temp_dir / "extracted"
+    url = GITHUB_RELEASE_ZIP_URL.format(tag=urllib.parse.quote(tag, safe=""))
+    req = urllib.request.Request(
+        url,
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "SubBuild-Studio-Updater"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp, open(zip_path, "wb") as out_f:
+            shutil.copyfileobj(resp, out_f)
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        extract_root_resolved = extract_dir.resolve()
+        with zipfile.ZipFile(zip_path) as zf:
+            for info in zf.infolist():
+                target = (extract_dir / info.filename).resolve()
+                if not target.is_relative_to(extract_root_resolved):
+                    return None, f"Unsafe archive path: {info.filename}"
+            zf.extractall(extract_dir)
+    except Exception as exc:
+        return None, str(exc) or "Failed to download release archive."
+
+    top_entries = list(extract_dir.iterdir())
+    top_dirs = [p for p in top_entries if p.is_dir()]
+    if len(top_entries) == 1 and len(top_dirs) == 1:
+        return top_dirs[0], None
+    return extract_dir, None
+
+
+def _restore_zip_backup(
+    root: Path,
+    backup_dir: Path,
+    backed_up_files: list[Path],
+    added_files: list[Path],
+) -> None:
+    """Restore backed-up files and remove newly added files after a failed ZIP update."""
+    for rel in backed_up_files:
+        src = backup_dir / rel
+        dst = root / rel
+        if src.is_file():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+    for rel in added_files:
+        dst = root / rel
+        try:
+            if dst.is_file():
+                dst.unlink()
+        except OSError:
+            pass
+
+
+def _finalize_update_success(
+    root: Path,
+    status: Dict[str, Any],
+    prev_version: str,
+    target_ref: str,
+    req_updated: bool,
+    fe_rebuilt: bool,
+) -> Dict[str, Any]:
+    global _cached_update_status
+
+    after_info = get_current_version_info(root)
+    _cached_update_status = {
+        "current_version": after_info["current_version"],
+        "current_commit": after_info["current_commit"],
+        "branch": after_info["branch"],
+        "update_available": False,
+        "update_kind": None,
+        "latest_version": after_info["current_version"],
+        "latest_commit": after_info["current_commit"],
+        "commits_behind": 0,
+        "target_ref": None,
+        "release_url": status.get("release_url"),
+        "release_notes": status.get("release_notes"),
+        "error": None,
+    }
+
+    logger.info(
+        "Updater applied release %s: v%s -> v%s (%s), reqs=%s, frontend=%s",
+        target_ref,
+        prev_version,
+        after_info["current_version"],
+        after_info["current_commit"],
+        req_updated,
+        fe_rebuilt,
+    )
+
+    return {
+        "updated": True,
+        "previous_version": prev_version,
+        "new_version": after_info["current_version"],
+        "new_commit": after_info["current_commit"],
+        "requirements_updated": req_updated,
+        "frontend_rebuilt": fe_rebuilt,
+        "restart_required": True,
+        "skipped_reason": None,
+        "message": f"Updated to v{after_info['current_version']} ({after_info['current_commit']}).",
+    }
+
+
+def _apply_zip_update(
+    root: Path,
+    status: Dict[str, Any],
+    base_reply: Dict[str, Any],
+    rebuild_frontend: bool,
+) -> Dict[str, Any]:
+    """Download and overlay a verified GitHub Release ZIP when `.git` is absent."""
+    target_ref = str(status["target_ref"])
+    prev_version = status["current_version"]
+
+    on_main, release_branch = _verify_github_tag_on_main(target_ref)
+    if on_main is None:
+        reply = dict(base_reply)
+        reply["skipped_reason"] = "no_release_branch"
+        reply["message"] = "Skipped update: the remote main branch could not be found."
+        logger.warning("Updater apply skipped (target=%s): no main or master branch on GitHub", target_ref)
+        return reply
+    if not on_main:
+        reply = dict(base_reply)
+        reply["skipped_reason"] = "tag_not_on_main"
+        reply["message"] = f"Skipped update: release {target_ref} is not part of {release_branch}."
+        logger.warning("Updater apply skipped: %s is not an ancestor of %s", target_ref, release_branch)
+        return reply
+
+    if require_signed_tags(root):
+        signed, detail = verify_release_tag(root, target_ref)
+        if not signed:
+            reply = dict(base_reply)
+            reply["skipped_reason"] = "unsigned_tag"
+            reply["message"] = f"Skipped update: release {target_ref} has no valid signature."
+            logger.warning("Updater apply skipped: signature check for %s failed: %s", target_ref, detail)
+            return reply
+        logger.info("Updater: release %s is signed by a trusted key (%s)", target_ref, detail[:200])
+
+    req_file = root / "backend" / "requirements.txt"
+    pkg_file = root / "frontend" / "package.json"
+    req_before = _file_sha256(req_file)
+    pkg_before = _file_sha256(pkg_file)
+
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp_dir = Path(tmp_str)
+        extracted_root, err = _download_and_extract_release_zip(target_ref, tmp_dir)
+        if extracted_root is None:
+            reply = dict(base_reply)
+            reply["message"] = err or "Failed to download release archive."
+            logger.warning("Updater ZIP download failed for %s: %s", target_ref, reply["message"])
+            return reply
+
+        backup_dir = tmp_dir / "backup"
+        backed_up_files: list[Path] = []
+        added_files: list[Path] = []
+        fe_changed = False
+
+        for src_file in extracted_root.rglob("*"):
+            if not src_file.is_file():
+                continue
+            rel = src_file.relative_to(extracted_root)
+            rel_posix = rel.as_posix()
+            if _is_protected_rel_path(rel_posix):
+                continue
+            dst_file = root / rel
+            src_bytes = src_file.read_bytes()
+            file_changed = (not dst_file.is_file()) or (dst_file.read_bytes() != src_bytes)
+            if not file_changed:
+                continue
+            if rel_posix.startswith("frontend/"):
+                fe_changed = True
+            if dst_file.is_file():
+                bak = backup_dir / rel
+                bak.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(dst_file, bak)
+                backed_up_files.append(rel)
+            else:
+                added_files.append(rel)
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            # copyfile updates mtime to now so run.bat/run.sh rebuilds frontend/dist when changed
+            shutil.copyfile(src_file, dst_file)
+            shutil.copymode(src_file, dst_file)
+
+        version_rel = Path("VERSION")
+        version_file = root / version_rel
+        if version_rel not in backed_up_files and version_rel not in added_files:
+            if version_file.is_file():
+                bak_ver = backup_dir / version_rel
+                bak_ver.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(version_file, bak_ver)
+                backed_up_files.append(version_rel)
+            else:
+                added_files.append(version_rel)
+        latest_ver = status["latest_version"]
+        latest_commit = status.get("latest_commit") or ""
+        ver_text = f"v{latest_ver}-0-g{latest_commit}\n" if latest_commit else f"v{latest_ver}\n"
+        version_file.write_text(ver_text, encoding="utf-8")
+
+        req_after = _file_sha256(req_file)
+        pkg_after = _file_sha256(pkg_file)
+        req_changed = req_before != req_after and req_after is not None
+        pkg_changed = pkg_before != pkg_after
+
+        req_updated = False
+        if req_changed:
+            req_updated = _install_backend_requirements(root)
+            if not req_updated:
+                _restore_zip_backup(root, backup_dir, backed_up_files, added_files)
+                _install_backend_requirements(root)
+                reply = dict(base_reply)
+                reply["skipped_reason"] = "dependency_install_failed"
+                reply["message"] = (
+                    "Update failed while installing the new Python packages; kept the previous version. "
+                    "Details are in the server log."
+                )
+                logger.warning("Updater ZIP update rolled back (%s): dependency_install_failed", target_ref)
+                return reply
+
+        fe_rebuilt = False
+        if rebuild_frontend and (
+            not (root / "frontend" / "dist" / "index.html").is_file() or pkg_changed or fe_changed
+        ):
+            fe_rebuilt = _rebuild_frontend(root, run_npm_install=pkg_changed)
+            if not fe_rebuilt and not (root / "frontend" / "dist" / "index.html").is_file():
+                _restore_zip_backup(root, backup_dir, backed_up_files, added_files)
+                if req_changed:
+                    _install_backend_requirements(root)
+                _rebuild_frontend(root, run_npm_install=pkg_changed)
+                reply = dict(base_reply)
+                reply["skipped_reason"] = "frontend_build_failed"
+                reply["message"] = (
+                    "Update failed while building the new interface; kept the previous version. "
+                    "Details are in the server log."
+                )
+                logger.warning("Updater ZIP update rolled back (%s): frontend_build_failed", target_ref)
+                return reply
+
+    return _finalize_update_success(root, status, prev_version, target_ref, req_updated, fe_rebuilt)
 
 
 def _roll_back(
@@ -444,11 +875,10 @@ def apply_update(
     rebuild_frontend: bool = True,
 ) -> Dict[str, Any]:
     """
-    Fast-forward the Git working copy to the newer published Release tag (`vX.Y.Z`),
-    then sync Python dependencies and rebuild `frontend/dist` when changed.
+    Update the installation to the newer published Release tag (`vX.Y.Z`) via Git fast-forward
+    (or GitHub Release ZIP download when `.git` is absent), then sync Python dependencies and
+    rebuild `frontend/dist` when changed.
     """
-    global _cached_update_status
-
     root = repo_root or get_repo_root()
     status = check_for_updates(root)
     prev_version = status["current_version"]
@@ -473,6 +903,9 @@ def apply_update(
     if not status.get("update_available") or not status.get("target_ref"):
         base_reply["message"] = "Already up to date."
         return base_reply
+
+    if not (root / ".git").exists():
+        return _apply_zip_update(root, status, base_reply, rebuild_frontend=rebuild_frontend)
 
     branch = status.get("branch") or ""
     target_ref = str(status["target_ref"])
@@ -558,42 +991,7 @@ def apply_update(
                               reinstall_requirements=req_changed, rebuild_frontend_after=True,
                               pkg_changed=pkg_changed)
 
-    _cached_update_status = {
-        "current_version": after_info["current_version"],
-        "current_commit": after_info["current_commit"],
-        "branch": after_info["branch"],
-        "update_available": False,
-        "update_kind": None,
-        "latest_version": after_info["current_version"],
-        "latest_commit": after_info["current_commit"],
-        "commits_behind": 0,
-        "target_ref": None,
-        "release_url": status.get("release_url"),
-        "release_notes": status.get("release_notes"),
-        "error": None,
-    }
-
-    logger.info(
-        "Updater applied release %s: v%s -> v%s (%s), reqs=%s, frontend=%s",
-        target_ref,
-        prev_version,
-        after_info["current_version"],
-        after_info["current_commit"],
-        req_updated,
-        fe_rebuilt,
-    )
-
-    return {
-        "updated": True,
-        "previous_version": prev_version,
-        "new_version": after_info["current_version"],
-        "new_commit": after_info["current_commit"],
-        "requirements_updated": req_updated,
-        "frontend_rebuilt": fe_rebuilt,
-        "restart_required": True,
-        "skipped_reason": None,
-        "message": f"Updated to v{after_info['current_version']} ({after_info['current_commit']}).",
-    }
+    return _finalize_update_success(root, status, prev_version, target_ref, req_updated, fe_rebuilt)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
