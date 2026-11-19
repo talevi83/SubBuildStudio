@@ -3,9 +3,11 @@
 
 **SubBuild Studio** is a modular local web application for automated video subtitling, high-precision Speech-to-Text transcription with word-level timing, broadcast-grade subtitle refinement, and context-aware batch translation powered by multiple AI providers — **Google Gemini**, **OpenAI GPT**, **Anthropic Claude**, and **Ollama (Local / Cloud)** — with first-class RTL/Hebrew support.
 
-<img width="2550" height="1380" alt="image" src="https://github.com/user-attachments/assets/7f1d1cf8-7b2c-41e7-b1ac-7b95460c0b62" />
+<img width="2560" height="1271" alt="image" src="https://github.com/user-attachments/assets/51bb9b5b-0667-4aef-b86a-e19f0720faa4" />
 
-<img width="2560" height="1516" alt="image" src="https://github.com/user-attachments/assets/23e78dd9-2806-4d9e-8139-6a332044992b" />
+
+<img width="2560" height="1516" alt="image" src="https://github.com/user-attachments/assets/72832e71-350b-4a49-89e2-5cb1ae90a1c5" />
+
 
 
 ---
