@@ -56,3 +56,6 @@ backend/.session-token
 # Java QA Automation build & report outputs
 qa-automation-java/target/
 window.json
+
+# Local helper for creating signed release tags (not part of the app)
+release-tag.bat
