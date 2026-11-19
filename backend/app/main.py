@@ -23,6 +23,7 @@ from app.core.upload_limits import UploadLimitGuard
 from app.core.database import init_db
 from app.core.housekeeping import cleanup_storage, uploads_dir
 from app.core.ws_manager import ws_manager
+from app.core.updater import read_version_file
 from app.api import routes_system, routes_media, routes_jobs, routes_export, routes_settings, routes_glossary, routes_storage, routes_history
 from app.pipeline.orchestrator import recover_interrupted_jobs
 
@@ -73,7 +74,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="SubBuild Studio API",
     description="Professional local video subtitling, transcription & translation pipeline.",
-    version="1.0.0",
+    version=read_version_file(),
     lifespan=lifespan,
 )
 

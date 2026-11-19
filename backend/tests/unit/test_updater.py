@@ -236,3 +236,124 @@ def test_apply_update_pulls_and_installs_changed_requirements(tmp_path: Path):
     assert res["requirements_updated"] is True
     assert res["restart_required"] is True
     mock_pip.assert_called_once_with(repo)
+
+
+# ------------------------------------------------------------------ hardening (tag origin, rollback)
+
+_RELEASE = {
+    "current_version": "1.5.0",
+    "current_commit": "1111111",
+    "branch": "main",
+    "update_available": True,
+    "update_kind": "release",
+    "latest_version": "1.6.0",
+    "latest_commit": "5555555",
+    "commits_behind": 0,
+    "target_ref": "v1.6.0",
+    "release_url": None,
+    "release_notes": None,
+    "error": None,
+}
+_OLD_SHA = "1111111" + "0" * 33
+
+
+def _git_fake(calls, *, tag_on_main=True, change_requirements=False, change_frontend=False):
+    state = {"pulled": False}
+
+    def fake_run_git(root, *args, timeout=4.0):
+        cmd = " ".join(args)
+        calls.append(cmd)
+        if cmd.startswith("merge-base --is-ancestor"):
+            return (0, "", "") if tag_on_main else (1, "", "")
+        if cmd.startswith("merge --ff-only"):
+            state["pulled"] = True
+            if change_requirements:
+                (root / "backend" / "requirements.txt").write_text("fastapi==0.101\n", encoding="utf-8")
+            return 0, "", ""
+        if cmd.startswith("reset --keep"):
+            state["pulled"] = False
+            return 0, "", ""
+        if cmd.startswith("diff --name-only"):
+            return 0, ("frontend/src/App.tsx" if change_frontend else ""), ""
+        if cmd == "rev-parse HEAD":
+            return 0, ("5555555" + "0" * 33) if state["pulled"] else _OLD_SHA, ""
+        if cmd == "rev-parse --short HEAD":
+            return 0, "5555555" if state["pulled"] else "1111111", ""
+        if cmd == "rev-parse --abbrev-ref HEAD":
+            return 0, "main", ""
+        return 0, "", ""
+
+    return fake_run_git
+
+
+def test_a_release_tag_that_is_not_on_main_is_not_installed(tmp_path: Path):
+    repo = _make_fake_repo(tmp_path)
+    calls = []
+    with (
+        patch.object(updater, "check_for_updates", return_value=_RELEASE),
+        patch.object(updater, "_run_git", side_effect=_git_fake(calls, tag_on_main=False)),
+    ):
+        res = updater.apply_update(repo, auto_mode=True, rebuild_frontend=False)
+    assert res["updated"] is False
+    assert res["skipped_reason"] == "tag_not_on_main"
+    assert not any(c.startswith("merge --ff-only") for c in calls)
+
+
+def test_a_failed_dependency_install_rolls_the_code_back(tmp_path: Path):
+    repo = _make_fake_repo(tmp_path)
+    calls = []
+    with (
+        patch.object(updater, "check_for_updates", return_value=_RELEASE),
+        patch.object(updater, "_run_git", side_effect=_git_fake(calls, change_requirements=True)),
+        patch.object(updater, "_install_backend_requirements", return_value=False) as pip,
+    ):
+        res = updater.apply_update(repo, auto_mode=True, rebuild_frontend=False)
+    assert res["updated"] is False
+    assert res["skipped_reason"] == "dependency_install_failed"
+    assert f"reset --keep {_OLD_SHA}" in calls
+    assert pip.call_count == 2  # the new requirements (failed), then the old ones again
+
+
+def test_a_frontend_build_that_wiped_dist_rolls_back_and_rebuilds_the_old_interface(tmp_path: Path):
+    repo = _make_fake_repo(tmp_path)
+    calls = []
+    results = iter([False, True])
+
+    def build(root, run_npm_install):
+        ok = next(results)
+        if not ok:  # vite empties frontend/dist first, then fails
+            (root / "frontend" / "dist" / "index.html").unlink()
+        return ok
+
+    with (
+        patch.object(updater, "check_for_updates", return_value=_RELEASE),
+        patch.object(updater, "_run_git", side_effect=_git_fake(calls, change_frontend=True)),
+        patch.object(updater, "_rebuild_frontend", side_effect=build) as mock_build,
+    ):
+        res = updater.apply_update(repo, auto_mode=True, rebuild_frontend=True)
+    assert res["updated"] is False
+    assert res["skipped_reason"] == "frontend_build_failed"
+    assert f"reset --keep {_OLD_SHA}" in calls
+    assert mock_build.call_count == 2
+
+
+def test_a_frontend_build_that_could_not_start_keeps_the_update(tmp_path: Path):
+    repo = _make_fake_repo(tmp_path)  # e.g. npm is not installed: the previous frontend/dist is untouched
+    calls = []
+    with (
+        patch.object(updater, "check_for_updates", return_value=_RELEASE),
+        patch.object(updater, "_run_git", side_effect=_git_fake(calls, change_frontend=True)),
+        patch.object(updater, "_rebuild_frontend", return_value=False),
+    ):
+        res = updater.apply_update(repo, auto_mode=True, rebuild_frontend=True)
+    assert res["updated"] is True and res["frontend_rebuilt"] is False
+    assert not any(c.startswith("reset") for c in calls)
+
+
+def test_release_notes_are_fetched_for_the_tag_being_offered():
+    assert updater.GITHUB_RELEASE_BY_TAG_API.format(tag="v2.0.1").endswith("/releases/tags/v2.0.1")
+
+
+def test_read_version_file(tmp_path: Path):
+    assert updater.read_version_file(_make_fake_repo(tmp_path, version="2.0.1")) == "2.0.1"
+    assert updater.read_version_file(tmp_path / "missing") == "0.0.0"
