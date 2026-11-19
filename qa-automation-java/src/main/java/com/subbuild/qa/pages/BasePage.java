@@ -1,7 +1,6 @@
 package com.subbuild.qa.pages;
 
 import com.subbuild.qa.config.TestConfig;
-import org.openqa.selenium.Alert;
 import org.openqa.selenium.By;
 import org.openqa.selenium.JavascriptExecutor;
 import org.openqa.selenium.Keys;
@@ -88,9 +87,11 @@ public abstract class BasePage {
                 "arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});", element);
     }
 
+    /** Confirms the studio's own confirmation dialog (it replaced the browser's window.confirm). */
     protected void acceptConfirmDialog() {
-        Alert alert = wait.until(ExpectedConditions.alertIsPresent());
-        alert.accept();
+        By ok = By.cssSelector("[data-testid='confirm-dialog-ok']");
+        wait.until(ExpectedConditions.elementToBeClickable(ok)).click();
+        wait.until(ExpectedConditions.invisibilityOfElementLocated(By.cssSelector("[data-testid='confirm-dialog']")));
     }
 
     public String getDocumentDir() {

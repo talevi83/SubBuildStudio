@@ -368,9 +368,7 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                if (window.confirm(t('table.confirmDeleteRow', { index: seg.index }))) {
-                  onDelete(seg);
-                }
+                onDelete(seg); // no question asked: the toast that follows offers Undo
               }}
               title={t('table.deleteRow', { index: seg.index })}
               aria-label={t('table.deleteRow', { index: seg.index })}

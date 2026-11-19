@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useJobStore } from '../../store/useJobStore';
+import { confirmDialog } from '../../store/useDialogStore';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { inferProviderFromModelId, isAnyAiReady, isProviderReady } from '../settings/labels';
 import { api } from '../../services/api';
@@ -70,7 +71,12 @@ export const ExportToolbar: React.FC = () => {
       const options = { format: 'srt' as const, use_translated: true, apply_rtl: applyRtlExport };
       let result = await api.saveNextToVideo(activeJob.id, options);
       if (!result.saved && result.exists) {
-        if (!confirm(t('toolbar.confirmOverwrite', { path: result.path }))) return;
+        const replace = await confirmDialog({
+          title: t('toolbar.confirmOverwrite', { path: result.path }),
+          confirmLabel: t('ux.replaceFile'),
+          danger: true,
+        });
+        if (!replace) return;
         result = await api.saveNextToVideo(activeJob.id, { ...options, overwrite: true });
       }
       if (result.saved) showSaveNote(true, t('toolbar.savedNextToVideo', { path: result.path }));
@@ -81,8 +87,14 @@ export const ExportToolbar: React.FC = () => {
     }
   };
 
-  const translateAll = () => {
-    if (hasTranslation && !confirm(t('toolbar.confirmRetranslate', { count: activeJob.segments.length }))) {
+  const translateAll = async () => {
+    if (
+      hasTranslation &&
+      !(await confirmDialog({
+        title: t('toolbar.confirmRetranslate', { count: activeJob.segments.length }),
+        confirmLabel: t('ux.retranslate'),
+      }))
+    ) {
       return;
     }
     retranslate({ only_failed: false, target_language: target });
@@ -110,7 +122,7 @@ export const ExportToolbar: React.FC = () => {
           ))}
         </select>
         <button
-          onClick={translateAll}
+          onClick={() => void translateAll()}
           disabled={busy || !hasSegments || !canTranslate}
           title={canTranslate ? t('toolbar.translateTitle') : t('toolbar.needsKey')}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-200 border border-zinc-700/60 rounded-lg text-xs font-medium transition-colors cursor-pointer"
