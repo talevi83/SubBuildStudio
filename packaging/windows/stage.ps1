@@ -8,8 +8,12 @@
   2. Without the development-only parts (tests, QA suite, CI files, run/install scripts, the
      frontend sources) - but with the interface already built (frontend\dist, run
      "npm run build" in frontend\ first), so users need no Node.js.
-  3. Plus ffmpeg/ffprobe (packaging\ffmpeg), uv (tools\uv.exe), and the INSTALLER marker that
-     tells the updater this copy is updated by downloading a new installer.
+  3. Plus ffmpeg/ffprobe (packaging\ffmpeg), uv (tools\uv.exe), Python 3.12 (python\), and the
+     INSTALLER marker that tells the updater this copy is updated by downloading a new installer.
+
+  Python is shipped as plain files instead of being downloaded by uv on the user's machine:
+  "uv python install" creates a directory junction there, and Windows 11's RedirectionGuard can
+  refuse to follow junctions made by a normal user ("untrusted mount point", os error 448).
 
   Prints the version (e.g. 2.2.0) and, on GitHub Actions, sets the step output "version".
 
@@ -84,7 +88,19 @@ if (-not $uvExe) { throw "uv.exe not found in $UvZipUrl" }
 New-Item -ItemType Directory -Force (Join-Path $app "tools") | Out-Null
 Copy-Item $uvExe.FullName (Join-Path $app "tools\uv.exe")
 
-# 3c. The updater checks for this file (backend/app/core/updater.py, INSTALLER_MARKER)
+# 3c. Python 3.12 as plain files (no junctions on the user's machine - see the description above)
+Write-Host "Fetching Python 3.12..."
+$env:UV_PYTHON_INSTALL_DIR = Join-Path $downloads "uv-python"
+& (Join-Path $app "tools\uv.exe") python install 3.12
+if ($LASTEXITCODE -ne 0) { throw "uv python install failed" }
+$pyDir = Get-ChildItem $env:UV_PYTHON_INSTALL_DIR -Directory |
+    Where-Object { $_.Name -like "cpython-3.12.*" -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } |
+    Sort-Object Name -Descending | Select-Object -First 1
+if (-not $pyDir -or -not (Test-Path (Join-Path $pyDir.FullName "python.exe"))) { throw "Python 3.12 not found after uv python install" }
+Copy-Item $pyDir.FullName (Join-Path $app "python") -Recurse
+Remove-Item Env:\UV_PYTHON_INSTALL_DIR
+
+# 3d. The updater checks for this file (backend/app/core/updater.py, INSTALLER_MARKER)
 Set-Content -Path (Join-Path $app "INSTALLER") -Value "windows" -Encoding ascii
 
 Remove-Item $downloads -Recurse -Force

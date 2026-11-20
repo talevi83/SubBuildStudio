@@ -66,6 +66,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; Remove the previous version's code first, so files deleted in a new version do not linger
 Type: filesandordirs; Name: "{app}\backend\app"
 Type: filesandordirs; Name: "{app}\frontend"
+Type: filesandordirs; Name: "{app}\python"
 
 [Files]
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

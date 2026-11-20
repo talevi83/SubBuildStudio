@@ -4,15 +4,17 @@
 ::
 :: Everything stays inside the install folder, so uninstalling removes it all:
 ::   tools\uv.exe       the package manager that ships with the installer
-::   python\            the Python 3.12 that uv downloads (no system-wide Python needed)
+::   python\            Python 3.12, also shipped with the installer (no system-wide Python needed;
+::                      not downloaded here, because uv would create a junction that Windows 11
+::                      RedirectionGuard can block - "untrusted mount point", os error 448)
 ::   backend\.venv\     the app's packages (faster-whisper, the CUDA libraries, the window...)
 setlocal
 title SubBuild Studio - Setup
 cd /d "%~dp0..\.."
 
 set "UV=%CD%\tools\uv.exe"
-set "UV_PYTHON_INSTALL_DIR=%CD%\python"
-set "UV_PYTHON_PREFERENCE=only-managed"
+set "PY=%CD%\python\python.exe"
+set "UV_PYTHON_DOWNLOADS=never"
 set "UV_CACHE_DIR=%CD%\.uv-cache"
 set "UV_LINK_MODE=copy"
 set "VENV_PY=%CD%\backend\.venv\Scripts\python.exe"
@@ -27,10 +29,14 @@ if not exist "%UV%" (
     echo [ERROR] tools\uv.exe is missing - please download the installer again.
     goto :fail
 )
+if not exist "%PY%" (
+    echo [ERROR] python\python.exe is missing - please download the installer again.
+    goto :fail
+)
 
 if not exist "%VENV_PY%" (
     echo [1/2] Creating the Python environment...
-    "%UV%" venv --python 3.12 "backend\.venv" || goto :fail
+    "%UV%" venv --python "%PY%" "backend\.venv" || goto :fail
 ) else (
     echo [1/2] Python environment found.
 )
