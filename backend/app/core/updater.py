@@ -56,6 +56,11 @@ _PROTECTED_ZIP_PATHS = (
     "launcher.log",
 )
 
+# Written by the Windows installer build (packaging/windows/stage.ps1). Such a copy has no Node.js to
+# rebuild the interface and its Python packages may be in use, so it is updated by running the new
+# installer rather than by overlaying a release ZIP.
+INSTALLER_MARKER = "INSTALLER"
+
 _cached_update_status: Optional[Dict[str, Any]] = None
 
 
@@ -585,6 +590,11 @@ def verify_release_tag(root: Path, tag: str) -> Tuple[bool, str]:
     return rc == 0, (err or out).strip()
 
 
+def is_installer_managed(root: Path) -> bool:
+    """True for a copy installed by the Windows installer (see INSTALLER_MARKER)."""
+    return (root / INSTALLER_MARKER).is_file()
+
+
 def _release_branch(root: Path) -> Optional[str]:
     for ref in RELEASE_BRANCHES:
         rc, _, _ = _run_git(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", timeout=4.0)
@@ -902,6 +912,15 @@ def apply_update(
 
     if not status.get("update_available") or not status.get("target_ref"):
         base_reply["message"] = "Already up to date."
+        return base_reply
+
+    if is_installer_managed(root):
+        base_reply["skipped_reason"] = "installer_managed"
+        base_reply["message"] = (
+            "This copy was installed with the Windows installer: download the new installer "
+            "(SubBuild-Studio-Setup.exe) and run it. Projects and settings are kept."
+        )
+        logger.info("Updater apply skipped (target=%s): installer_managed", status.get("target_ref"))
         return base_reply
 
     if not (root / ".git").exists():
