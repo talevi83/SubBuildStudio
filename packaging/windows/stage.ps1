@@ -26,13 +26,33 @@
 param(
     [string]$OutDir = "build\windows",
     [string]$Ref = "HEAD",
-    [string]$FfmpegZipUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+    # Tried in order (each up to 3 times): gyan.dev is a small site that sometimes answers 503
+    [string[]]$FfmpegZipUrls = @(
+        "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+        "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+    ),
     [string]$UvZipUrl = "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip",
     # 3.12.10 is the last 3.12 release with Windows binaries from python.org
     [string]$PythonVersion = "3.12.10"
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest is very slow with the progress bar
+
+# Downloads $Urls[0] to $OutFile, retrying, then falls back to the next URL
+function Get-Download([string[]]$Urls, [string]$OutFile) {
+    foreach ($url in $Urls) {
+        for ($try = 1; $try -le 3; $try++) {
+            try {
+                Invoke-WebRequest $url -OutFile $OutFile
+                return
+            } catch {
+                Write-Warning "Download failed ($try/3) from ${url}: $($_.Exception.Message)"
+                Start-Sleep -Seconds (10 * $try)
+            }
+        }
+    }
+    throw "Could not download $OutFile from: $($Urls -join ', ')"
+}
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 if (-not [System.IO.Path]::IsPathRooted($OutDir)) { $OutDir = Join-Path $repo $OutDir }
@@ -69,11 +89,11 @@ Copy-Item (Join-Path $repo "frontend\dist") (Join-Path $app "frontend\dist") -Re
 # 3a. ffmpeg + ffprobe
 Write-Host "Downloading ffmpeg..."
 $ffZip = Join-Path $downloads "ffmpeg.zip"
-Invoke-WebRequest $FfmpegZipUrl -OutFile $ffZip
+Get-Download $FfmpegZipUrls $ffZip
 $ffDir = Join-Path $downloads "ffmpeg"
 Expand-Archive $ffZip $ffDir -Force
 $ffExe = Get-ChildItem $ffDir -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
-if (-not $ffExe) { throw "ffmpeg.exe not found in $FfmpegZipUrl" }
+if (-not $ffExe) { throw "ffmpeg.exe not found in the downloaded ffmpeg archive" }
 $ffTarget = Join-Path $app "packaging\ffmpeg"
 New-Item -ItemType Directory -Force $ffTarget | Out-Null
 Copy-Item (Join-Path $ffExe.DirectoryName "ffmpeg.exe"), (Join-Path $ffExe.DirectoryName "ffprobe.exe") $ffTarget
@@ -83,7 +103,7 @@ if ($ffLicense) { Copy-Item $ffLicense.FullName (Join-Path $ffTarget "LICENSE.tx
 # 3b. uv
 Write-Host "Downloading uv..."
 $uvZip = Join-Path $downloads "uv.zip"
-Invoke-WebRequest $UvZipUrl -OutFile $uvZip
+Get-Download @($UvZipUrl) $uvZip
 $uvDir = Join-Path $downloads "uv"
 Expand-Archive $uvZip $uvDir -Force
 $uvExe = Get-ChildItem $uvDir -Recurse -Filter "uv.exe" | Select-Object -First 1
@@ -99,7 +119,7 @@ Copy-Item $uvExe.FullName (Join-Path $app "tools\uv.exe")
 #     one more process for the antivirus to judge.
 Write-Host "Downloading Python $PythonVersion (python.org NuGet package)..."
 $nupkg = Join-Path $downloads "python.zip"
-Invoke-WebRequest "https://www.nuget.org/api/v2/package/python/$PythonVersion" -OutFile $nupkg
+Get-Download @("https://www.nuget.org/api/v2/package/python/$PythonVersion") $nupkg
 $pyExtract = Join-Path $downloads "python-nuget"
 Expand-Archive $nupkg $pyExtract -Force
 $pyTarget = Join-Path $app "python"
