@@ -669,3 +669,44 @@ def test_apply_update_without_git_skips_tag_not_on_main_and_unsigned_tag(tmp_pat
         res_sig = updater.apply_update(root, auto_mode=True, rebuild_frontend=False)
     assert res_sig["updated"] is False
     assert res_sig["skipped_reason"] == "unsigned_tag"
+
+
+def test_apply_update_in_an_installer_copy_points_to_the_new_installer(tmp_path: Path, monkeypatch):
+    """A copy from the Windows installer has no Node.js and must not be patched in place."""
+    monkeypatch.delenv("SUBBUILD_REQUIRE_SIGNED_TAGS", raising=False)
+    root = _make_non_git_install(tmp_path, version="1.5.0")
+    (root / updater.INSTALLER_MARKER).write_text("windows", encoding="ascii")
+    release_status = {
+        "current_version": "1.5.0",
+        "current_commit": "",
+        "branch": "",
+        "update_available": True,
+        "update_kind": "release",
+        "latest_version": "1.6.0",
+        "latest_commit": "5555555",
+        "commits_behind": 0,
+        "target_ref": "v1.6.0",
+        "release_url": "https://github.com/talevi83/SubBuildStudio/releases/tag/v1.6.0",
+        "release_notes": None,
+        "error": None,
+    }
+
+    with (
+        patch.object(updater, "check_for_updates", return_value=release_status),
+        patch.object(updater, "_apply_zip_update") as mock_zip,
+        patch.object(updater.urllib.request, "urlopen") as mock_urlopen,
+    ):
+        res = updater.apply_update(root, auto_mode=False)
+
+    assert updater.is_installer_managed(root) is True
+    assert res["updated"] is False
+    assert res["skipped_reason"] == "installer_managed"
+    assert "installer" in res["message"]
+    mock_zip.assert_not_called()
+    mock_urlopen.assert_not_called()
+    assert (root / "VERSION").read_text(encoding="utf-8").strip().endswith("1.5.0")
+
+
+def test_a_source_copy_is_not_installer_managed(tmp_path: Path):
+    root = _make_non_git_install(tmp_path, version="1.5.0")
+    assert updater.is_installer_managed(root) is False

@@ -368,6 +368,17 @@ Then open **`http://localhost:5173/api/session?token=dev-token`** once: it signs
 
 ---
 
+## 📦 Windows Installer (`SubBuild-Studio-Setup.exe`)
+
+For people who should not need Python, Node.js or a terminal, every release tag also gets a Windows installer, built by `.github/workflows/release-windows.yml` and attached to the GitHub release (`releases/latest/download/SubBuild-Studio-Setup.exe` always points at the newest one). Run the workflow by hand (*Actions → Windows installer → Run workflow*) to get a test build of any branch as a run artifact.
+
+- **What it ships:** the release's source tree without the development-only parts, the interface already built (`frontend/dist`, so no Node.js), `ffmpeg`/`ffprobe`, python.org's Python 3.12 (`python/`), and [`uv`](https://github.com/astral-sh/uv) (`tools/uv.exe`). Staged by `packaging/windows/stage.ps1`, packed by Inno Setup from `packaging/windows/SubBuildStudio.iss`.
+- **Per-user install, no administrator rights:** `%LOCALAPPDATA%\Programs\SubBuild Studio`, with Start-menu and optional desktop shortcuts that open the desktop window (`packaging/launcher.py`). Projects, settings and API keys live in `%LOCALAPPDATA%\SubBuild Studio`, so reinstalling or uninstalling never touches them.
+- **Python on first install:** `packaging/windows/setup-env.cmd` (run by the installer in a visible window) lets `uv` install `backend/requirements.txt` + `packaging/requirements-desktop.txt` straight into the python.org Python 3.12 shipped in the installer (`python\`, from the official NuGet package, so `python.exe` and `pythonw.exe` are signed by the PSF). It is private to the app, so there is no venv and the shortcuts start `python\pythonw.exe` directly. (uv's own Python is unsigned and was blocked by behaviour-based antivirus, and installing it creates a junction that Windows 11 RedirectionGuard may refuse.) This is the large, one-time download (the CUDA libraries); the installer itself stays small.
+- **Updates:** an installed copy carries an `INSTALLER` marker file. The in-app updater still reports new releases, but instead of patching files in place (it has no Node.js to rebuild the interface) it asks the user to download and run the new installer, which upgrades in place and keeps all data.
+- **Build it locally:** `cd frontend && npm ci && npm run build`, then `.\packaging\windows\stage.ps1` and `"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=2.2.0 packaging\windows\SubBuildStudio.iss` → `build\windows\SubBuild-Studio-Setup.exe`.
+- The installer is not code-signed yet, so Windows SmartScreen shows *"Windows protected your PC"* on first run (*More info → Run anyway*).
+
 ## 🔄 Desktop Window & Auto-Updater
 
 SubBuild Studio runs directly from the Git repository via `run.bat` (Windows) or `./run.sh` (macOS/Linux) with `packaging/launcher.py` (Edge WebView2 `pywebview` window + `pystray` tray icon), eliminating multi-gigabyte PyInstaller binary rebuilds while keeping upgrades near-instant.

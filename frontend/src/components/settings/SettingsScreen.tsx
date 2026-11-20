@@ -32,6 +32,7 @@ const UPDATE_SKIP_MESSAGES: Record<string, MessageKey> = {
   unsigned_tag: 'settings.updater.skippedUnsigned',
   dependency_install_failed: 'settings.updater.rolledBackDeps',
   frontend_build_failed: 'settings.updater.rolledBackFrontend',
+  installer_managed: 'settings.updater.installerManaged',
 };
 const AI_PROVIDERS: AIProvider[] = ['google', 'openai', 'anthropic', 'ollama'];
 

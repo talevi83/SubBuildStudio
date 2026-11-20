@@ -1,5 +1,8 @@
 # Windows batch files need CRLF line endings (cmd mis-parses labels otherwise)
 *.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.iss text eol=crlf
 # Unix / macOS shell scripts need LF line endings
 *.sh text eol=lf
 *.command text eol=lf

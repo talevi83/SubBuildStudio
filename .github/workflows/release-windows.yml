@@ -1,0 +1,88 @@
+name: Windows installer
+
+# Builds SubBuild-Studio-Setup.exe.
+#  - On a release tag (vX.Y.Z, pushed by release-tag.bat): attaches it to that tag's GitHub release
+#    (creating the release if it does not exist yet), so
+#    https://github.com/talevi83/SubBuildStudio/releases/latest/download/SubBuild-Studio-Setup.exe
+#    always points at the newest installer.
+#  - On a pull request that touches the installer, or "Run workflow" by hand: builds it and keeps it
+#    as a downloadable artifact of the run, for testing before a release. (GitHub shows the
+#    "Run workflow" button only once this file is on main; until then the pull request trigger
+#    builds it.)
+on:
+  push:
+    tags: ["v*.*.*"]
+  pull_request:
+    paths:
+      - "packaging/windows/**"
+      - "packaging/launcher.py"
+      - ".github/workflows/release-windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # all tags: git archive fills VERSION from the newest tag (export-subst)
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build the interface
+        working-directory: frontend
+        # Type check + bundle only: the frontend tests already run in tests.yml (on Linux), and on the
+        # slower Windows runner some of them hit vitest's 5 s timeout ("npm run build" runs them too).
+        run: |
+          npm ci
+          npx tsc -b
+          npx vite build
+
+      - name: Stage the application
+        id: stage
+        shell: pwsh
+        run: ./packaging/windows/stage.ps1 -OutDir build/windows
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.stage.outputs.version }}" packaging/windows/SubBuildStudio.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SubBuild-Studio-Setup-${{ steps.stage.outputs.version }}
+          path: build/windows/SubBuild-Studio-Setup.exe
+          if-no-files-found: error
+
+      - name: Attach to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --verify-tag --title $tag --generate-notes
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          gh release upload $tag build/windows/SubBuild-Studio-Setup.exe --clobber
