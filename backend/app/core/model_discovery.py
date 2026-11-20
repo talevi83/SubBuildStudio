@@ -7,6 +7,7 @@ evaluates task suitability + red warnings + per-episode/movie cost estimates, an
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import os
 import time
@@ -36,6 +37,74 @@ _OLLAMA_LOCAL_TIMEOUT_SECONDS = 1.0
 
 # (provider, key_id) -> {"fetched_at": float, "models": List[Tuple[str, Dict[str, Any]]], "error": Optional[str]}
 _cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+
+_PROVIDER_DISPLAY_NAMES: Dict[str, str] = {
+    "google": "Google Gemini",
+    "openai": "OpenAI",
+    "anthropic": "Anthropic",
+    "ollama": "Ollama",
+}
+
+# Windows socket errors that mean "something on this computer refused the connection"
+# (10013 = WSAEACCES: firewall / antivirus / network filter blocking this process).
+_WIN_BLOCKED_ERRORS = {10013}
+# Windows socket errors that mean the host could not be reached / resolved.
+_WIN_UNREACHABLE_ERRORS = {10050, 10051, 10060, 10061, 10065, 11001, 11002, 11004}
+
+
+def _iter_exception_chain(exc: BaseException):
+    seen: set[int] = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        yield cur
+        cur = cur.__cause__ or cur.__context__
+
+
+def describe_discovery_error(provider: str, exc: BaseException) -> str:
+    """Turn a raw discovery exception into a message a non-technical user can act on.
+
+    Network-level failures (blocked socket, no connection, timeout) get a plain-language
+    explanation; anything else (HTTP 401/403 for a bad key, etc.) keeps its original text.
+    """
+    name = _PROVIDER_DISPLAY_NAMES.get(provider, provider)
+    chain = list(_iter_exception_chain(exc))
+    raw_text = " ".join(str(e) for e in chain)
+
+    blocked = "WinError 10013" in raw_text or any(
+        isinstance(e, OSError)
+        and (
+            getattr(e, "winerror", None) in _WIN_BLOCKED_ERRORS
+            or (getattr(e, "winerror", None) is None and e.errno in (errno.EACCES, errno.EPERM))
+        )
+        for e in chain
+    )
+    if blocked:
+        return (
+            f"SubBuild Studio was blocked from connecting to {name}. "
+            "A firewall, antivirus or network filter on this computer is likely blocking the app - "
+            "allow SubBuild Studio through it and try again. (Windows error 10013)"
+        )
+
+    if any(isinstance(e, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)) for e in chain):
+        return (
+            f"{name} did not respond in time. "
+            "Check your internet connection (or VPN / proxy) and try again."
+        )
+
+    unreachable = any(
+        isinstance(e, (httpx.ConnectError, httpx.NetworkError, ConnectionError))
+        or (isinstance(e, OSError) and getattr(e, "winerror", None) in _WIN_UNREACHABLE_ERRORS)
+        for e in chain
+    )
+    if unreachable:
+        return (
+            f"Could not connect to {name}. "
+            "Check your internet connection (or VPN / proxy) and try again."
+        )
+
+    return str(exc)[:300] or type(exc).__name__
 
 
 def reset_discovery_cache(provider: Optional[str] = None, key_id: Optional[str] = None) -> None:
@@ -248,9 +317,12 @@ async def discover_for_key(
         mark_key_status(key.id, ok=True)
     except Exception as exc:
         models = []
-        error = str(exc)[:300] or type(exc).__name__
+        error = describe_discovery_error(key.provider, exc)
         if key.source != "local_default":
-            logger.info(f"Model discovery for {key.provider} ({key.label}) failed: {error}")
+            logger.info(
+                f"Model discovery for {key.provider} ({key.label}) failed: {error} "
+                f"[raw: {type(exc).__name__}: {str(exc)[:300]}]"
+            )
             mark_key_status(key.id, ok=False, error=error)
 
     _cache[cache_key] = {"fetched_at": now, "models": models, "error": error}
