@@ -11,9 +11,10 @@
   3. Plus ffmpeg/ffprobe (packaging\ffmpeg), uv (tools\uv.exe), Python 3.12 (python\), and the
      INSTALLER marker that tells the updater this copy is updated by downloading a new installer.
 
-  Python is shipped as plain files instead of being downloaded by uv on the user's machine:
-  "uv python install" creates a directory junction there, and Windows 11's RedirectionGuard can
-  refuse to follow junctions made by a normal user ("untrusted mount point", os error 448).
+  Python is python.org's own build (signed), shipped as plain files: letting uv download Python on
+  the user's machine creates a directory junction that Windows 11's RedirectionGuard can refuse
+  ("untrusted mount point", os error 448), and its unsigned pythonw.exe is blocked by
+  behaviour-based antivirus.
 
   Prints the version (e.g. 2.2.0) and, on GitHub Actions, sets the step output "version".
 
@@ -26,7 +27,9 @@ param(
     [string]$OutDir = "build\windows",
     [string]$Ref = "HEAD",
     [string]$FfmpegZipUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
-    [string]$UvZipUrl = "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip"
+    [string]$UvZipUrl = "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip",
+    # 3.12.10 is the last 3.12 release with Windows binaries from python.org
+    [string]$PythonVersion = "3.12.10"
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest is very slow with the progress bar
@@ -88,17 +91,27 @@ if (-not $uvExe) { throw "uv.exe not found in $UvZipUrl" }
 New-Item -ItemType Directory -Force (Join-Path $app "tools") | Out-Null
 Copy-Item $uvExe.FullName (Join-Path $app "tools\uv.exe")
 
-# 3c. Python 3.12 as plain files (no junctions on the user's machine - see the description above)
-Write-Host "Fetching Python 3.12..."
-$env:UV_PYTHON_INSTALL_DIR = Join-Path $downloads "uv-python"
-& (Join-Path $app "tools\uv.exe") python install 3.12
-if ($LASTEXITCODE -ne 0) { throw "uv python install failed" }
-$pyDir = Get-ChildItem $env:UV_PYTHON_INSTALL_DIR -Directory |
-    Where-Object { $_.Name -like "cpython-3.12.*" -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } |
-    Sort-Object Name -Descending | Select-Object -First 1
-if (-not $pyDir -or -not (Test-Path (Join-Path $pyDir.FullName "python.exe"))) { throw "Python 3.12 not found after uv python install" }
-Copy-Item $pyDir.FullName (Join-Path $app "python") -Recurse
-Remove-Item Env:\UV_PYTHON_INSTALL_DIR
+# 3c. Python from python.org (the official NuGet package): python.exe, pythonw.exe and the venv
+#     launchers are signed by the Python Software Foundation. Behaviour-based antivirus (Bitdefender
+#     Advanced Threat Defense) blocked the unsigned python-build-standalone pythonw.exe that uv
+#     downloads ("Unsigned process pythonw.exe executed unsigned file pythonw.exe").
+Write-Host "Downloading Python $PythonVersion (python.org NuGet package)..."
+$nupkg = Join-Path $downloads "python.zip"
+Invoke-WebRequest "https://www.nuget.org/api/v2/package/python/$PythonVersion" -OutFile $nupkg
+$pyExtract = Join-Path $downloads "python-nuget"
+Expand-Archive $nupkg $pyExtract -Force
+$pyTarget = Join-Path $app "python"
+Copy-Item (Join-Path $pyExtract "tools") $pyTarget -Recurse
+foreach ($rel in @("python.exe", "pythonw.exe", "Lib\venv\__init__.py")) {
+    if (-not (Test-Path (Join-Path $pyTarget $rel))) { throw "python\$rel is missing from the Python $PythonVersion NuGet package" }
+}
+$launchers = Get-ChildItem (Join-Path $pyTarget "Lib\venv") -Recurse -Filter "venv*launcher.exe"
+if (-not $launchers) { throw "The venv launchers are missing from the Python $PythonVersion NuGet package" }
+foreach ($exe in @((Join-Path $pyTarget "python.exe"), (Join-Path $pyTarget "pythonw.exe")) + $launchers.FullName) {
+    $sig = Get-AuthenticodeSignature $exe
+    if ($sig.Status -ne "Valid") { throw "$exe is not validly signed ($($sig.Status))" }
+    Write-Host ("  signed: {0} ({1})" -f (Split-Path $exe -Leaf), $sig.SignerCertificate.Subject)
+}
 
 # 3d. The updater checks for this file (backend/app/core/updater.py, INSTALLER_MARKER)
 Set-Content -Path (Join-Path $app "INSTALLER") -Value "windows" -Encoding ascii

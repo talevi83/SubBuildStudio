@@ -4,9 +4,12 @@
 ::
 :: Everything stays inside the install folder, so uninstalling removes it all:
 ::   tools\uv.exe       the package manager that ships with the installer
-::   python\            Python 3.12, also shipped with the installer (no system-wide Python needed;
-::                      not downloaded here, because uv would create a junction that Windows 11
-::                      RedirectionGuard can block - "untrusted mount point", os error 448)
+::   python\            Python 3.12 from python.org, also shipped with the installer (signed; no
+::                      system-wide Python needed)
+::
+:: The environment is made by Python's own venv (its launchers are signed too); uv only installs
+:: the packages into it. uv's own Python and venv launchers are unsigned, and behaviour-based
+:: antivirus blocked them.
 ::   backend\.venv\     the app's packages (faster-whisper, the CUDA libraries, the window...)
 setlocal
 title SubBuild Studio - Setup
@@ -34,9 +37,17 @@ if not exist "%PY%" (
     goto :fail
 )
 
+:: An environment made by an earlier build (another Python) is rebuilt from the shipped one
+if exist "backend\.venv\pyvenv.cfg" (
+    findstr /i /c:"home = %CD%\python" "backend\.venv\pyvenv.cfg" >nul 2>nul || (
+        echo Rebuilding the Python environment for the new Python...
+        rmdir /s /q "backend\.venv"
+    )
+)
+
 if not exist "%VENV_PY%" (
     echo [1/2] Creating the Python environment...
-    "%UV%" venv --python "%PY%" "backend\.venv" || goto :fail
+    "%PY%" -m venv --without-pip "backend\.venv" || goto :fail
 ) else (
     echo [1/2] Python environment found.
 )
