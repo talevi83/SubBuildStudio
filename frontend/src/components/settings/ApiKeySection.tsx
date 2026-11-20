@@ -24,7 +24,6 @@ import {
   Server,
 } from 'lucide-react';
 
-const AI_STUDIO_KEY_URL = 'https://aistudio.google.com/app/apikey';
 const PROVIDERS: AIProvider[] = ['google', 'openai', 'anthropic', 'ollama'];
 
 const PROVIDER_KEY_URLS: Record<AIProvider, string> = {
@@ -431,6 +430,14 @@ export const ApiKeySection: React.FC = () => {
   );
 };
 
+const OLLAMA_LOCAL_URL = 'http://localhost:11434';
+const OLLAMA_CLOUD_URL = 'https://ollama.com';
+const OLLAMA_DOWNLOAD_URL = 'https://ollama.com/download';
+
+/**
+ * First start without any AI provider: connect one (Gemini, OpenAI, Claude, or Ollama local / cloud)
+ * or skip and use local Whisper transcription only. More providers and keys are added in Settings.
+ */
 export const FirstRunApiKeyModal: React.FC = () => {
   const t = useT();
   const systemInfo = useJobStore((s) => s.systemInfo);
@@ -438,25 +445,53 @@ export const FirstRunApiKeyModal: React.FC = () => {
   const loadSettings = useSettingsStore((s) => s.load);
 
   const [dismissed, setDismissed] = useState(false);
+  const [provider, setProvider] = useState<AIProvider>('google');
+  const [ollamaUrl, setOllamaUrl] = useState(OLLAMA_LOCAL_URL);
   const [keyInput, setKeyInput] = useState('');
   const [showSecret, setShowSecret] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Saved, but the provider check reported a problem (e.g. local Ollama is not running): keep the
+  // dialog open to show it until the user continues.
+  const [notice, setNotice] = useState<string | null>(null);
 
-  if (!systemInfo || systemInfo.is_gemini_configured || systemInfo.is_ai_configured || dismissed) {
-    return null;
-  }
+  if (!systemInfo || dismissed) return null;
+  if ((systemInfo.is_gemini_configured || systemInfo.is_ai_configured) && !notice) return null;
+
+  const isOllama = provider === 'ollama';
+  const ollamaLocal = isOllama && ollamaUrl.trim() !== OLLAMA_CLOUD_URL;
+  const canSave = ollamaLocal ? !!ollamaUrl.trim() : !!keyInput.trim();
+  const keyLink = ollamaLocal ? OLLAMA_DOWNLOAD_URL : PROVIDER_KEY_URLS[provider];
+  const keyLinkText = ollamaLocal
+    ? t('settings.apiKey.modalOllamaDownload')
+    : t(`settings.apiKey.getLinkByProvider.${provider}` as MessageKey);
+
+  const chooseProvider = (prov: AIProvider) => {
+    setProvider(prov);
+    setKeyInput('');
+    setError(null);
+  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!keyInput.trim()) return;
+    if (!canSave) return;
     setSaving(true);
     setError(null);
     try {
-      await api.saveApiKey(keyInput.trim());
+      const res = await api.addProviderKey({
+        provider,
+        api_key: keyInput.trim(),
+        label: isOllama ? (ollamaLocal ? 'Local Ollama' : 'Ollama Cloud') : undefined,
+        base_url: isOllama ? ollamaUrl.trim() : undefined,
+        verify: true,
+      });
       await fetchSystemInfo();
       await loadSettings();
-      setDismissed(true);
+      if (res.discovery_error) {
+        setNotice(res.discovery_error);
+      } else {
+        setDismissed(true);
+      }
     } catch (err: any) {
       setError(err.message || 'Could not save API key');
     } finally {
@@ -469,7 +504,7 @@ export const FirstRunApiKeyModal: React.FC = () => {
       className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
       data-testid="first-run-apikey-modal"
     >
-      <div className="bg-surface border border-line rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5">
+      <div className="bg-surface border border-line rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 max-h-[calc(100vh-2rem)] overflow-y-auto">
         <div className="flex items-start gap-3.5">
           <div className="w-10 h-10 rounded-xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center flex-shrink-0">
             <Key className="w-5 h-5 text-indigo-400" />
@@ -480,69 +515,182 @@ export const FirstRunApiKeyModal: React.FC = () => {
           </div>
         </div>
 
-        <div className="p-3.5 rounded-xl bg-sunken border border-line space-y-2.5 text-xs">
-          <div className="font-semibold text-zinc-200">{t('settings.apiKey.modalWhereTitle')}</div>
-          <p className="text-[11px] text-zinc-400 leading-relaxed">{t('settings.apiKey.modalWhereText')}</p>
-          <a
-            href={AI_STUDIO_KEY_URL}
-            target="_blank"
-            rel="noreferrer"
-            data-testid="modal-apikey-link"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 font-semibold text-xs transition-colors"
-          >
-            <ExternalLink className="w-3.5 h-3.5" />
-            <span>{t('settings.apiKey.getLink')}</span>
-          </a>
-        </div>
-
-        <form onSubmit={handleSave} className="space-y-4">
-          <div className="space-y-1.5">
-            <label className="block text-xs font-medium text-zinc-300">
-              {t('settings.apiKey.inputLabel')}
-            </label>
-            <div className="relative">
-              <input
-                type={showSecret ? 'text' : 'password'}
-                dir="ltr"
-                autoFocus
-                value={keyInput}
-                onChange={(e) => setKeyInput(e.target.value)}
-                placeholder="AIzaSy..."
-                data-testid="modal-apikey-input"
-                className="w-full bg-sunken border border-line rounded-xl ps-3.5 pe-10 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-indigo-500 font-mono"
-              />
+        {notice ? (
+          <div className="space-y-4" data-testid="modal-apikey-notice">
+            <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 space-y-1.5 text-xs">
+              <div className="flex items-center gap-1.5 font-semibold text-amber-200">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span>{t('settings.apiKey.modalSavedWithNotice')}</span>
+              </div>
+              <p className="text-[11px] text-amber-100/80 leading-relaxed break-words">{notice}</p>
+            </div>
+            <div className="flex justify-end">
               <button
                 type="button"
-                onClick={() => setShowSecret((s) => !s)}
-                title={showSecret ? t('settings.apiKey.hideKey') : t('settings.apiKey.showKey')}
-                className="absolute inset-y-0 end-3 flex items-center text-zinc-400 hover:text-zinc-200 cursor-pointer"
+                onClick={() => setDismissed(true)}
+                data-testid="modal-apikey-continue"
+                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white cursor-pointer transition-colors shadow-lg shadow-indigo-600/25"
               >
-                {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                {t('settings.apiKey.modalContinue')}
               </button>
             </div>
-            {error && <p className="text-[11px] text-rose-400">{error}</p>}
           </div>
+        ) : (
+          <form onSubmit={handleSave} className="space-y-4">
+            {/* Which provider */}
+            <div className="space-y-1.5">
+              <div className="text-xs font-medium text-zinc-300">{t('settings.providerLabel')}</div>
+              <div className="grid grid-cols-2 gap-1.5" role="tablist" aria-label={t('settings.providerLabel')}>
+                {PROVIDERS.map((prov) => {
+                  const active = provider === prov;
+                  return (
+                    <button
+                      key={prov}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      onClick={() => chooseProvider(prov)}
+                      data-testid={`modal-provider-tab-${prov}`}
+                      className={`px-3 py-2 rounded-xl border text-xs font-medium text-start cursor-pointer transition-colors ${
+                        active
+                          ? 'bg-indigo-600 border-indigo-500 text-white shadow-sm'
+                          : 'bg-sunken border-line text-zinc-300 hover:text-zinc-100 hover:border-zinc-600'
+                      }`}
+                    >
+                      {t(`settings.providers.${prov}` as MessageKey)}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
 
-          <div className="flex flex-wrap items-center justify-end gap-2.5 pt-1">
-            <button
-              type="button"
-              onClick={() => setDismissed(true)}
-              data-testid="modal-apikey-skip"
-              className="px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-300 cursor-pointer transition-colors"
-            >
-              {t('settings.apiKey.modalSkip')}
-            </button>
-            <button
-              type="submit"
-              disabled={saving || !keyInput.trim()}
-              data-testid="modal-apikey-save"
-              className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer transition-colors shadow-lg shadow-indigo-600/25"
-            >
-              {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-              <span>{saving ? t('settings.apiKey.saving') : t('settings.apiKey.modalSaveAndContinue')}</span>
-            </button>
-          </div>
-        </form>
+            {/* Where to get a key / Ollama */}
+            <div className="p-3.5 rounded-xl bg-sunken border border-line space-y-2.5 text-xs">
+              {isOllama ? (
+                <>
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setOllamaUrl(OLLAMA_LOCAL_URL)}
+                      aria-pressed={ollamaLocal}
+                      data-testid="modal-ollama-local"
+                      className={`px-2.5 py-1 rounded-lg border text-[11px] font-medium cursor-pointer transition-colors ${
+                        ollamaLocal ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-200' : 'bg-zinc-800 border-line text-zinc-300 hover:bg-zinc-700'
+                      }`}
+                    >
+                      {t('settings.apiKey.ollamaLocalPreset')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setOllamaUrl(OLLAMA_CLOUD_URL)}
+                      aria-pressed={!ollamaLocal}
+                      data-testid="modal-ollama-cloud"
+                      className={`px-2.5 py-1 rounded-lg border text-[11px] font-medium cursor-pointer transition-colors ${
+                        !ollamaLocal ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-200' : 'bg-zinc-800 border-line text-zinc-300 hover:bg-zinc-700'
+                      }`}
+                    >
+                      {t('settings.apiKey.ollamaCloudPreset')}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-zinc-400 leading-relaxed">
+                    {ollamaLocal ? t('settings.apiKey.modalOllamaLocalText') : t('settings.apiKey.modalOllamaCloudText')}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <div className="font-semibold text-zinc-200">{t('settings.apiKey.modalWhereTitle')}</div>
+                  <p className="text-[11px] text-zinc-400 leading-relaxed">{t('settings.apiKey.modalWhereText')}</p>
+                </>
+              )}
+              <a
+                href={keyLink}
+                target="_blank"
+                rel="noreferrer"
+                data-testid="modal-apikey-link"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 font-semibold text-xs transition-colors"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>{keyLinkText}</span>
+              </a>
+            </div>
+
+            {isOllama && (
+              <div className="space-y-1.5">
+                <label className="flex items-center gap-1.5 text-xs font-medium text-zinc-300" htmlFor="modal-ollama-url">
+                  <Server className="w-3.5 h-3.5 text-indigo-400" />
+                  {t('settings.apiKey.baseUrlInput')}
+                </label>
+                <input
+                  id="modal-ollama-url"
+                  type="text"
+                  dir="ltr"
+                  value={ollamaUrl}
+                  onChange={(e) => setOllamaUrl(e.target.value)}
+                  data-testid="modal-apikey-baseurl"
+                  className="w-full bg-sunken border border-line rounded-xl px-3.5 py-2 text-xs text-zinc-100 font-mono focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            )}
+
+            {!ollamaLocal && (
+              <div className="space-y-1.5">
+                <label className="block text-xs font-medium text-zinc-300" htmlFor="modal-apikey-input">
+                  {t('settings.apiKey.inputLabel')}
+                </label>
+                <div className="relative">
+                  <input
+                    id="modal-apikey-input"
+                    type={showSecret ? 'text' : 'password'}
+                    dir="ltr"
+                    autoFocus
+                    value={keyInput}
+                    onChange={(e) => setKeyInput(e.target.value)}
+                    placeholder={PROVIDER_PLACEHOLDERS[provider]}
+                    data-testid="modal-apikey-input"
+                    className="w-full bg-sunken border border-line rounded-xl ps-3.5 pe-10 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-indigo-500 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSecret((v) => !v)}
+                    title={showSecret ? t('settings.apiKey.hideKey') : t('settings.apiKey.showKey')}
+                    className="absolute inset-y-0 end-3 flex items-center text-zinc-400 hover:text-zinc-200 cursor-pointer"
+                  >
+                    {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <p className="text-[11px] text-zinc-500">{t('settings.apiKey.modalMoreLater')}</p>
+            {error && <p className="text-[11px] text-rose-400">{error}</p>}
+
+            <div className="flex flex-wrap items-center justify-end gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => setDismissed(true)}
+                data-testid="modal-apikey-skip"
+                className="px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-300 cursor-pointer transition-colors"
+              >
+                {t('settings.apiKey.modalSkip')}
+              </button>
+              <button
+                type="submit"
+                disabled={saving || !canSave}
+                data-testid="modal-apikey-save"
+                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer transition-colors shadow-lg shadow-indigo-600/25"
+              >
+                {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                <span>
+                  {saving
+                    ? t('settings.apiKey.saving')
+                    : ollamaLocal
+                      ? t('settings.apiKey.modalConnectLocal')
+                      : t('settings.apiKey.modalSaveAndContinue')}
+                </span>
+              </button>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   );
