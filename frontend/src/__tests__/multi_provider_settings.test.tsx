@@ -309,9 +309,9 @@ describe('Multi-Provider AI Settings & Key Vault UI', () => {
     expect(trValues).not.toContain('gpt-unverified-seed');
     expect(trLabels.join('|')).not.toMatch(/[★✓⚠]/);
 
-    // Episode & Movie benchmarks displayed for selected OpenAI model
-    expect(view.getByTestId('model-card-translation-benchmarks').textContent).toContain('45m');
-    expect(view.getByTestId('model-card-translation-benchmarks').textContent).toContain('120m');
+    // 45-minute & 2-hour video cost benchmarks displayed for selected OpenAI model
+    expect(view.getByTestId('model-card-translation-benchmarks').textContent).toContain('45-min');
+    expect(view.getByTestId('model-card-translation-benchmarks').textContent).toContain('2-hour');
 
     // Switching translation to second OpenAI key (which discovered 0 models) empties options and shows no-capable hint
     fireEvent.change(view.getByTestId('model-card-translation-key'), { target: { value: 'key_oai_2' } });
