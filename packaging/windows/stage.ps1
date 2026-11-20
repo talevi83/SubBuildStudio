@@ -91,10 +91,12 @@ if (-not $uvExe) { throw "uv.exe not found in $UvZipUrl" }
 New-Item -ItemType Directory -Force (Join-Path $app "tools") | Out-Null
 Copy-Item $uvExe.FullName (Join-Path $app "tools\uv.exe")
 
-# 3c. Python from python.org (the official NuGet package): python.exe, pythonw.exe and the venv
-#     launchers are signed by the Python Software Foundation. Behaviour-based antivirus (Bitdefender
-#     Advanced Threat Defense) blocked the unsigned python-build-standalone pythonw.exe that uv
-#     downloads ("Unsigned process pythonw.exe executed unsigned file pythonw.exe").
+# 3c. Python from python.org (the official NuGet package): python.exe and pythonw.exe are signed by
+#     the Python Software Foundation. Behaviour-based antivirus (Bitdefender Advanced Threat Defense)
+#     blocked the unsigned python-build-standalone pythonw.exe that uv downloads ("Unsigned process
+#     pythonw.exe executed unsigned file pythonw.exe"). The app runs on this Python directly, with no
+#     venv: the NuGet package has no venv launchers, and a launcher in front of pythonw.exe would be
+#     one more process for the antivirus to judge.
 Write-Host "Downloading Python $PythonVersion (python.org NuGet package)..."
 $nupkg = Join-Path $downloads "python.zip"
 Invoke-WebRequest "https://www.nuget.org/api/v2/package/python/$PythonVersion" -OutFile $nupkg
@@ -102,12 +104,10 @@ $pyExtract = Join-Path $downloads "python-nuget"
 Expand-Archive $nupkg $pyExtract -Force
 $pyTarget = Join-Path $app "python"
 Copy-Item (Join-Path $pyExtract "tools") $pyTarget -Recurse
-foreach ($rel in @("python.exe", "pythonw.exe", "Lib\venv\__init__.py")) {
+foreach ($rel in @("python.exe", "pythonw.exe")) {
     if (-not (Test-Path (Join-Path $pyTarget $rel))) { throw "python\$rel is missing from the Python $PythonVersion NuGet package" }
 }
-$launchers = Get-ChildItem (Join-Path $pyTarget "Lib\venv") -Recurse -Filter "venv*launcher.exe"
-if (-not $launchers) { throw "The venv launchers are missing from the Python $PythonVersion NuGet package" }
-foreach ($exe in @((Join-Path $pyTarget "python.exe"), (Join-Path $pyTarget "pythonw.exe")) + $launchers.FullName) {
+foreach ($exe in @((Join-Path $pyTarget "python.exe"), (Join-Path $pyTarget "pythonw.exe"))) {
     $sig = Get-AuthenticodeSignature $exe
     if ($sig.Status -ne "Valid") { throw "$exe is not validly signed ($($sig.Status))" }
     Write-Host ("  signed: {0} ({1})" -f (Split-Path $exe -Leaf), $sig.SignerCertificate.Subject)

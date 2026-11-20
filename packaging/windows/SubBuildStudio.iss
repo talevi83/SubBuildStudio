@@ -66,20 +66,19 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; Remove the previous version's code first, so files deleted in a new version do not linger
 Type: filesandordirs; Name: "{app}\backend\app"
 Type: filesandordirs; Name: "{app}\frontend"
-Type: filesandordirs; Name: "{app}\python"
 
 [Files]
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\backend\.venv\Scripts\pythonw.exe"; Parameters: """{app}\packaging\launcher.py"""; WorkingDir: "{app}"; IconFilename: "{app}\packaging\icon.ico"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\backend\.venv\Scripts\pythonw.exe"; Parameters: """{app}\packaging\launcher.py"""; WorkingDir: "{app}"; IconFilename: "{app}\packaging\icon.ico"; Tasks: desktopicon
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\packaging\launcher.py"""; WorkingDir: "{app}"; IconFilename: "{app}\packaging\icon.ico"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\packaging\launcher.py"""; WorkingDir: "{app}"; IconFilename: "{app}\packaging\icon.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\backend\.venv\Scripts\pythonw.exe"; Parameters: """{app}\packaging\launcher.py"""; WorkingDir: "{app}"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\packaging\launcher.py"""; WorkingDir: "{app}"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; Created after installation (the Python environment, the downloaded Python, caches)
+; Created after installation (the packages installed into python\, caches)
 Type: filesandordirs; Name: "{app}\backend"
 Type: filesandordirs; Name: "{app}\python"
 Type: filesandordirs; Name: "{app}\.uv-cache"
