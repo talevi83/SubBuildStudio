@@ -39,7 +39,9 @@ if not exist "%PY%" (
 if exist "backend\.venv" rmdir /s /q "backend\.venv" >nul 2>nul
 
 echo Installing packages...
-"%UV%" pip install --python "%PY%" -r "backend\requirements.txt" -r "packaging\requirements-desktop.txt" || goto :fail
+:: --break-system-packages: this Python belongs to the app alone, so installing into it is intended.
+:: (Without it, an EXTERNALLY-MANAGED marker left by an older build's uv-managed Python stops uv.)
+"%UV%" pip install --python "%PY%" --break-system-packages -r "backend\requirements.txt" -r "packaging\requirements-desktop.txt" || goto :fail
 
 :: The download cache holds a second copy of every package (several GB with the CUDA libraries)
 "%UV%" cache clean >nul 2>nul
