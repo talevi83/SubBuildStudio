@@ -332,6 +332,10 @@ class UpdateStatusSchema(BaseModel):
     target_ref: Optional[str] = None
     release_url: Optional[str] = None
     release_notes: Optional[str] = None
+    # "windows" / "macos" when the copy came from an installer, which updates by a new download
+    installer: Optional[str] = None
+    # Direct link to that installer in the release, once the release workflow has attached it
+    download_url: Optional[str] = None
     error: Optional[str] = None
 
 

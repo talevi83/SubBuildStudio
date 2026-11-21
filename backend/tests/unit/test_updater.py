@@ -82,7 +82,7 @@ def test_check_for_updates_detects_newer_release_tag(tmp_path: Path):
 
     with (
         patch.object(updater, "_run_git", side_effect=fake_run_git),
-        patch.object(updater, "_fetch_github_release_metadata", return_value=("https://example.com/v1.6.0", "New UI")),
+        patch.object(updater, "_fetch_github_release_metadata", return_value=("https://example.com/v1.6.0", "New UI", {})),
     ):
         res = updater.check_for_updates(repo)
 
@@ -502,7 +502,7 @@ def test_check_for_updates_without_git_uses_github_tags_api(tmp_path: Path):
         patch.object(
             updater,
             "_fetch_github_release_metadata",
-            return_value=("https://example.com/v1.6.0", "ZIP release notes"),
+            return_value=("https://example.com/v1.6.0", "ZIP release notes", {}),
         ),
     ):
         res = updater.check_for_updates(root)
@@ -710,3 +710,87 @@ def test_apply_update_in_an_installer_copy_points_to_the_new_installer(tmp_path:
 def test_a_source_copy_is_not_installer_managed(tmp_path: Path):
     root = _make_non_git_install(tmp_path, version="1.5.0")
     assert updater.is_installer_managed(root) is False
+
+
+_RELEASE_ASSETS = {
+    "SubBuild-Studio-Setup.exe": "https://github.com/talevi83/SubBuildStudio/releases/download/v1.6.0/SubBuild-Studio-Setup.exe",
+    "SubBuild-Studio-macOS-AppleSilicon.dmg": "https://github.com/talevi83/SubBuildStudio/releases/download/v1.6.0/SubBuild-Studio-macOS-AppleSilicon.dmg",
+    "SubBuild-Studio-macOS-Intel.dmg": "https://github.com/talevi83/SubBuildStudio/releases/download/v1.6.0/SubBuild-Studio-macOS-Intel.dmg",
+}
+_TAGS = {"v1.5.0": "1111111" + "0" * 33, "v1.6.0": "2222222" + "0" * 33}
+
+
+def _check_installed_copy(root: Path, assets: dict):
+    with (
+        patch.object(updater, "_fetch_github_tags", return_value=(_TAGS, None)),
+        patch.object(
+            updater,
+            "_fetch_github_release_metadata",
+            return_value=("https://example.com/v1.6.0", "notes", assets),
+        ),
+    ):
+        return updater.check_for_updates(root)
+
+
+def test_a_windows_install_is_offered_the_new_installer_download(tmp_path: Path):
+    root = _make_non_git_install(tmp_path, version="1.5.0")
+    (root / updater.INSTALLER_MARKER).write_text("windows", encoding="ascii")
+
+    res = _check_installed_copy(root, _RELEASE_ASSETS)
+
+    assert res["update_available"] is True
+    assert res["installer"] == "windows"
+    assert res["download_url"].endswith("/v1.6.0/SubBuild-Studio-Setup.exe")
+
+
+@pytest.mark.parametrize(
+    ("apple_silicon", "expected"),
+    [(True, "SubBuild-Studio-macOS-AppleSilicon.dmg"), (False, "SubBuild-Studio-macOS-Intel.dmg")],
+)
+def test_a_mac_install_is_offered_the_disk_image_for_its_processor(tmp_path: Path, apple_silicon, expected):
+    root = _make_non_git_install(tmp_path, version="1.5.0")
+    (root / updater.INSTALLER_MARKER).write_text("macos\n", encoding="ascii")
+
+    with patch.object(updater, "_mac_has_apple_silicon", return_value=apple_silicon):
+        res = _check_installed_copy(root, _RELEASE_ASSETS)
+
+    assert res["installer"] == "macos"
+    assert res["download_url"].endswith(f"/v1.6.0/{expected}")
+
+
+def test_before_the_installer_is_attached_there_is_no_direct_download(tmp_path: Path):
+    root = _make_non_git_install(tmp_path, version="1.5.0")
+    (root / updater.INSTALLER_MARKER).write_text("windows", encoding="ascii")
+
+    res = _check_installed_copy(root, {})
+
+    assert res["update_available"] is True
+    assert res["download_url"] is None
+    assert res["release_url"] == "https://example.com/v1.6.0"
+
+
+def test_a_source_copy_gets_no_installer_download(tmp_path: Path):
+    root = _make_non_git_install(tmp_path, version="1.5.0")
+
+    res = _check_installed_copy(root, _RELEASE_ASSETS)
+
+    assert res["update_available"] is True
+    assert res["installer"] is None
+    assert res["download_url"] is None
+
+
+def test_release_metadata_lists_the_attached_files():
+    release = {
+        "html_url": "https://github.com/talevi83/SubBuildStudio/releases/tag/v1.6.0",
+        "body": "Notes",
+        "assets": [
+            {"name": "SubBuild-Studio-Setup.exe", "browser_download_url": _RELEASE_ASSETS["SubBuild-Studio-Setup.exe"]},
+            {"name": "bad", "browser_download_url": "http://insecure.example/x"},
+        ],
+    }
+    with patch.object(updater, "_github_get_json", return_value=release):
+        url, notes, assets = updater._fetch_github_release_metadata("v1.6.0")
+
+    assert url == release["html_url"]
+    assert notes == "Notes"
+    assert assets == {"SubBuild-Studio-Setup.exe": _RELEASE_ASSETS["SubBuild-Studio-Setup.exe"]}
