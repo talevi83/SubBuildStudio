@@ -56,9 +56,10 @@ _PROTECTED_ZIP_PATHS = (
     "launcher.log",
 )
 
-# Written by the Windows installer build (packaging/windows/stage.ps1). Such a copy has no Node.js to
-# rebuild the interface and its Python packages may be in use, so it is updated by running the new
-# installer rather than by overlaying a release ZIP.
+# Written by the Windows installer build (packaging/windows/stage.ps1, "windows") and the macOS app
+# build (packaging/macos/build-app.sh, "macos"). Such a copy has no Node.js to rebuild the interface
+# and its Python packages may be in use (the macOS app is also signed and often read-only), so it is
+# updated by installing the new download rather than by overlaying a release ZIP.
 INSTALLER_MARKER = "INSTALLER"
 
 _cached_update_status: Optional[Dict[str, Any]] = None
@@ -591,7 +592,7 @@ def verify_release_tag(root: Path, tag: str) -> Tuple[bool, str]:
 
 
 def is_installer_managed(root: Path) -> bool:
-    """True for a copy installed by the Windows installer (see INSTALLER_MARKER)."""
+    """True for a copy installed by the Windows installer or the macOS app (see INSTALLER_MARKER)."""
     return (root / INSTALLER_MARKER).is_file()
 
 
@@ -916,10 +917,16 @@ def apply_update(
 
     if is_installer_managed(root):
         base_reply["skipped_reason"] = "installer_managed"
-        base_reply["message"] = (
-            "This copy was installed with the Windows installer: download the new installer "
-            "(SubBuild-Studio-Setup.exe) and run it. Projects and settings are kept."
-        )
+        if sys.platform == "darwin":
+            base_reply["message"] = (
+                "This is the macOS app: download the new SubBuild Studio .dmg and drag the app to "
+                "Applications again. Projects and settings are kept."
+            )
+        else:
+            base_reply["message"] = (
+                "This copy was installed with the Windows installer: download the new installer "
+                "(SubBuild-Studio-Setup.exe) and run it. Projects and settings are kept."
+            )
         logger.info("Updater apply skipped (target=%s): installer_managed", status.get("target_ref"))
         return base_reply
 
