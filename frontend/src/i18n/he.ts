@@ -734,7 +734,7 @@ export const he: Messages = {
       skippedUnsigned: 'העדכון דולג: לגרסה אין חתימה תקפה (נדרשות גרסאות חתומות).',
       rolledBackDeps: 'העדכון לא הצליח להתקין את חבילות ה-Python, לכן נשארה הגרסה הקודמת.',
       rolledBackFrontend: 'העדכון לא הצליח לבנות את הממשק החדש, לכן נשארה הגרסה הקודמת.',
-      installerManaged: 'הותקן עם קובץ ההתקנה ל-Windows: הורידו את SubBuild-Studio-Setup.exe החדש (מדף הגרסה או מ-subbuildstudio.com) והריצו אותו. הפרויקטים וההגדרות נשמרים.',
+      installerManaged: 'הותקן עם קובץ התקנה: הורידו את הגרסה החדשה מ-subbuildstudio.com (או מדף הגרסה) - ב-Windows מריצים את SubBuild-Studio-Setup.exe החדש, ובמק גוררים את האפליקציה מקובץ ה-.dmg החדש ל-Applications. הפרויקטים וההגדרות נשמרים.',
       checkFailed: 'בדיקת העדכונים נכשלה: {error}',
     },
     preview: 'תצוגה מקדימה',

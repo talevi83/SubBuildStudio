@@ -83,6 +83,10 @@ jobs:
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
             gh release create $tag --verify-tag --title $tag --generate-notes
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if ($LASTEXITCODE -ne 0) {
+              # The macOS jobs (release-macos.yml) may have created it at the same moment
+              gh release view $tag *> $null
+              if ($LASTEXITCODE -ne 0) { exit 1 }
+            }
           }
           gh release upload $tag build/windows/SubBuild-Studio-Setup.exe --clobber

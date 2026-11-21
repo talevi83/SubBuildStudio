@@ -1,17 +1,18 @@
 """
-SubBuild Studio desktop launcher (invoked via run.bat / run.sh --window).
+SubBuild Studio desktop launcher (invoked via run.bat / run.sh --window, the Windows installer's
+shortcut, and the macOS app's executable - packaging/macos/launcher.c).
 
 Starts the FastAPI backend inside this process and shows the studio in its own desktop window
-(pywebview on Microsoft Edge WebView2, which ships with Windows 10/11), with an icon in the
-system tray. Without WebView2 - or with --browser - the studio opens in the default browser
-instead, and the tray icon is the way back to it.
+(pywebview on Microsoft Edge WebView2, which ships with Windows 10/11, or on WebKit on macOS),
+with an icon in the system tray / menu bar. Without a web view - or with --browser - the studio
+opens in the default browser instead, and the tray icon is the way back to it.
 
 User data (.env with the API key, storage/ with projects, settings and logs, the window's
 size and the studio's own preferences) is kept outside the program directory by default, so
 updating or switching branches never touches it:
   1. %SUBBUILD_HOME%, if set (run.bat / run.sh point this to backend/)
   2. a "data" folder in the program root (portable mode - create the folder to opt in)
-  3. %LOCALAPPDATA%\\SubBuild Studio
+  3. %LOCALAPPDATA%\\SubBuild Studio (Windows), ~/Library/Application Support/SubBuild Studio (macOS)
 
 Also runs directly from source:  python packaging/launcher.py [--browser] [--no-tray] [--no-browser]
 """
@@ -36,6 +37,9 @@ from typing import Callable, Optional
 
 APP_NAME = "SubBuild Studio"
 WINDOWS = sys.platform == "win32"
+MACOS = sys.platform == "darwin"
+# Set by the macOS app's executable (packaging/macos/launcher.c): the path of SubBuild Studio.app
+APP_BUNDLE = os.environ.get("SUBBUILD_APP_BUNDLE") if MACOS else None
 STARTUP_TIMEOUT = 180  # seconds; the first start preloads the CUDA libraries, which can be slow
 ACTIVE_STATUSES = {"QUEUED", "PROBING", "EXTRACTING_AUDIO", "TRANSCRIBING",
                    "SCANNING_ONSCREEN", "REFINING", "TRANSLATING", "SYNCING"}
@@ -105,8 +109,13 @@ def data_dir() -> Path:
 # ----------------------------------------------------------------------------- process setup
 
 def redirect_stdio(home: Path) -> None:
-    """A windowed pythonw.exe launcher has no console: send print/tracebacks to launcher.log."""
-    if sys.stdout is not None and sys.stderr is not None:
+    """A windowed launcher has no console: send print/tracebacks to launcher.log.
+
+    (pythonw.exe on Windows has no stdout/stderr at all; the macOS app started from Finder has
+    them, but they lead nowhere.)
+    """
+    from_finder = bool(APP_BUNDLE) and not (sys.stderr is not None and sys.stderr.isatty())
+    if sys.stdout is not None and sys.stderr is not None and not from_finder:
         return
     log = home / "launcher.log"
     try:
@@ -115,6 +124,9 @@ def redirect_stdio(home: Path) -> None:
     except OSError:
         pass
     stream = open(log, "a", encoding="utf-8", buffering=1, errors="replace")
+    if from_finder:
+        sys.stdout = sys.stderr = stream
+        return
     sys.stdout = sys.stdout or stream
     sys.stderr = sys.stderr or stream
 
@@ -154,14 +166,63 @@ def prepare_environment(home: Path) -> Path:
 
 # ----------------------------------------------------------------------------- helpers
 
+# AppleScript dialogs for macOS: the text comes in as an argument, so it needs no quoting
+_MAC_DIALOG_BUTTONS = {
+    "error": ('{"OK"}', '"OK"', None, "stop"),
+    "info": ('{"OK"}', '"OK"', None, "note"),
+    "yesno": ('{"No", "Yes"}', '"Yes"', '"No"', "caution"),
+    "yesnocancel": ('{"Cancel", "No", "Yes"}', '"Yes"', '"Cancel"', "caution"),
+}
+
+
+def _mac_dialog(text: str, kind: str) -> Optional[int]:
+    """A dialog on macOS (IDYES / IDNO / 2 for cancel, 1 for OK); None when osascript fails."""
+    buttons, default, cancel, icon = _MAC_DIALOG_BUTTONS[kind]
+    script = (f"display dialog (item 1 of argv) with title (item 2 of argv) buttons {buttons} "
+              f"default button {default}" + (f" cancel button {cancel}" if cancel else "") +
+              f" with icon {icon}")
+    try:
+        result = subprocess.run(["osascript", "-e", "on run argv", "-e", script, "-e", "end run",
+                                 text, APP_NAME], capture_output=True, text=True, timeout=3600)
+    except Exception:
+        return None
+    answer = result.stdout.strip()
+    if answer.endswith(":Yes"):
+        return IDYES
+    if answer.endswith(":No"):
+        return IDNO
+    if answer.endswith(":OK"):
+        return 1
+    if "-128" in result.stderr:  # the cancel button (or Esc)
+        return IDNO if kind == "yesno" else 2
+    return None
+
+
 def message(text: str, kind: str = "error") -> int:
-    """Native message box on Windows (returns IDYES / IDNO / 2 for cancel); stderr elsewhere."""
+    """Native message box (returns IDYES / IDNO / 2 for cancel); stderr where there is none."""
     if WINDOWS:
         import ctypes
         flags = {"error": 0x10, "info": 0x40, "yesno": 0x04 | 0x30, "yesnocancel": 0x03 | 0x30}[kind]
         return ctypes.windll.user32.MessageBoxW(None, text, APP_NAME, flags | 0x40000)  # topmost
-    print(f"[{kind}] {text}", file=sys.stderr)
+    print(f"[{kind}] {text}", file=sys.stderr, flush=True)
+    if MACOS and not os.environ.get("CI"):  # (a dialog on a build machine would wait forever)
+        answer = _mac_dialog(text, kind)
+        if answer is not None:
+            return answer
     return IDYES
+
+
+def on_main_thread(fn: Callable[[], None]) -> None:
+    """Run fn on the UI thread: AppKit (the macOS menu bar icon) must not be touched from others."""
+    if MACOS:
+        try:
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(fn)
+            return
+        except Exception:
+            pass
+    fn()
 
 
 def open_path(path: Path) -> None:
@@ -171,7 +232,8 @@ def open_path(path: Path) -> None:
     if WINDOWS:
         os.startfile(str(path))  # type: ignore[attr-defined]
     elif sys.platform == "darwin":
-        subprocess.Popen(["open", str(path)])
+        # -t: files such as .env and server.log have no app of their own; open them in TextEdit
+        subprocess.Popen(["open", "-t", str(path)] if path.is_file() else ["open", str(path)])
     else:
         subprocess.Popen(["xdg-open", str(path)])
 
@@ -252,6 +314,9 @@ def confirm_stop(url: str, action: str) -> bool:
 
 
 def spawn_again(extra_args: list) -> None:
+    if APP_BUNDLE:  # macOS app: start the app again (Python on its own would not be "SubBuild Studio")
+        subprocess.Popen(["open", "-n", APP_BUNDLE, "--args"] + list(extra_args))
+        return
     args = [sys.executable, str(Path(__file__).resolve())]
     subprocess.Popen(args + extra_args, cwd=str(program_dir()))
 
@@ -347,7 +412,8 @@ def make_tray(url: str, home: Path, env_file: Path, open_label: str, on_open: Ca
         pystray.MenuItem("Restart server", on_restart),
         pystray.MenuItem("Quit", on_quit),
     ]
-    return pystray.Icon("SubBuildStudio", Image.open(resource("packaging", "icon.ico")),
+    icon_file = resource("packaging", "icon.png" if MACOS else "icon.ico")
+    return pystray.Icon("SubBuildStudio", Image.open(icon_file),
                         f"{APP_NAME} - starting...", pystray.Menu(*items))
 
 
@@ -375,7 +441,7 @@ def run_tray(server: ServerThread, url: str, home: Path, env_file: Path, open_br
     def setup(icon) -> None:  # type: ignore[no-untyped-def]
         icon.visible = True
         if server.wait_ready():
-            icon.title = f"{APP_NAME} - {url}"
+            on_main_thread(lambda: setattr(icon, "title", f"{APP_NAME} - {url}"))
             if open_browser:
                 webbrowser.open(studio_url(url))
             else:
@@ -385,8 +451,12 @@ def run_tray(server: ServerThread, url: str, home: Path, env_file: Path, open_br
                     pass
         else:
             message(failure_text(server, home))
-            icon.visible = False
-            icon.stop()
+
+            def close() -> None:
+                icon.visible = False
+                icon.stop()
+
+            on_main_thread(close)
 
     icon.run(setup=setup)
 
@@ -632,14 +702,14 @@ def run_window(server: ServerThread, url: str, home: Path, env_file: Path) -> No
 
     def boot() -> None:
         if server.wait_ready():
-            icon.title = f"{APP_NAME} - {url}"
+            on_main_thread(lambda: setattr(icon, "title", f"{APP_NAME} - {url}"))
             window.load_url(studio_url(url))
         else:
             message(failure_text(server, home))
             state["leaving"] = True
             window.destroy()
 
-    icon.run_detached()  # Windows: the tray gets its own thread and message loop
+    icon.run_detached()  # Windows: the tray gets its own thread; macOS: it shares the window's loop
     SHOW_WINDOW = show_window
     try:
         webview.start(boot, private_mode=False, storage_path=str(home / "webview"),
@@ -658,20 +728,40 @@ def run_window(server: ServerThread, url: str, home: Path, env_file: Path) -> No
 
 # ----------------------------------------------------------------------------- main
 
+def self_check(home: Path) -> int:
+    """--check: import the server, the speech engine and the window / tray packages."""
+    import ctranslate2
+    import faster_whisper
+    import uvicorn  # noqa: F401
+    from app.main import app  # noqa: F401
+
+    problem = window_problem()
+    if problem is None:
+        import pystray  # noqa: F401
+    print(f"{APP_NAME} check: Python {sys.version.split()[0]}, faster-whisper {faster_whisper.__version__}, "
+          f"ctranslate2 {ctranslate2.__version__}, window: {problem or 'ok'}, data: {home}", flush=True)
+    return 1 if problem else 0
+
+
 def main() -> int:
     global SESSION_TOKEN
     parser = argparse.ArgumentParser(prog=APP_NAME)
     parser.add_argument("--browser", action="store_true", help="open the studio in the browser, not in its own window")
     parser.add_argument("--no-tray", action="store_true", help="run in the foreground without a tray icon or window")
     parser.add_argument("--no-browser", action="store_true", help="browser mode: do not open the browser at start")
+    parser.add_argument("--check", action="store_true", help="import everything the studio needs, then exit")
     args, _ = parser.parse_known_args()
     use_browser = args.browser or (os.environ.get("SUBBUILD_UI") or os.environ.get("SUBFORGE_UI") or "").lower() == "browser"
 
     home = data_dir()
     home.mkdir(parents=True, exist_ok=True)
-    redirect_stdio(home)
+    if not args.check:
+        redirect_stdio(home)
     hide_child_consoles()
     env_file = prepare_environment(home)
+
+    if args.check:
+        return self_check(home)
 
     from app.core.config import settings
 

@@ -5,14 +5,15 @@
 
 It is built for people who make or work with video: **content creators** (YouTube, podcasts, courses, interviews), **translators and subtitling studios** who want a timed, translated first draft to polish, **accessibility** work (subtitles for deaf and hard-of-hearing viewers), and **organizations** subtitling training videos and recordings. Video and audio never leave your computer.
 
-🌐 **Website:** [subbuildstudio.com](https://subbuildstudio.com) · ⬇️ **Windows installer:** [SubBuild-Studio-Setup.exe](https://github.com/talevi83/SubBuildStudio/releases/latest/download/SubBuild-Studio-Setup.exe) · 🔒 [Privacy policy](https://subbuildstudio.com/privacy) · ✍️ [Code signing policy](https://subbuildstudio.com/code-signing)
+🌐 **Website:** [subbuildstudio.com](https://subbuildstudio.com) · ⬇️ **Windows installer:** [SubBuild-Studio-Setup.exe](https://github.com/talevi83/SubBuildStudio/releases/latest/download/SubBuild-Studio-Setup.exe) · 🍎 **macOS:** [Apple Silicon](https://github.com/talevi83/SubBuildStudio/releases/latest/download/SubBuild-Studio-macOS-AppleSilicon.dmg) / [Intel](https://github.com/talevi83/SubBuildStudio/releases/latest/download/SubBuild-Studio-macOS-Intel.dmg) · 🔒 [Privacy policy](https://subbuildstudio.com/privacy) · ✍️ [Code signing policy](https://subbuildstudio.com/code-signing)
 
 ---
 
 ## ⬇️ Getting SubBuild Studio
 
 - **Windows (recommended for most people):** download [`SubBuild-Studio-Setup.exe`](https://github.com/talevi83/SubBuildStudio/releases/latest/download/SubBuild-Studio-Setup.exe) and run it. No Python, Node.js or terminal needed; the first install downloads the AI components once. See [Windows Installer](#-windows-installer-subbuild-studio-setupexe).
-- **macOS / Linux, or running from source on Windows:** download the source code of the [latest release](https://github.com/talevi83/SubBuildStudio/releases/latest) (or clone the repository) and run `install.bat` / `./install.sh` once, then `run.bat` / `./run.sh`. See the [Quickstart Guide](#-quickstart-guide).
+- **macOS:** download the disk image for your Mac — [Apple Silicon (M1 and later)](https://github.com/talevi83/SubBuildStudio/releases/latest/download/SubBuild-Studio-macOS-AppleSilicon.dmg) or [Intel](https://github.com/talevi83/SubBuildStudio/releases/latest/download/SubBuild-Studio-macOS-Intel.dmg) — and drag *SubBuild Studio* to Applications. Everything is included; nothing else to install. See [macOS App](#-macos-app-dmg).
+- **Linux, or running from source on Windows / macOS:** download the source code of the [latest release](https://github.com/talevi83/SubBuildStudio/releases/latest) (or clone the repository) and run `install.bat` / `./install.sh` once, then `run.bat` / `./run.sh`. See the [Quickstart Guide](#-quickstart-guide).
 
 The two ways are independent: an installed copy keeps its data in `%LOCALAPPDATA%\SubBuild Studio`, a source copy in `backend\`.
 
@@ -377,6 +378,17 @@ Also turn on dev mode so the backend trusts the Vite dev server's origin (PowerS
 Then open **`http://localhost:5173/api/session?token=dev-token`** once: it signs the browser in and lands on the studio (API requests & WebSockets proxy to `:8000`).
 
 ---
+
+## 🍎 macOS App (`.dmg`)
+
+Every release tag also gets a self-contained macOS app, built by `.github/workflows/release-macos.yml` on GitHub's Apple Silicon and Intel runners and attached to the release as `SubBuild-Studio-macOS-AppleSilicon.dmg` (macOS 14+) and `SubBuild-Studio-macOS-Intel.dmg` (macOS 13+). Run the workflow by hand (*Actions → macOS app → Run workflow*) for a test build of any branch.
+
+- **What is inside:** `packaging/macos/build-app.sh` puts Python 3.12 (python-build-standalone, via `uv`) with every package from `backend/requirements.txt` + `packaging/requirements-desktop.txt` already installed, static `ffmpeg`/`ffprobe`, and the built interface into `SubBuild Studio.app`. Nothing is downloaded on first launch except the Whisper model, as on any platform.
+- **The executable:** `Contents/MacOS/SubBuild Studio` is a small C program (`packaging/macos/launcher.c`) that embeds the bundled Python and runs `packaging/launcher.py`, so the Dock and the menu bar show SubBuild Studio rather than Python. The studio opens in its own WebKit window (`pywebview`) with a menu bar icon (`pystray`).
+- **Data** lives in `~/Library/Application Support/SubBuild Studio`, so replacing the app keeps projects, settings and API keys. Bytecode is precompiled, so the app never writes into its own bundle.
+- **Updates:** like the Windows installer, the app carries the `INSTALLER` marker; the updater reports new releases and asks for the new `.dmg`.
+- **Signing:** the app is ad-hoc signed (no Apple Developer ID yet), so on first launch macOS says it could not verify it: *System Settings → Privacy & Security → Open Anyway* (macOS 14 and earlier: right-click → *Open*). The disk image includes a short *Read me first* with these steps.
+- **Build it locally** (on a Mac, for that Mac's architecture): `cd frontend && npm ci && npm run build && cd ..`, then `./packaging/macos/build-app.sh` → `build/macos/SubBuild-Studio-macOS-<AppleSilicon|Intel>.dmg`.
 
 ## 📦 Windows Installer (`SubBuild-Studio-Setup.exe`)
 

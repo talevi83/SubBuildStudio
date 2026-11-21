@@ -735,7 +735,7 @@ export const en = {
       skippedUnsigned: 'Skipped update: the release has no valid signature (signed releases are required).',
       rolledBackDeps: 'The update could not install its Python packages, so the previous version was kept.',
       rolledBackFrontend: 'The update could not build the new interface, so the previous version was kept.',
-      installerManaged: 'Installed with the Windows installer: download the new SubBuild-Studio-Setup.exe (from the release page or subbuildstudio.com) and run it. Your projects and settings are kept.',
+      installerManaged: 'Installed with the installer: download the new version from subbuildstudio.com (or the release page) - on Windows run the new SubBuild-Studio-Setup.exe, on a Mac drag the app from the new .dmg to Applications. Your projects and settings are kept.',
       checkFailed: 'Update check failed: {error}',
     },
     estimate: 'Cost estimate',
