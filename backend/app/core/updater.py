@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -249,8 +250,13 @@ def _fetch_github_tags(timeout: float = 4.0) -> Tuple[Optional[Dict[str, str]], 
         return None, str(exc) or "Unable to contact GitHub API"
 
 
-def _fetch_github_release_metadata(tag: str, timeout: float = 2.0) -> Tuple[Optional[str], Optional[str]]:
-    """Best-effort query for the release page URL & concise notes of `tag`; (None, None) on error."""
+def _fetch_github_release_metadata(
+    tag: str, timeout: float = 2.0
+) -> Tuple[Optional[str], Optional[str], Dict[str, str]]:
+    """
+    Best-effort query for the release of `tag`: its page URL, concise notes and its attached files
+    ({file name: download URL}). (None, None, {}) on error.
+    """
     try:
         data = _github_get_json(
             GITHUB_RELEASE_BY_TAG_API.format(tag=urllib.parse.quote(tag, safe="")),
@@ -260,9 +266,46 @@ def _fetch_github_release_metadata(tag: str, timeout: float = 2.0) -> Tuple[Opti
         body = (data.get("body") or "").strip()
         if len(body) > 500:
             body = body[:497].rstrip() + "..."
-        return (html_url or None), (body or None)
+        assets: Dict[str, str] = {}
+        for asset in data.get("assets") or []:
+            name = asset.get("name") if isinstance(asset, dict) else None
+            url = asset.get("browser_download_url") if isinstance(asset, dict) else None
+            if isinstance(name, str) and isinstance(url, str) and url.startswith("https://"):
+                assets[name] = url
+        return (html_url or None), (body or None), assets
     except Exception:
-        return None, None
+        return None, None, {}
+
+
+# The files the release workflows attach (.github/workflows/release-windows.yml, release-macos.yml)
+WINDOWS_INSTALLER_ASSET = "SubBuild-Studio-Setup.exe"
+MACOS_APPLE_SILICON_ASSET = "SubBuild-Studio-macOS-AppleSilicon.dmg"
+MACOS_INTEL_ASSET = "SubBuild-Studio-macOS-Intel.dmg"
+
+
+def _mac_has_apple_silicon() -> bool:
+    """True on an Apple Silicon Mac, also when this (Intel) build runs there under Rosetta."""
+    if platform.machine().lower() in ("arm64", "aarch64"):
+        return True
+    try:
+        proc = subprocess.run(
+            ["sysctl", "-n", "sysctl.proc_translated"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+        return proc.returncode == 0 and proc.stdout.strip() == "1"
+    except Exception:
+        return False
+
+
+def installer_asset_name(kind: Optional[str]) -> Optional[str]:
+    """The release file that updates a copy installed as `kind` ("windows" / "macos")."""
+    if kind == "windows":
+        return WINDOWS_INSTALLER_ASSET
+    if kind == "macos":
+        return MACOS_APPLE_SILICON_ASSET if _mac_has_apple_silicon() else MACOS_INTEL_ASSET
+    return None
 
 
 def get_cached_update_status() -> Optional[Dict[str, Any]]:
@@ -293,6 +336,8 @@ def check_for_updates(repo_root: Optional[Path] = None, timeout: float = 4.0) ->
         "target_ref": None,
         "release_url": None,
         "release_notes": None,
+        "installer": installer_kind(root),
+        "download_url": None,
         "error": None,
     }
 
@@ -342,9 +387,13 @@ def check_for_updates(repo_root: Optional[Path] = None, timeout: float = 4.0) ->
     current_tuple = parse_semver(current_version) or (0, 0, 0)
     if best_tuple is not None and best_tag is not None and best_tuple > current_tuple:
         latest_ver = _format_semver(best_tuple)
-        release_url, release_notes = _fetch_github_release_metadata(best_tag, timeout=min(timeout, 2.0))
+        release_url, release_notes, assets = _fetch_github_release_metadata(best_tag, timeout=min(timeout, 2.0))
         if not release_url:
             release_url = f"https://github.com/{GITHUB_REPO}/releases/tag/{best_tag}"
+        # An installed copy is updated by downloading the new installer. Its file appears a few
+        # minutes after the tag (the release workflow builds it), so it may not be there yet.
+        asset_name = installer_asset_name(result["installer"])
+        download_url = assets.get(asset_name) if asset_name else None
         result.update(
             {
                 "update_available": True,
@@ -354,6 +403,7 @@ def check_for_updates(repo_root: Optional[Path] = None, timeout: float = 4.0) ->
                 "target_ref": best_tag,
                 "release_url": release_url,
                 "release_notes": release_notes,
+                "download_url": download_url,
             }
         )
         logger.info(
@@ -594,6 +644,19 @@ def verify_release_tag(root: Path, tag: str) -> Tuple[bool, str]:
 def is_installer_managed(root: Path) -> bool:
     """True for a copy installed by the Windows installer or the macOS app (see INSTALLER_MARKER)."""
     return (root / INSTALLER_MARKER).is_file()
+
+
+def installer_kind(root: Path) -> Optional[str]:
+    """"windows" / "macos" for an installed copy (the INSTALLER marker's content), else None."""
+    if not is_installer_managed(root):
+        return None
+    try:
+        kind = (root / INSTALLER_MARKER).read_text(encoding="ascii", errors="ignore").strip().lower()
+    except OSError:
+        kind = ""
+    if kind in ("windows", "macos"):
+        return kind
+    return "macos" if sys.platform == "darwin" else "windows"
 
 
 def _release_branch(root: Path) -> Optional[str]:

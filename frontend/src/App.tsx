@@ -6,6 +6,7 @@ import { useT } from './i18n';
 import { localizeError } from './i18n/serverErrors';
 import { ConfirmDialog } from './components/common/ConfirmDialog';
 import { ShortcutsDialog } from './components/common/ShortcutsDialog';
+import { UpdateAvailableDialog } from './components/common/UpdateAvailableDialog';
 import { Sidebar } from './components/layout/Sidebar';
 import { Header } from './components/layout/Header';
 import { MediaDropzone } from './components/ingest/MediaDropzone';
@@ -176,6 +177,7 @@ export const App: React.FC = () => {
       <ConfirmDialog />
       <ShortcutsDialog />
       <FirstRunApiKeyModal />
+      <UpdateAvailableDialog />
       <Sidebar />
 
       <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">

@@ -58,6 +58,11 @@ export const api = {
     return request(`${API_BASE}/system/info`, undefined, 'Failed to load system info');
   },
 
+  /** The last check's result, or a fresh check when there is none yet (used at startup). */
+  getUpdateStatus(): Promise<UpdateStatus> {
+    return request(`${API_BASE}/system/update/status`, undefined, 'Failed to check for updates');
+  },
+
   checkForUpdates(): Promise<UpdateStatus> {
     return request(`${API_BASE}/system/update/check`, json('POST', {}), 'Failed to check for updates');
   },

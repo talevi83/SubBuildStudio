@@ -192,6 +192,10 @@ export interface UpdateStatus {
   target_ref?: string | null;
   release_url?: string | null;
   release_notes?: string | null;
+  /** 'windows' / 'macos' for a copy installed with the installer: it updates by a new download */
+  installer?: 'windows' | 'macos' | null;
+  /** Direct link to that installer in the release (missing until the release build attached it) */
+  download_url?: string | null;
   error?: string | null;
 }
 
