@@ -105,7 +105,10 @@ pipeline {
                     npm ci --no-audit --no-fund
                     if [ "${RUN_FRONTEND_CHECKS}" = "true" ]; then
                         npm run lint
-                        npm run build
+                        # Same as `npm run build`, but Vitest also writes a JUnit report for Jenkins/Allure
+                        npx tsc -b
+                        npx vitest run --reporter=default --reporter=junit --outputFile.junit=reports/vitest-junit.xml
+                        npx vite build
                     else
                         npx vite build
                     fi
@@ -139,10 +142,20 @@ pipeline {
     post {
         always {
             junit allowEmptyResults: true,
-                  testResults: 'backend/.pytest_cache/pytest-junit.xml,qa-automation-java/target/surefire-reports/*.xml'
+                  testResults: 'backend/.pytest_cache/pytest-junit.xml,qa-automation-java/target/surefire-reports/*.xml,frontend/reports/vitest-junit.xml'
             archiveArtifacts artifacts: 'qa-automation-java/target/reports/**,qa-automation-java/target/surefire-reports/**',
                              allowEmptyArchive: true,
                              fingerprint: true
+            // Unified Allure dashboard (pytest + Vitest + Java). Requires the Allure Jenkins plugin
+            // and a global tool named 'allure' (Manage Jenkins -> Tools -> Allure Commandline).
+            allure commandline: 'allure',
+                   includeProperties: false,
+                   jdk: '',
+                   results: [
+                       [path: 'backend/.pytest_cache'],
+                       [path: 'frontend/reports'],
+                       [path: 'qa-automation-java/target/surefire-reports']
+                   ]
             /* Optional: uncomment if the Jenkins HTML Publisher plugin is installed
             publishHTML([
                 allowMissing: true,
