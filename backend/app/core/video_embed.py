@@ -22,6 +22,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
@@ -36,6 +37,25 @@ MP4_FAMILY = {".mp4": "mp4", ".m4v": "mp4", ".mov": "mov"}
 
 # Font size on libass's 288-line canvas for SRT input (scales with the video's height)
 BURN_FONT_SIZES = {"small": 16, "medium": 19, "large": 23}
+MIN_BURN_FONT_PX = 12
+MAX_BURN_FONT_PX = 36
+
+ALLOWED_BURN_FONTS: Dict[str, str] = {
+    name.lower(): name
+    for name in (
+        "Heebo",
+        "Rubik",
+        "Assistant",
+        "Secular One",
+        "Alef",
+        "Varela Round",
+        "Frank Ruhl Libre",
+        "Inter",
+        "Arial",
+        "Courier New",
+    )
+}
+_HEX_COLOR_RE = re.compile(r"^#([0-9A-Fa-f]{6})$")
 
 # x264 settings per quality choice: (preset, crf). NVENC: (preset, cq)
 X264_QUALITY = {"standard": ("veryfast", 20), "high": ("slow", 18)}
@@ -52,6 +72,11 @@ class EmbedOptions:
     track_title: Optional[str] = None  # shown in the player's subtitle menu
     set_default: bool = True           # soft: make the new track the default one
     font_size: str = "medium"          # burn
+    font_family: Optional[str] = None  # burn
+    font_size_px: Optional[int] = None # burn: preview pixel size (12..36)
+    text_color: Optional[str] = None   # burn: #RRGGBB
+    background_color: Optional[str] = None    # burn: #RRGGBB
+    background_opacity: Optional[int] = None  # burn: 0..100
     quality: str = "standard"          # burn
     audio_stream: int = 0              # burn: which audio track goes into the MP4 (relative index)
 
@@ -201,11 +226,71 @@ def _burn_font_name(platform: Optional[str] = None) -> str:
     return "DejaVu Sans"
 
 
-def burn_style(font_size: str, platform: Optional[str] = None) -> str:
-    size = BURN_FONT_SIZES.get(font_size, BURN_FONT_SIZES["medium"])
-    font = _burn_font_name(platform)
-    return (f"FontName={font},FontSize={size},PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
-            f"BackColour=&H80000000,BorderStyle=1,Outline=1.6,Shadow=0.6,MarginV=16")
+def _resolve_burn_font(font_family: Optional[str], platform: Optional[str] = None) -> str:
+    """Resolve an allowed subtitle font family or fall back to the host platform default."""
+    if font_family:
+        canonical = ALLOWED_BURN_FONTS.get(font_family.strip().lower())
+        if canonical:
+            return canonical
+    return _burn_font_name(platform)
+
+
+def hex_to_ass_color(hex_color: str, opacity_percent: int = 100) -> str:
+    """Convert #RRGGBB and opacity (0..100%) to ASS &HAABBGGRR (AA: 00 opaque .. FF transparent)."""
+    match = _HEX_COLOR_RE.match((hex_color or "").strip())
+    raw = match.group(1) if match else "FFFFFF"
+    r, g, b = int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16)
+    clamped_opacity = max(0, min(100, int(opacity_percent)))
+    alpha = round((100 - clamped_opacity) * 255 / 100)
+    return f"&H{alpha:02X}{b:02X}{g:02X}{r:02X}"
+
+
+def _dropin_font_files() -> List[Path]:
+    """Optional .ttf/.otf font files placed under app/assets/fonts or SUBBUILD_HOME/fonts."""
+    dirs = [Path(__file__).resolve().parents[1] / "assets" / "fonts"]
+    home = os.environ.get("SUBBUILD_HOME")
+    if home:
+        dirs.append(Path(home) / "fonts")
+    fonts: List[Path] = []
+    for folder in dirs:
+        if not folder.is_dir():
+            continue
+        try:
+            for item in folder.iterdir():
+                if item.is_file() and item.suffix.lower() in (".ttf", ".otf"):
+                    fonts.append(item)
+        except OSError:
+            continue
+    return fonts
+
+
+def burn_style(
+    font_size: str = "medium",
+    platform: Optional[str] = None,
+    *,
+    font_family: Optional[str] = None,
+    font_size_px: Optional[int] = None,
+    text_color: Optional[str] = None,
+    background_color: Optional[str] = None,
+    background_opacity: Optional[int] = None,
+) -> str:
+    if font_size_px is not None:
+        clamped_px = max(MIN_BURN_FONT_PX, min(MAX_BURN_FONT_PX, int(font_size_px)))
+        size = max(10, round(clamped_px * 19 / 18))
+    else:
+        size = BURN_FONT_SIZES.get(font_size, BURN_FONT_SIZES["medium"])
+    font = _resolve_burn_font(font_family, platform)
+    primary = hex_to_ass_color(text_color or "#FFFFFF", 100)
+    if background_opacity is not None and background_opacity > 0:
+        box_col = hex_to_ass_color(background_color or "#000000", background_opacity)
+        return (
+            f"FontName={font},FontSize={size},PrimaryColour={primary},"
+            f"OutlineColour={box_col},BackColour={box_col},BorderStyle=3,Outline=3,Shadow=0,MarginV=16"
+        )
+    return (
+        f"FontName={font},FontSize={size},PrimaryColour={primary},OutlineColour=&H00000000,"
+        f"BackColour=&H80000000,BorderStyle=1,Outline=1.6,Shadow=0.6,MarginV=16"
+    )
 
 
 def build_burn_command(video_path: str, subs_name: str, out_path: str, probe: dict, opts: EmbedOptions,
@@ -219,7 +304,16 @@ def build_burn_command(video_path: str, subs_name: str, out_path: str, probe: di
     audio = [s for s in streams if s.get("codec_type") == "audio"]
     a_idx = opts.audio_stream if 0 <= opts.audio_stream < len(audio) else 0
 
-    vf = f"subtitles={subs_name}:charenc=UTF-8:force_style='{burn_style(opts.font_size)}',format=yuv420p"
+    style = burn_style(
+        opts.font_size,
+        font_family=opts.font_family,
+        font_size_px=opts.font_size_px,
+        text_color=opts.text_color,
+        background_color=opts.background_color,
+        background_opacity=opts.background_opacity,
+    )
+    fonts_arg = ":fontsdir=." if _dropin_font_files() else ""
+    vf = f"subtitles={subs_name}{fonts_arg}:charenc=UTF-8:force_style='{style}',format=yuv420p"
     cmd = [get_ffmpeg_bin(), "-y", "-nostdin", "-v", "error", "-nostats", "-progress", "pipe:1",
            *safe_input(str(Path(video_path).resolve())), "-map", "0:v:0"]
     if audio:
@@ -310,6 +404,8 @@ async def _execute(task: EmbedTask, video_path: str, subtitle_text: str, opts: E
             task.encoder = "copy"
             await _run(task, build_soft_command(video_path, str(subs), str(tmp_out), probe, opts), duration)
         else:
+            for font_file in _dropin_font_files():
+                shutil.copy2(font_file, workdir / font_file.name)
             encoders = (["h264_nvenc"] if await nvenc_available() else []) + ["libx264"]
             for i, encoder in enumerate(encoders):
                 task.encoder = encoder
