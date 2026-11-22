@@ -596,6 +596,30 @@ export type EmbedMode = 'soft' | 'burn';
 export type EmbedFontSize = 'small' | 'medium' | 'large';
 export type EmbedQuality = 'standard' | 'high';
 
+export type SubtitleFontFamily =
+  | 'Heebo'
+  | 'Rubik'
+  | 'Assistant'
+  | 'Secular One'
+  | 'Alef'
+  | 'Varela Round'
+  | 'Frank Ruhl Libre'
+  | 'Inter'
+  | 'Arial'
+  | 'Courier New';
+
+export interface SubtitleStyleSettings {
+  fontFamily: SubtitleFontFamily;
+  /** Font size in pixels for the video player preview (clamped 12..36, default 18) */
+  fontSizePx: number;
+  /** Primary text color (#RRGGBB, default #FCD34D) */
+  textColor: string;
+  /** Background box color (#RRGGBB, default #000000) */
+  backgroundColor: string;
+  /** Background opacity percentage 0..100 (default 75) */
+  backgroundOpacity: number;
+}
+
 export interface EmbedVideoOptions {
   /** soft: extra subtitle track (no re-encode). burn: drawn on the picture, H.264 MP4 */
   mode: EmbedMode;
@@ -603,6 +627,11 @@ export interface EmbedVideoOptions {
   apply_rtl?: boolean;
   set_default?: boolean;
   font_size?: EmbedFontSize;
+  font_family?: string;
+  font_size_px?: number;
+  text_color?: string;
+  background_color?: string;
+  background_opacity?: number;
   quality?: EmbedQuality;
   overwrite?: boolean;
 }

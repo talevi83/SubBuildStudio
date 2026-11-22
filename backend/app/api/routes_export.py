@@ -258,6 +258,11 @@ async def start_embed_video(job_id: str, req: EmbedVideoRequest, session: Sessio
                 track_title=f"{language_name(language, 'Subtitles')} (SubBuild Studio)",
                 set_default=req.set_default,
                 font_size=req.font_size,
+                font_family=req.font_family,
+                font_size_px=req.font_size_px,
+                text_color=req.text_color,
+                background_color=req.background_color,
+                background_opacity=req.background_opacity,
                 quality=req.quality,
                 audio_stream=job.selected_audio_stream or 0,
             )

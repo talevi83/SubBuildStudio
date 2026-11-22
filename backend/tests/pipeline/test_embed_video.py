@@ -265,3 +265,91 @@ def test_burn_font_fallback_across_platforms(tmp_path, monkeypatch):
     monkeypatch.setattr(ve, "_LINUX_FONT_DIRS", (noto_dir,))
     assert ve._burn_font_name("linux") == "Noto Sans"
     assert "FontName=Noto Sans," in ve.burn_style("large", platform="linux")
+
+
+def test_hex_to_ass_color_converts_bgr_and_alpha():
+    assert ve.hex_to_ass_color("#FCD34D", 100) == "&H004DD3FC"
+    assert ve.hex_to_ass_color("#ffffff", 0) == "&HFFFFFFFF"
+    assert ve.hex_to_ass_color("#000000", 60) == "&H66000000"
+    assert ve.hex_to_ass_color("#123456", 150) == "&H00563412"
+    assert ve.hex_to_ass_color("#123456", -10) == "&HFF563412"
+
+
+def test_burn_style_custom_font_size_color_and_background_opacity():
+    style_box = ve.burn_style(
+        "medium",
+        platform="win32",
+        font_family="rubik",
+        font_size_px=18,
+        text_color="#FCD34D",
+        background_color="#1E1B4B",
+        background_opacity=60,
+    )
+    assert "FontName=Rubik," in style_box
+    assert "FontSize=19," in style_box
+    assert "PrimaryColour=&H004DD3FC," in style_box
+    assert "OutlineColour=&H664B1B1E," in style_box
+    assert "BackColour=&H664B1B1E," in style_box
+    assert "BorderStyle=3," in style_box
+
+    style_solid = ve.burn_style(
+        platform="win32",
+        font_family="Heebo",
+        font_size_px=50,  # clamped to 36 -> round(36 * 19 / 18) = 38
+        text_color="#FFFFFF",
+        background_color="#000000",
+        background_opacity=100,
+    )
+    assert "FontName=Heebo," in style_solid
+    assert "FontSize=38," in style_solid
+    assert "OutlineColour=&H00000000," in style_solid
+    assert "BorderStyle=3," in style_solid
+
+    style_outline = ve.burn_style(
+        platform="win32",
+        font_family="Arial,Outline=99",  # disallowed / injection attempt falls back safely
+        font_size_px=4,  # clamped to 12 -> round(12 * 19 / 18) = 13
+        text_color="#67E8F9",
+        background_opacity=0,
+    )
+    assert "FontName=Arial," in style_outline
+    assert "Outline=99" not in style_outline
+    assert "FontSize=13," in style_outline
+    assert "PrimaryColour=&H00F9E867," in style_outline
+    assert "BorderStyle=1," in style_outline
+
+
+def test_build_burn_command_applies_custom_style_options():
+    probe = {"streams": [{"index": 0, "codec_type": "video"}, {"index": 1, "codec_type": "audio", "codec_name": "aac"}]}
+    opts = ve.EmbedOptions(
+        mode="burn",
+        font_family="Assistant",
+        font_size_px=24,
+        text_color="#FACC15",
+        background_color="#000000",
+        background_opacity=75,
+    )
+    cmd = ve.build_burn_command("M.mkv", "subs.srt", "out", probe, opts, "libx264")
+    vf = cmd[cmd.index("-vf") + 1]
+    assert "FontName=Assistant," in vf
+    assert "FontSize=25," in vf
+    assert "PrimaryColour=&H0015CCFA," in vf
+    assert "OutlineColour=&H40000000," in vf
+    assert "BorderStyle=3," in vf
+
+
+def test_embed_style_validation_rejects_out_of_bounds_values(client, tmp_path):
+    video = tmp_path / "Clip.mp4"
+    video.write_bytes(b"video")
+    job_id = _make_job(str(video))
+
+    for bad_payload in (
+        {"mode": "burn", "font_size_px": 11},
+        {"mode": "burn", "font_size_px": 37},
+        {"mode": "burn", "background_opacity": -1},
+        {"mode": "burn", "background_opacity": 101},
+        {"mode": "burn", "text_color": "red"},
+        {"mode": "burn", "background_color": "#12345"},
+    ):
+        resp = client.post(f"/api/jobs/{job_id}/export/embed", json=bad_payload)
+        assert resp.status_code == 422, f"Expected 422 for {bad_payload}, got {resp.status_code}"

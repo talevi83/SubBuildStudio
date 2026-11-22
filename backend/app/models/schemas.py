@@ -404,6 +404,11 @@ class EmbedVideoRequest(RequestModel):
     set_default: bool = True
     # burn: text size and encode quality (standard = fast)
     font_size: Literal["small", "medium", "large"] = "medium"
+    font_family: Optional[str] = Field(default=None, max_length=64)
+    font_size_px: Optional[int] = Field(default=None, ge=12, le=36)
+    text_color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    background_color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    background_opacity: Optional[int] = Field(default=None, ge=0, le=100)
     quality: Literal["standard", "high"] = "standard"
     # A video with the same name already next to the original is only replaced when this is true
     overwrite: bool = False
