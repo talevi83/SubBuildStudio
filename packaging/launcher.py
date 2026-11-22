@@ -1,10 +1,12 @@
 """
 SubBuild Studio desktop launcher (invoked via run.bat / run.sh --window, the Windows installer's
-shortcut, and the macOS app's executable - packaging/macos/launcher.c).
+shortcut, the macOS app's executable - packaging/macos/launcher.c - and the Linux AppImage's
+AppRun - packaging/linux/AppRun).
 
 Starts the FastAPI backend inside this process and shows the studio in its own desktop window
-(pywebview on Microsoft Edge WebView2, which ships with Windows 10/11, or on WebKit on macOS),
-with an icon in the system tray / menu bar. Without a web view - or with --browser - the studio
+(pywebview on Microsoft Edge WebView2, which ships with Windows 10/11, on WebKit on macOS, or on
+Qt WebEngine in the Linux AppImage - packaging/linux_desktop.py), with an icon in the system tray /
+menu bar. Without a web view - or with --browser - the studio
 opens in the default browser instead, and the tray icon is the way back to it.
 
 User data (.env with the API key, storage/ with projects, settings and logs, the window's
@@ -12,7 +14,8 @@ size and the studio's own preferences) is kept outside the program directory by 
 updating or switching branches never touches it:
   1. %SUBBUILD_HOME%, if set (run.bat / run.sh point this to backend/)
   2. a "data" folder in the program root (portable mode - create the folder to opt in)
-  3. %LOCALAPPDATA%\\SubBuild Studio (Windows), ~/Library/Application Support/SubBuild Studio (macOS)
+  3. %LOCALAPPDATA%\\SubBuild Studio (Windows), ~/Library/Application Support/SubBuild Studio (macOS),
+     ~/.local/share/SubBuild Studio (Linux)
 
 Also runs directly from source:  python packaging/launcher.py [--browser] [--no-tray] [--no-browser]
 """
@@ -40,6 +43,12 @@ WINDOWS = sys.platform == "win32"
 MACOS = sys.platform == "darwin"
 # Set by the macOS app's executable (packaging/macos/launcher.c): the path of SubBuild Studio.app
 APP_BUNDLE = os.environ.get("SUBBUILD_APP_BUNDLE") if MACOS else None
+LINUX = sys.platform.startswith("linux")
+# Set by the AppImage's AppRun (packaging/linux/AppRun): the mounted AppDir. The Qt window, tray
+# and dialogs of packaging/linux_desktop.py are used only there.
+APPDIR = os.environ.get("SUBBUILD_APPDIR") if LINUX else None
+# Set by the AppImage runtime: the .AppImage file itself (what a restart has to run again)
+APPIMAGE = os.environ.get("APPIMAGE") if APPDIR else None
 STARTUP_TIMEOUT = 180  # seconds; the first start preloads the CUDA libraries, which can be slow
 ACTIVE_STATUSES = {"QUEUED", "PROBING", "EXTRACTING_AUDIO", "TRANSCRIBING",
                    "SCANNING_ONSCREEN", "REFINING", "TRANSLATING", "SYNCING"}
@@ -111,10 +120,10 @@ def data_dir() -> Path:
 def redirect_stdio(home: Path) -> None:
     """A windowed launcher has no console: send print/tracebacks to launcher.log.
 
-    (pythonw.exe on Windows has no stdout/stderr at all; the macOS app started from Finder has
-    them, but they lead nowhere.)
+    (pythonw.exe on Windows has no stdout/stderr at all; the macOS app started from Finder and the
+    AppImage started from the applications menu have them, but they lead nowhere.)
     """
-    from_finder = bool(APP_BUNDLE) and not (sys.stderr is not None and sys.stderr.isatty())
+    from_finder = bool(APP_BUNDLE or APPDIR) and not (sys.stderr is not None and sys.stderr.isatty())
     if sys.stdout is not None and sys.stderr is not None and not from_finder:
         return
     log = home / "launcher.log"
@@ -160,6 +169,12 @@ def prepare_environment(home: Path) -> Path:
         if ffmpeg_dir.is_dir():  # optional local ffmpeg overrides PATH
             os.environ["PATH"] = str(ffmpeg_dir) + os.pathsep + os.environ.get("PATH", "")
             break
+    if APPDIR:
+        # The optional NVIDIA libraries for GPU transcription are downloaded into the data folder
+        # on request (backend/app/core/gpu_runtime.py), with the versions this build pinned
+        os.environ.setdefault("SUBBUILD_GPU_DIR", str(home / "gpu-libs"))
+        os.environ.setdefault("SUBBUILD_GPU_REQUIREMENTS", str(resource("packaging", "gpu-requirements.txt")))
+        os.environ.setdefault("SUBBUILD_UV", str(Path(APPDIR) / "usr" / "bin" / "uv"))
     sys.path.insert(0, str(resource("backend")))
     return env_file
 
@@ -205,8 +220,14 @@ def message(text: str, kind: str = "error") -> int:
         flags = {"error": 0x10, "info": 0x40, "yesno": 0x04 | 0x30, "yesnocancel": 0x03 | 0x30}[kind]
         return ctypes.windll.user32.MessageBoxW(None, text, APP_NAME, flags | 0x40000)  # topmost
     print(f"[{kind}] {text}", file=sys.stderr, flush=True)
-    if MACOS and not os.environ.get("CI"):  # (a dialog on a build machine would wait forever)
+    if os.environ.get("CI"):  # a dialog on a build machine would wait forever
+        return IDYES
+    if MACOS:
         answer = _mac_dialog(text, kind)
+        if answer is not None:
+            return answer
+    if APPDIR:
+        answer = linux_desktop().dialog(Path(__file__).resolve(), text, kind)
         if answer is not None:
             return answer
     return IDYES
@@ -317,8 +338,62 @@ def spawn_again(extra_args: list) -> None:
     if APP_BUNDLE:  # macOS app: start the app again (Python on its own would not be "SubBuild Studio")
         subprocess.Popen(["open", "-n", APP_BUNDLE, "--args"] + list(extra_args))
         return
+    if APPIMAGE:  # the AppImage: its files go away with this process, so run the .AppImage again
+        subprocess.Popen([APPIMAGE] + list(extra_args), start_new_session=True)
+        return
     args = [sys.executable, str(Path(__file__).resolve())]
     subprocess.Popen(args + extra_args, cwd=str(program_dir()))
+
+
+# ----------------------------------------------------------------------------- Linux AppImage
+
+_QT_APP = None  # the QApplication of the Qt window (AppImage, window mode)
+
+
+def linux_desktop():  # type: ignore[no-untyped-def]
+    """packaging/linux_desktop.py (imported only in the AppImage)."""
+    import importlib
+
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    return importlib.import_module("linux_desktop")
+
+
+def window_mode_qt() -> bool:
+    return _QT_APP is not None
+
+
+def _call_menu_action(fn: Callable) -> None:
+    """Call a tray callback the way pystray does: with the icon when it takes an argument."""
+    import inspect
+
+    try:
+        takes_icon = len(inspect.signature(fn).parameters) > 0
+    except (TypeError, ValueError):
+        takes_icon = False
+    fn(None) if takes_icon else fn()
+
+
+def integrate_with_desktop(home: Path) -> None:
+    """AppImage: add it to the applications menu on first launch, and keep the entry up to date."""
+    if not APPIMAGE:
+        return
+    icon = Path(APPDIR or "") / "subbuildstudio.png"
+    try:
+        linux_desktop().integrate_appimage(APPIMAGE, home, icon if icon.is_file() else resource("packaging", "icon.png"))
+    except Exception:
+        print(f"Could not add the applications menu entry:\n{traceback.format_exc()}", file=sys.stderr, flush=True)
+
+
+def isolate_child_environment() -> None:
+    """AppImage: AppRun's Python settings apply to this interpreter only, not to the programs the
+    studio opens (a file manager, an editor, the browser). Our own Python children get them as
+    command-line flags instead (linux_desktop.python_command)."""
+    if not APPDIR:
+        return
+    for name in ("PYTHONNOUSERSITE", "PYTHONDONTWRITEBYTECODE", "PYTHONUTF8"):
+        os.environ.pop(name, None)
 
 
 # ----------------------------------------------------------------------------- server
@@ -397,6 +472,21 @@ def exit_now(code: int = 0) -> None:
 def make_tray(url: str, home: Path, env_file: Path, open_label: str, on_open: Callable[[], None],
               on_quit: Callable, on_restart: Callable, with_browser_item: bool):
     """The tray icon and its menu (shared by window and browser mode)."""
+    if APPDIR:  # Qt's tray icon (needs the QApplication: window mode only), or none
+        ld = linux_desktop()
+        if not window_mode_qt():
+            return ld.NoTray()
+        items = [(open_label, on_open, True)]
+        if with_browser_item:
+            items.append(("Open in browser", lambda: webbrowser.open(studio_url(url)), False))
+        items += [None,
+                  ("Open data folder", lambda: open_path(home), False),
+                  ("Edit settings (.env)", lambda: open_path(env_file), False),
+                  ("Server log", lambda: open_path(home / "storage" / "logs" / "server.log"), False),
+                  None,
+                  ("Restart server", lambda: _call_menu_action(on_restart), False),
+                  ("Quit", lambda: _call_menu_action(on_quit), False)]
+        return ld.QtTray(f"{APP_NAME} - starting...", resource("packaging", "icon.png"), items)
     import pystray
     from PIL import Image
 
@@ -412,7 +502,7 @@ def make_tray(url: str, home: Path, env_file: Path, open_label: str, on_open: Ca
         pystray.MenuItem("Restart server", on_restart),
         pystray.MenuItem("Quit", on_quit),
     ]
-    icon_file = resource("packaging", "icon.png" if MACOS else "icon.ico")
+    icon_file = resource("packaging", "icon.ico" if WINDOWS else "icon.png")
     return pystray.Icon("SubBuildStudio", Image.open(icon_file),
                         f"{APP_NAME} - starting...", pystray.Menu(*items))
 
@@ -469,6 +559,8 @@ def window_problem() -> Optional[str]:
         import webview  # noqa: F401
     except Exception as e:
         return f"pywebview is not available ({e})"
+    if APPDIR:
+        return linux_desktop().window_problem(Path(__file__).resolve())
     if WINDOWS:
         try:
             from webview.platforms import winforms
@@ -642,8 +734,11 @@ def _save_window_size(home: Path, window) -> None:  # type: ignore[no-untyped-de
 
 def run_window(server: ServerThread, url: str, home: Path, env_file: Path) -> None:
     """Window mode: the studio in its own window (main thread); the tray icon runs alongside."""
-    global SHOW_WINDOW
+    global SHOW_WINDOW, _QT_APP
     import webview
+
+    if APPDIR:  # Qt: the application first (named for the desktop), the tray icon needs it
+        _QT_APP = linux_desktop().qt_application()
 
     webview.settings["ALLOW_DOWNLOADS"] = True                 # exports ask where to save
     webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True  # e.g. the pricing page
@@ -674,6 +769,11 @@ def run_window(server: ServerThread, url: str, home: Path, env_file: Path) -> No
 
     icon = make_tray(url, home, env_file, "Open SubBuild Studio", show_window,
                      lambda: leave(False), lambda: leave(True), with_browser_item=True)
+    # A Linux desktop may have no tray to come back from: minimize to the taskbar instead
+    has_tray = True
+    if APPDIR:
+        ld = linux_desktop()
+        has_tray = isinstance(icon, ld.QtTray) and ld.QtTray.available()
 
     def on_closing() -> bool:
         if state["leaving"]:
@@ -683,9 +783,13 @@ def run_window(server: ServerThread, url: str, home: Path, env_file: Path) -> No
             answer = message(
                 f"{busy} project(s) are still running.\n\n"
                 "Yes - quit now (they can be resumed later)\n"
-                "No - keep working in the background (tray icon)\n"
+                + ("No - keep working in the background (tray icon)\n" if has_tray else
+                   "No - keep working in the background (minimized)\n") +
                 "Cancel - go back", "yesnocancel")
             if answer == IDNO:
+                if not has_tray:
+                    window.minimize()
+                    return False
                 window.hide()
                 try:
                     icon.notify("Still working in the background. Click the tray icon to open the window.", APP_NAME)
@@ -709,11 +813,14 @@ def run_window(server: ServerThread, url: str, home: Path, env_file: Path) -> No
             state["leaving"] = True
             window.destroy()
 
-    icon.run_detached()  # Windows: the tray gets its own thread; macOS: it shares the window's loop
+    icon.run_detached()  # Windows: the tray gets its own thread; macOS / Qt: it shares the window's loop
     SHOW_WINDOW = show_window
+    start_options = {}
+    if APPDIR:
+        start_options["gui"] = "qt"
     try:
         webview.start(boot, private_mode=False, storage_path=str(home / "webview"),
-                      icon=str(resource("packaging", "icon.ico")))
+                      icon=str(resource("packaging", "icon.png" if APPDIR else "icon.ico")), **start_options)
     finally:
         SHOW_WINDOW = None
         try:
@@ -735,12 +842,29 @@ def self_check(home: Path) -> int:
     import uvicorn  # noqa: F401
     from app.main import app  # noqa: F401
 
-    problem = window_problem()
-    if problem is None:
+    # (in the AppImage the check also makes Qt WebEngine render a page, in a child process)
+    problem = linux_desktop().window_problem(Path(__file__).resolve(), full=True) if APPDIR else window_problem()
+    if problem is None and not APPDIR:
         import pystray  # noqa: F401
     print(f"{APP_NAME} check: Python {sys.version.split()[0]}, faster-whisper {faster_whisper.__version__}, "
           f"ctranslate2 {ctranslate2.__version__}, window: {problem or 'ok'}, data: {home}", flush=True)
     return 1 if problem else 0
+
+
+def run_headless(server: ServerThread, url: str, home: Path, open_browser: bool) -> None:
+    """No window and no tray icon: the server runs until Ctrl+C (or the process is ended)."""
+    if not server.wait_ready():
+        message(failure_text(server, home))
+        exit_now(1)
+    print(f"{APP_NAME} is running at {studio_url(url)} (data: {home}). Press Ctrl+C to stop.", flush=True)
+    if open_browser:
+        webbrowser.open(studio_url(url))
+    try:
+        while server.is_alive():
+            server.join(0.5)
+    except KeyboardInterrupt:
+        server.stop()
+    exit_now(0)
 
 
 def main() -> int:
@@ -750,7 +874,17 @@ def main() -> int:
     parser.add_argument("--no-tray", action="store_true", help="run in the foreground without a tray icon or window")
     parser.add_argument("--no-browser", action="store_true", help="browser mode: do not open the browser at start")
     parser.add_argument("--check", action="store_true", help="import everything the studio needs, then exit")
+    # AppImage only, run by the launcher itself in a child process (linux_desktop.py)
+    parser.add_argument("--dialog", nargs=2, metavar=("KIND", "TEXT"), help=argparse.SUPPRESS)
+    parser.add_argument("--probe-window", choices=("quick", "full"), help=argparse.SUPPRESS)
     args, _ = parser.parse_known_args()
+    if APPDIR:
+        linux_desktop().preload_bundled_libs(Path(APPDIR))
+        if args.dialog:
+            return linux_desktop().show_dialog(args.dialog[0], args.dialog[1])
+        if args.probe_window:
+            return linux_desktop().probe_window(args.probe_window == "full")
+        isolate_child_environment()
     use_browser = args.browser or (os.environ.get("SUBBUILD_UI") or os.environ.get("SUBFORGE_UI") or "").lower() == "browser"
 
     home = data_dir()
@@ -759,6 +893,8 @@ def main() -> int:
         redirect_stdio(home)
     hide_child_consoles()
     env_file = prepare_environment(home)
+    if not args.check:
+        integrate_with_desktop(home)
 
     if args.check:
         return self_check(home)
@@ -800,18 +936,7 @@ def main() -> int:
     server.start()
 
     if args.no_tray:
-        if not server.wait_ready():
-            message(failure_text(server, home))
-            exit_now(1)
-        print(f"{APP_NAME} is running at {studio_url(url)} (data: {home}). Press Ctrl+C to stop.", flush=True)
-        if not args.no_browser:
-            webbrowser.open(studio_url(url))
-        try:
-            while server.is_alive():
-                server.join(0.5)
-        except KeyboardInterrupt:
-            server.stop()
-        exit_now(0)
+        run_headless(server, url, home, open_browser=not args.no_browser)
 
     if not use_browser:
         problem = window_problem()
@@ -825,6 +950,8 @@ def main() -> int:
         else:
             print(f"Opening the studio in the browser: {problem}", file=sys.stderr, flush=True)
 
+    if APPDIR:  # no Qt window here, so no Qt tray either: the studio runs in the browser
+        run_headless(server, url, home, open_browser=not args.no_browser)
     run_tray(server, url, home, env_file, open_browser=not args.no_browser)
     exit_now(0)
     return 0

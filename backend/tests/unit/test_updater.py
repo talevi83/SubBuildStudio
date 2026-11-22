@@ -716,6 +716,7 @@ _RELEASE_ASSETS = {
     "SubBuild-Studio-Setup.exe": "https://github.com/talevi83/SubBuildStudio/releases/download/v1.6.0/SubBuild-Studio-Setup.exe",
     "SubBuild-Studio-macOS-AppleSilicon.dmg": "https://github.com/talevi83/SubBuildStudio/releases/download/v1.6.0/SubBuild-Studio-macOS-AppleSilicon.dmg",
     "SubBuild-Studio-macOS-Intel.dmg": "https://github.com/talevi83/SubBuildStudio/releases/download/v1.6.0/SubBuild-Studio-macOS-Intel.dmg",
+    "SubBuild-Studio-Linux-x86_64.AppImage": "https://github.com/talevi83/SubBuildStudio/releases/download/v1.6.0/SubBuild-Studio-Linux-x86_64.AppImage",
 }
 _TAGS = {"v1.5.0": "1111111" + "0" * 33, "v1.6.0": "2222222" + "0" * 33}
 
@@ -756,6 +757,37 @@ def test_a_mac_install_is_offered_the_disk_image_for_its_processor(tmp_path: Pat
 
     assert res["installer"] == "macos"
     assert res["download_url"].endswith(f"/v1.6.0/{expected}")
+
+
+def test_a_linux_appimage_is_offered_the_new_appimage(tmp_path: Path):
+    root = _make_non_git_install(tmp_path, version="1.5.0")
+    (root / updater.INSTALLER_MARKER).write_text("linux\n", encoding="ascii")
+
+    res = _check_installed_copy(root, _RELEASE_ASSETS)
+
+    assert res["installer"] == "linux"
+    assert res["download_url"].endswith("/v1.6.0/SubBuild-Studio-Linux-x86_64.AppImage")
+
+
+def test_apply_update_in_the_appimage_asks_for_the_new_download(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("SUBBUILD_REQUIRE_SIGNED_TAGS", raising=False)
+    root = _make_non_git_install(tmp_path, version="1.5.0")
+    (root / updater.INSTALLER_MARKER).write_text("linux", encoding="ascii")
+    release_status = {
+        "current_version": "1.5.0", "current_commit": "", "branch": "", "update_available": True,
+        "update_kind": "release", "latest_version": "1.6.0", "latest_commit": "2222222", "commits_behind": 0,
+        "target_ref": "v1.6.0", "release_url": None, "release_notes": None, "error": None,
+    }
+
+    with (
+        patch.object(updater, "check_for_updates", return_value=release_status),
+        patch.object(updater, "_apply_zip_update") as mock_zip,
+    ):
+        res = updater.apply_update(root, auto_mode=False)
+
+    assert res["skipped_reason"] == "installer_managed"
+    assert "AppImage" in res["message"]
+    mock_zip.assert_not_called()
 
 
 def test_before_the_installer_is_attached_there_is_no_direct_download(tmp_path: Path):

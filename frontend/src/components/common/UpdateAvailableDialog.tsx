@@ -28,13 +28,14 @@ function writeSkipped(version: string) {
   }
 }
 
-const STEPS: Record<'windows' | 'macos', MessageKey[]> = {
+const STEPS: Record<'windows' | 'macos' | 'linux', MessageKey[]> = {
   windows: ['settings.newVersion.windowsStep1', 'settings.newVersion.windowsStep2', 'settings.newVersion.windowsStep3'],
   macos: ['settings.newVersion.macStep1', 'settings.newVersion.macStep2', 'settings.newVersion.macStep3'],
+  linux: ['settings.newVersion.linuxStep1', 'settings.newVersion.linuxStep2', 'settings.newVersion.linuxStep3'],
 };
 
 /**
- * A copy from the Windows installer or the macOS app can't patch itself, so at startup it checks
+ * A copy from the Windows installer, the macOS app or the Linux AppImage can't patch itself, so at startup it checks
  * for a newer release and offers the new download with short instructions. Copies run from a Git
  * clone (run.bat / run.sh) update themselves before launch and never see this dialog.
  */

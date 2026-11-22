@@ -66,6 +66,12 @@ describe('UpdateAvailableDialog', () => {
     expect(getByTestId('update-dialog-steps').textContent).toContain('Applications');
   });
 
+  it('shows the Linux steps for the AppImage', async () => {
+    const { getByTestId } = await renderAfterStartup(status({ installer: 'linux' }));
+    expect(getByTestId('update-dialog-steps').textContent).toContain('SubBuild-Studio-Linux-x86_64.AppImage');
+    expect(getByTestId('update-dialog-steps').textContent).toContain('chmod +x');
+  });
+
   it('falls back to the website before the installer is attached to the release', async () => {
     const { getByTestId } = await renderAfterStartup(status({ download_url: null }));
     expect(getByTestId('update-dialog-download').getAttribute('href')).toBe(WEBSITE_URL);

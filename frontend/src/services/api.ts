@@ -1,4 +1,4 @@
-import type { ParsedSubtitles, SegmentCreate, SyncCue, SystemInfo, UpdateStatus, UpdateApplyResponse, ProbeResponse, Job, JobConfig, SubtitleSegment, SegmentPatch, SegmentsChange, QAIssue, SpeakerGuess, StorageReport, StorageCleanResult, SaveNextToVideoResult, EmbedVideoOptions, EmbedVideoStatus, EditHistory, HistoryRestoreResult, Glossary, RetranslateOptions, AppSettings, SettingsResponse, CostEstimate, ModelCheckResponse } from '../types';
+import type { ParsedSubtitles, SegmentCreate, SyncCue, SystemInfo, UpdateStatus, UpdateApplyResponse, GpuLibsStatus, ProbeResponse, Job, JobConfig, SubtitleSegment, SegmentPatch, SegmentsChange, QAIssue, SpeakerGuess, StorageReport, StorageCleanResult, SaveNextToVideoResult, EmbedVideoOptions, EmbedVideoStatus, EditHistory, HistoryRestoreResult, Glossary, RetranslateOptions, AppSettings, SettingsResponse, CostEstimate, ModelCheckResponse } from '../types';
 
 import { hashBlobSha256 } from '../utils/sha256';
 
@@ -69,6 +69,15 @@ export const api = {
 
   applyUpdate(): Promise<UpdateApplyResponse> {
     return request(`${API_BASE}/system/update/apply`, json('POST', {}), 'Failed to apply update');
+  },
+
+  /** Linux AppImage: the optional NVIDIA libraries for GPU transcription */
+  getGpuLibsStatus(): Promise<GpuLibsStatus> {
+    return request(`${API_BASE}/system/gpu-libs`, undefined, 'Failed to check the GPU libraries');
+  },
+
+  installGpuLibs(): Promise<GpuLibsStatus> {
+    return request(`${API_BASE}/system/gpu-libs/install`, json('POST', {}), 'Failed to start the GPU download');
   },
 
   probePath(filePath: string): Promise<ProbeResponse> {

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=SubBuild Studio
+GenericName=Subtitle Editor & Translator
+Comment=AI subtitles: transcribe, translate and edit
+Exec=AppRun %F
+Icon=subbuildstudio
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=subtitles;subtitle;translation;video;transcription;
+StartupWMClass=subbuildstudio

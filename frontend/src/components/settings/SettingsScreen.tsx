@@ -12,6 +12,7 @@ import type {
 } from '../../types';
 import { api } from '../../services/api';
 import { StorageSection } from './StorageSection';
+import { openGpuLibsDialog } from '../../utils/gpuLibs';
 import { ApiKeySection } from './ApiKeySection';
 import {
   ArrowLeft, AlertTriangle, Brain, Bug, ChevronDown, ChevronUp, Coins, Lightbulb, Moon, RefreshCw, Sun, Save, Loader2, Check, ExternalLink, PlugZap, CheckCircle2, XCircle,
@@ -1003,6 +1004,17 @@ export const SettingsScreen: React.FC = () => {
                   </span>
                 )}
               </label>
+              {hw?.gpu_libs_missing && (
+                <button
+                  type="button"
+                  onClick={openGpuLibsDialog}
+                  data-testid="gpu-libs-settings-btn"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-[11px] font-semibold text-emerald-300 cursor-pointer"
+                >
+                  <Cpu className="w-3.5 h-3.5" />
+                  {t('settings.gpuSettingsButton')}
+                </button>
+              )}
             </div>
 
             {autoNotice && (
