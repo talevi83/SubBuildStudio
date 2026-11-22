@@ -680,7 +680,10 @@ class DesktopApi:
                 if matched is None and len(paths) == 1 and isinstance(paths[0], (tuple, list)) and len(paths[0]) >= 2:
                     matched = paths[0]
                 if matched is not None:
-                    _dnd_state["paths"].clear()
+                    try:
+                        _dnd_state["paths"].remove(matched)
+                    except ValueError:
+                        pass
                     raw_path = str(matched[1])
                     if Path(raw_path).exists():
                         return raw_path
@@ -708,6 +711,27 @@ class DesktopApi:
                 return ""
             first = picked[0] if isinstance(picked, (list, tuple)) else str(picked)
             return str(first) if first else ""
+        except Exception:
+            return None
+
+    def pick_media_files(self) -> Optional[list]:
+        """Open a native multi-file picker for local media; returns paths list, [] if cancelled, or None if unavailable."""
+        if self._window is None:
+            return None
+        try:
+            import webview
+
+            dialog_type = getattr(getattr(webview, "FileDialog", None), "OPEN", getattr(webview, "OPEN_DIALOG", 10))
+            picked = self._window.create_file_dialog(
+                dialog_type,
+                allow_multiple=True,
+                file_types=MEDIA_FILE_TYPES,
+            )
+            if not picked:
+                return []
+            if isinstance(picked, (list, tuple)):
+                return [str(p) for p in picked if p]
+            return [str(picked)] if picked else []
         except Exception:
             return None
 

@@ -95,6 +95,8 @@ class Job(SQLModel, table=True):
     remove_sdh_speakers: bool = Field(default=False)
     # Skip end credits rolls/songs in the tail of the video while preserving mid/post-credits scenes
     skip_end_credits: bool = Field(default=True)
+    # Automatically save the generated SRT next to the local video file upon completion
+    auto_save_srt: bool = Field(default=False)
     enable_translation: bool = Field(default=False)
     target_language: str = Field(default="Hebrew")
     gemini_model: str = Field(default="gemini-3.8-flash")

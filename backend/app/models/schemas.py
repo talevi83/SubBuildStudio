@@ -74,6 +74,7 @@ class JobConfig(RequestModel):
     convert_to_metric: Optional[bool] = None
     remove_sdh_speakers: Optional[bool] = None
     skip_end_credits: Optional[bool] = None
+    auto_save_srt: bool = False
     enable_translation: bool = False
     target_language: str = "Hebrew"
     # None = use the translation model chosen on the Settings screen
@@ -288,6 +289,7 @@ class JobResponse(BaseModel):
     convert_to_metric: bool = False
     remove_sdh_speakers: bool = False
     skip_end_credits: bool = True
+    auto_save_srt: bool = False
     enable_translation: bool = False
     target_language: str = "Hebrew"
     gemini_model: str = "gemini-3.8-flash"
@@ -444,3 +446,10 @@ class HistoryResponse(BaseModel):
 class HistoryRestoreResponse(BaseModel):
     segments: List[SubtitleSegmentSchema]
     history: HistoryResponse
+
+
+class WaveformResponse(BaseModel):
+    job_id: str
+    peaks_per_second: int = 50
+    duration: float
+    peaks: List[float]
