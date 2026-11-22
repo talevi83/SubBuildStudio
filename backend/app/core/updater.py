@@ -57,10 +57,12 @@ _PROTECTED_ZIP_PATHS = (
     "launcher.log",
 )
 
-# Written by the Windows installer build (packaging/windows/stage.ps1, "windows") and the macOS app
-# build (packaging/macos/build-app.sh, "macos"). Such a copy has no Node.js to rebuild the interface
-# and its Python packages may be in use (the macOS app is also signed and often read-only), so it is
-# updated by installing the new download rather than by overlaying a release ZIP.
+# Written by the Windows installer build (packaging/windows/stage.ps1, "windows"), the macOS app
+# build (packaging/macos/build-app.sh, "macos") and the Linux AppImage build
+# (packaging/linux/build-appimage.sh, "linux"). Such a copy has no Node.js to rebuild the interface
+# and its Python packages may be in use (the macOS app is also signed and often read-only, the
+# AppImage always is), so it is updated by installing the new download rather than by overlaying a
+# release ZIP.
 INSTALLER_MARKER = "INSTALLER"
 
 _cached_update_status: Optional[Dict[str, Any]] = None
@@ -277,10 +279,12 @@ def _fetch_github_release_metadata(
         return None, None, {}
 
 
-# The files the release workflows attach (.github/workflows/release-windows.yml, release-macos.yml)
+# The files the release workflows attach (.github/workflows/release-windows.yml, release-macos.yml,
+# release-linux.yml)
 WINDOWS_INSTALLER_ASSET = "SubBuild-Studio-Setup.exe"
 MACOS_APPLE_SILICON_ASSET = "SubBuild-Studio-macOS-AppleSilicon.dmg"
 MACOS_INTEL_ASSET = "SubBuild-Studio-macOS-Intel.dmg"
+LINUX_APPIMAGE_ASSET = "SubBuild-Studio-Linux-x86_64.AppImage"
 
 
 def _mac_has_apple_silicon() -> bool:
@@ -300,11 +304,13 @@ def _mac_has_apple_silicon() -> bool:
 
 
 def installer_asset_name(kind: Optional[str]) -> Optional[str]:
-    """The release file that updates a copy installed as `kind` ("windows" / "macos")."""
+    """The release file that updates a copy installed as `kind` ("windows" / "macos" / "linux")."""
     if kind == "windows":
         return WINDOWS_INSTALLER_ASSET
     if kind == "macos":
         return MACOS_APPLE_SILICON_ASSET if _mac_has_apple_silicon() else MACOS_INTEL_ASSET
+    if kind == "linux":
+        return LINUX_APPIMAGE_ASSET
     return None
 
 
@@ -642,21 +648,24 @@ def verify_release_tag(root: Path, tag: str) -> Tuple[bool, str]:
 
 
 def is_installer_managed(root: Path) -> bool:
-    """True for a copy installed by the Windows installer or the macOS app (see INSTALLER_MARKER)."""
+    """True for a copy installed by the Windows installer, the macOS app or the Linux AppImage
+    (see INSTALLER_MARKER)."""
     return (root / INSTALLER_MARKER).is_file()
 
 
 def installer_kind(root: Path) -> Optional[str]:
-    """"windows" / "macos" for an installed copy (the INSTALLER marker's content), else None."""
+    """"windows" / "macos" / "linux" for an installed copy (the INSTALLER marker's content), else None."""
     if not is_installer_managed(root):
         return None
     try:
         kind = (root / INSTALLER_MARKER).read_text(encoding="ascii", errors="ignore").strip().lower()
     except OSError:
         kind = ""
-    if kind in ("windows", "macos"):
+    if kind in ("windows", "macos", "linux"):
         return kind
-    return "macos" if sys.platform == "darwin" else "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    return "linux" if sys.platform.startswith("linux") else "windows"
 
 
 def _release_branch(root: Path) -> Optional[str]:
@@ -980,10 +989,16 @@ def apply_update(
 
     if is_installer_managed(root):
         base_reply["skipped_reason"] = "installer_managed"
-        if sys.platform == "darwin":
+        kind = installer_kind(root)
+        if kind == "macos":
             base_reply["message"] = (
                 "This is the macOS app: download the new SubBuild Studio .dmg and drag the app to "
                 "Applications again. Projects and settings are kept."
+            )
+        elif kind == "linux":
+            base_reply["message"] = (
+                "This is the Linux AppImage: download the new SubBuild-Studio-Linux-x86_64.AppImage, "
+                "put it in place of the old one and allow it to run (chmod +x). Projects and settings are kept."
             )
         else:
             base_reply["message"] = (

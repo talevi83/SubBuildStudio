@@ -8,3 +8,6 @@
 *.command text eol=lf
 # VERSION is filled in by Git when GitHub builds a release zip (see backend/app/core/updater.py)
 VERSION export-subst
+# The AppImage entry point and desktop file have no extension
+packaging/linux/AppRun text eol=lf
+*.desktop text eol=lf

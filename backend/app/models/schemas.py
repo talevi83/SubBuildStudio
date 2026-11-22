@@ -332,11 +332,21 @@ class UpdateStatusSchema(BaseModel):
     target_ref: Optional[str] = None
     release_url: Optional[str] = None
     release_notes: Optional[str] = None
-    # "windows" / "macos" when the copy came from an installer, which updates by a new download
+    # "windows" / "macos" / "linux" when the copy came from an installer / app / AppImage, which
+    # updates by a new download
     installer: Optional[str] = None
     # Direct link to that installer in the release, once the release workflow has attached it
     download_url: Optional[str] = None
     error: Optional[str] = None
+
+
+class GpuLibsStatusSchema(BaseModel):
+    """The Linux AppImage's optional NVIDIA libraries (app.core.gpu_runtime)."""
+    supported: bool = False   # only the AppImage downloads them itself
+    installed: bool = False
+    installing: bool = False
+    error: Optional[str] = None
+    download_size_mb: int = 0
 
 
 class UpdateApplyResponse(BaseModel):

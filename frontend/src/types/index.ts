@@ -178,6 +178,17 @@ export interface HardwareInfo {
   cpu_count: number;
   recommended_device: string;
   recommended_compute_type: string;
+  /** Linux AppImage: an NVIDIA card is there, but its CUDA libraries are not downloaded yet */
+  gpu_libs_missing?: boolean;
+}
+
+/** The Linux AppImage's optional NVIDIA libraries (GET /api/system/gpu-libs) */
+export interface GpuLibsStatus {
+  supported: boolean;
+  installed: boolean;
+  installing: boolean;
+  error?: string | null;
+  download_size_mb: number;
 }
 
 export interface UpdateStatus {
@@ -192,8 +203,8 @@ export interface UpdateStatus {
   target_ref?: string | null;
   release_url?: string | null;
   release_notes?: string | null;
-  /** 'windows' / 'macos' for a copy installed with the installer: it updates by a new download */
-  installer?: 'windows' | 'macos' | null;
+  /** 'windows' / 'macos' / 'linux' for a copy installed with the installer / app / AppImage: it updates by a new download */
+  installer?: 'windows' | 'macos' | 'linux' | null;
   /** Direct link to that installer in the release (missing until the release build attached it) */
   download_url?: string | null;
   error?: string | null;

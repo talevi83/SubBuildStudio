@@ -1,0 +1,28 @@
+#!/bin/sh
+# SubBuild Studio - the AppImage's entry point (AppDir/AppRun, built by packaging/linux/build-appimage.sh).
+#
+# Runs packaging/launcher.py on the Python that ships inside the AppImage. Layout:
+#   AppRun                     this script
+#   usr/python/                Python 3.12 + the app's packages (Qt window included)
+#   usr/app/                   the application (backend/, frontend/dist, packaging/)
+#   usr/bin/uv                 installs the optional NVIDIA GPU libraries (app/core/gpu_runtime.py)
+#   usr/lib/extra/             X11 libraries Qt needs that some desktops lack (launcher.py preloads them)
+HERE="$(dirname "$(readlink -f "$0")")"
+
+# A clean, predictable interpreter: ignore a Python set up in the user's shell, never write .pyc
+# files into the (read-only) AppImage, and use UTF-8 regardless of locale.
+unset PYTHONHOME PYTHONPATH PYTHONSTARTUP PYTHONEXECUTABLE
+export PYTHONNOUSERSITE=1
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONUTF8=1
+
+# Read by launcher.py: where the bundled files are (restart re-runs $APPIMAGE, set by the runtime)
+export SUBBUILD_APPDIR="$HERE"
+
+# Qt WebEngine (Chromium) needs unprivileged user namespaces for its sandbox, which Ubuntu 24.04+
+# restricts for programs outside /usr. The window only shows the studio's own local pages (other
+# links open in the default browser), so it runs without that sandbox.
+: "${QTWEBENGINE_DISABLE_SANDBOX:=1}"
+export QTWEBENGINE_DISABLE_SANDBOX
+
+exec "$HERE/usr/python/bin/python3.12" "$HERE/usr/app/packaging/launcher.py" "$@"

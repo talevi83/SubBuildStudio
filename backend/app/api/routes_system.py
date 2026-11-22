@@ -15,7 +15,7 @@ from app.core.updater import (
     get_current_version_info,
 )
 from app.models.db_models import Job
-from app.models.schemas import SystemInfoResponse, UpdateApplyResponse, UpdateStatusSchema
+from app.models.schemas import GpuLibsStatusSchema, SystemInfoResponse, UpdateApplyResponse, UpdateStatusSchema
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/system", tags=["System"])
@@ -120,6 +120,24 @@ async def apply_system_update(session: Session = Depends(get_session)):
 
     res = await asyncio.to_thread(apply_update, rebuild_frontend=True)
     return UpdateApplyResponse(**res)
+
+
+@router.get("/gpu-libs", response_model=GpuLibsStatusSchema)
+def get_gpu_libs_status():
+    """The Linux AppImage's optional NVIDIA libraries: offered when an NVIDIA card is found."""
+    from app.core import gpu_runtime
+
+    return GpuLibsStatusSchema(**gpu_runtime.status())
+
+
+@router.post("/gpu-libs/install", response_model=GpuLibsStatusSchema)
+def install_gpu_libs():
+    """Start downloading the NVIDIA libraries (~1.5 GB) in the background; poll GET /gpu-libs."""
+    from app.core import gpu_runtime
+
+    if not gpu_runtime.is_supported():
+        raise HTTPException(status_code=400, detail="GPU libraries are downloaded only by the Linux AppImage")
+    return GpuLibsStatusSchema(**gpu_runtime.start_install())
 
 
 @router.get("/log")
