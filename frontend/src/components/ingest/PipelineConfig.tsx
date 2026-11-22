@@ -17,7 +17,7 @@ import {
 } from '../settings/labels';
 import { SyncOptions } from './SyncOptions';
 import { GenrePresets } from './GenrePresets';
-import { AlertTriangle, Sparkles, Settings, Mic, Key, Play, Loader2, FileText, Coins, Users } from 'lucide-react';
+import { AlertTriangle, Sparkles, Settings, Mic, Key, Play, Loader2, FileText, Coins, Users, Layers } from 'lucide-react';
 
 /** Accessible on/off switch with a title and a one-line description. */
 export const FeatureToggle: React.FC<{
@@ -76,6 +76,7 @@ export const PipelineConfig: React.FC = () => {
   const updatePipelineConfig = useJobStore((s) => s.updatePipelineConfig);
   const createAndStartJob = useJobStore((s) => s.createAndStartJob);
   const probeResult = useJobStore((s) => s.probeResult);
+  const batchProbes = useJobStore((s) => s.batchProbes);
   const systemInfo = useJobStore((s) => s.systemInfo);
   const isLoading = useJobStore((s) => s.isLoading);
   const syncing = useJobStore((s) => s.ingestMode === 'sync');
@@ -122,6 +123,11 @@ export const PipelineConfig: React.FC = () => {
     dialogueTracks.find((s) => s.index === pipelineConfig.selected_subtitle_stream) || dialogueTracks[0];
   const translationWithoutKey = pipelineConfig.enable_translation && !isTranslationReady;
 
+  const activeProbes = batchProbes.length > 0 ? batchProbes : probeResult ? [probeResult] : [];
+  const isBatch = activeProbes.length > 1 && !syncing;
+  const totalDuration = activeProbes.reduce((sum, p) => sum + (p.duration || 0), 0);
+  const hasLocalPath = activeProbes.some((p) => !p.is_upload);
+
   // Syncing a file in another language than the speech asks Gemini to match its lines
   const syncGeminiLines =
     syncing && syncFile && syncUseGemini && !sameLanguage(syncLanguage || syncFile.language, pipelineConfig.source_language)
@@ -130,7 +136,7 @@ export const PipelineConfig: React.FC = () => {
   const estimate = useCostEstimate(
     probeResult
       ? {
-          duration_seconds: probeResult.duration,
+          duration_seconds: totalDuration,
           enable_translation: syncing ? false : pipelineConfig.enable_translation,
           detect_onscreen_text: pipelineConfig.detect_onscreen_text,
           has_forced_track: !!forcedTrack,
@@ -159,6 +165,21 @@ export const PipelineConfig: React.FC = () => {
         </h2>
         <span className="text-xs text-zinc-400">{t('config.subtitle')}</span>
       </div>
+
+      {isBatch && (
+        <div
+          data-testid="pipeline-batch-banner"
+          className="p-3 rounded-lg bg-indigo-500/10 border border-indigo-500/35 flex items-start gap-3 text-xs"
+        >
+          <Layers className="w-4 h-4 text-indigo-400 flex-shrink-0 mt-0.5" />
+          <div className="space-y-0.5 min-w-0">
+            <div className="font-semibold text-indigo-200">
+              {t('config.batchBannerTitle', { count: activeProbes.length })}
+            </div>
+            <p className="text-[11px] text-zinc-300 leading-relaxed">{t('config.batchBannerDesc')}</p>
+          </div>
+        </div>
+      )}
 
       <GenrePresets
         pipelineConfig={pipelineConfig}
@@ -707,6 +728,18 @@ export const PipelineConfig: React.FC = () => {
         </FeatureToggle>
       </div>
 
+      {!syncing && hasLocalPath && (
+        <div data-testid="auto-save-srt-toggle-wrapper">
+          <FeatureToggle
+            icon="💾"
+            title={t('config.autoSaveSrtTitle')}
+            description={t('config.autoSaveSrtDescription')}
+            checked={Boolean(pipelineConfig.auto_save_srt)}
+            onChange={(v) => updatePipelineConfig({ auto_save_srt: v })}
+          />
+        </div>
+      )}
+
       {/* Cost estimate for this file */}
       {estimate && (
         <div className="p-3 rounded-lg bg-sunken border border-line text-xs flex items-start gap-3" data-testid="file-estimate">
@@ -717,7 +750,9 @@ export const PipelineConfig: React.FC = () => {
             ) : (
               <>
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-zinc-300 font-medium">{t('config.estimateTitle')}</span>
+                  <span className="text-zinc-300 font-medium">
+                    {isBatch ? t('config.estimateBatchTitle', { count: activeProbes.length }) : t('config.estimateTitle')}
+                  </span>
                   <span className="text-zinc-50 font-semibold" dir="ltr">
                     ≈ {formatUsd(estimate.total_cost_usd, language)}
                   </span>
@@ -753,7 +788,11 @@ export const PipelineConfig: React.FC = () => {
           ) : (
             <>
               <Play className="w-4 h-4 fill-white" />
-              {syncing ? t('config.launchSync') : t('config.launch')}
+              {syncing
+                ? t('config.launchSync')
+                : isBatch
+                ? t('config.launchBatch', { count: activeProbes.length })
+                : t('config.launch')}
             </>
           )}
         </button>

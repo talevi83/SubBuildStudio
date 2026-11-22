@@ -7,6 +7,7 @@ import { isRtlLanguage, type WordTiming } from '../../types';
 import { findSegmentAt, formatClock, isTypingTarget } from '../../utils/time';
 import { findActiveWordIndex, resolveDisplayWords } from '../../utils/wordTiming';
 import { useT } from '../../i18n';
+import { WaveformTimeline } from './WaveformTimeline';
 import { SubtitleStylePopover } from './SubtitleStylePopover';
 import { Film, Play, Pause, RotateCcw, Maximize, Minimize, AlertTriangle, Keyboard, Palette } from 'lucide-react';
 
@@ -615,6 +616,20 @@ export const VideoSyncPlayer: React.FC = () => {
           {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
         </button>
       </div>
+
+      {activeJob?.id && (
+        <WaveformTimeline
+          jobId={activeJob.id}
+          currentTime={currentTime}
+          duration={duration || activeJob.video_duration || 0}
+          onSeek={(tSec) => {
+            const v = videoRef.current;
+            if (v) v.currentTime = tSec;
+            setCurrentTime(tSec);
+            setVideoCurrentTime(tSec);
+          }}
+        />
+      )}
     </div>
   );
 };

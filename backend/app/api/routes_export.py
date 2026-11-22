@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -9,7 +10,7 @@ from sqlmodel import Session
 
 from app.core import edit_history as history
 from app.core.config import settings
-from app.core.database import get_session
+from app.core.database import engine, get_session
 from app.models.db_models import Job
 from app.models.schemas import EmbedVideoRequest, EmbedVideoStatus, SaveNextToVideoRequest, SaveNextToVideoResponse
 from app.utils.ass_formatter import AssStyleConfig, serialize_to_ass
@@ -325,6 +326,30 @@ def save_next_to_video(job_id: str, req: SaveNextToVideoRequest, session: Sessio
         tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Could not write {target}: {exc}")
     return SaveNextToVideoResponse(saved=True, path=str(target), exists=exists)
+
+
+def auto_save_job_srt(job_id: str) -> Optional[str]:
+    """Automatically write the job's SRT next to its local video file when auto_save_srt is enabled."""
+    with history.job_lock(job_id), Session(engine) as session:
+        session.expire_all()
+        job = session.get(Job, job_id)
+        if not job or job.is_upload or not getattr(job, "auto_save_srt", False) or not job.segments:
+            return None
+        folder = Path(job.video_path).parent
+        if not folder.is_dir():
+            raise FileNotFoundError(f"Video folder not found: {folder}")
+        use_translated = bool(job.enable_translation and any(seg.translated_text for seg in job.segments))
+        target = folder / _build_filename(job, use_translated, "srt")
+        data = _render(job, use_translated, apply_rtl=True, max_chars_per_line=None, fmt="srt")
+
+    tmp = target.with_name(f".{target.name}.subbuild-tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, target)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+    return str(target)
 
 
 # ---------------------------------------------------------------- subtitles inside the video

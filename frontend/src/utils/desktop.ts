@@ -10,6 +10,8 @@ interface DesktopApi {
   resolve_dropped_file?: (filename: string) => Promise<string | null>;
   /** Native OS file picker; returns the chosen path, '' if cancelled, or null if unsupported */
   pick_media_file?: () => Promise<string | null>;
+  /** Native OS multi-file picker; returns chosen paths, [] if cancelled, or null if unsupported */
+  pick_media_files?: () => Promise<string[] | null>;
 }
 
 interface WebView2Bridge {
@@ -72,6 +74,39 @@ export async function pickLocalMediaFile(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Open the native OS multi-file picker in the desktop window and return chosen local paths.
+ * Returns [] if cancelled, or null if not running in the desktop window.
+ */
+export async function pickLocalMediaFiles(): Promise<string[] | null> {
+  const api = desktopApi();
+  if (!api) return null;
+  if (api.pick_media_files) {
+    try {
+      const picked = await api.pick_media_files();
+      if (Array.isArray(picked)) {
+        return picked.filter((p): p is string => typeof p === 'string' && p.trim().length > 0);
+      }
+      return picked === null ? null : [];
+    } catch {
+      return null;
+    }
+  }
+  if (api.pick_media_file) {
+    const single = await pickLocalMediaFile();
+    if (single === null) return null;
+    return single.trim() ? [single.trim()] : [];
+  }
+  return null;
+}
+
+const naturalCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+/** Sort items naturally (e.g. S01E01, S01E02, ..., S01E10) without mutating the input array. */
+export function naturalSortBy<T>(items: readonly T[], getKey: (item: T) => string): T[] {
+  return [...items].sort((a, b) => naturalCollator.compare(getKey(a), getKey(b)));
 }
 
 /**

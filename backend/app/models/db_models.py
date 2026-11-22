@@ -101,6 +101,8 @@ class Job(SQLModel, table=True):
     # Acoustic speaker diarization via local ONNX speaker embeddings
     enable_diarization: bool = Field(default=False)
     speakers_json: Optional[str] = None  # JSON map {"SPEAKER_01": {"label", "gender", "color"}}
+    # Automatically save the generated SRT next to the local video file upon completion
+    auto_save_srt: bool = Field(default=False)
     enable_translation: bool = Field(default=False)
     target_language: str = Field(default="Hebrew")
     gemini_model: str = Field(default="gemini-3.8-flash")

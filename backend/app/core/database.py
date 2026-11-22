@@ -97,6 +97,7 @@ _ADDED_COLUMNS = {
         "convert_to_metric": "BOOLEAN NOT NULL DEFAULT 0",
         "remove_sdh_speakers": "BOOLEAN NOT NULL DEFAULT 0",
         "skip_end_credits": "BOOLEAN NOT NULL DEFAULT 1",
+        "auto_save_srt": "BOOLEAN NOT NULL DEFAULT 0",
         "supplement_with_whisper": "BOOLEAN NOT NULL DEFAULT 0",
         "enable_diarization": "BOOLEAN NOT NULL DEFAULT 0",
         "speakers_json": "VARCHAR",

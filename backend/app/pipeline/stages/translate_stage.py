@@ -225,7 +225,7 @@ class TranslateStage(PipelineStage):
                         all_segments, source_lang, target_lang, ctx.context_notes or "", **extra
                     )),
                 )
-                if known and ctx.glossary:
+                if ctx.glossary_profile and ctx.glossary:
                     # The series profile grows with every episode: new characters are added, the rest stays
                     try:
                         save_profile(ctx.glossary_profile, ctx.glossary)

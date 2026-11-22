@@ -22,6 +22,7 @@ import type {
   SpeakerProfile,
 } from '../types';
 import { getItemWithLegacy } from '../utils/legacyStorage';
+import { naturalSortBy } from '../utils/desktop';
 import type { MessageKey } from '../i18n';
 import { buildSearchPattern, DEFAULT_SEARCH_OPTIONS, planReplacements, type SearchOptions } from '../utils/textSearch';
 
@@ -45,6 +46,7 @@ const DEFAULT_CONFIG: JobConfig = {
   remove_sdh_speakers: false,
   skip_end_credits: true,
   enable_diarization: false,
+  auto_save_srt: false,
   enable_translation: true,
   target_language: 'Hebrew',
   gemini_api_key_override: '',
@@ -124,6 +126,7 @@ interface JobState {
   jobs: Job[];
   activeJob: Job | null;
   probeResult: ProbeResponse | null;
+  batchProbes: ProbeResponse[];
   pipelineConfig: JobConfig;
   wsConnected: boolean;
   stageMessage: string | null;
@@ -200,13 +203,19 @@ interface JobState {
   refreshActiveJob: () => Promise<void>;
   clearActiveJob: () => void;
   setProbeResult: (res: ProbeResponse | null) => void;
+  setBatchProbes: (probes: ProbeResponse[]) => void;
+  addBatchProbes: (probes: ProbeResponse[]) => void;
+  removeBatchProbe: (filePath: string) => void;
   updatePipelineConfig: (config: Partial<JobConfig>) => void;
   createAndStartJob: () => Promise<Job | null>;
   cancelActiveJob: () => Promise<void>;
+  cancelJobById: (jobId: string) => Promise<void>;
+  cancelAllActiveJobs: () => Promise<void>;
   retranslateActiveJob: (options: RetranslateOptions) => Promise<void>;
   deleteJob: (jobId: string) => Promise<void>;
   deleteJobs: (jobIds: string[]) => Promise<void>;
   deleteAllJobs: () => Promise<void>;
+  previewSegmentTiming: (segmentId: number, patch: { start_time: number; end_time: number }) => void;
   updateSegment: (segmentId: number, patch: SegmentPatch) => Promise<void>;
   /** Replace in every line; `options` is the search options, or just "use regex" (older callers) */
   replaceAll: (
@@ -407,6 +416,7 @@ export const useJobStore = create<JobState>((set, get) => {
     jobs: [],
     activeJob: null,
     probeResult: null,
+    batchProbes: [],
     pipelineConfig: { ...DEFAULT_CONFIG, ...savedConfig },
     wsConnected: false,
     stageMessage: null,
@@ -721,6 +731,7 @@ export const useJobStore = create<JobState>((set, get) => {
         history: null,
         notice: null,
         probeResult: null,
+        batchProbes: [],
         insertDraft: null,
         syncFile: null,
         syncRawFile: null,
@@ -738,6 +749,7 @@ export const useJobStore = create<JobState>((set, get) => {
     setProbeResult: (probeResult) => {
       set((state) => ({
         probeResult,
+        batchProbes: probeResult ? [probeResult] : [],
         pipelineConfig: {
           ...state.pipelineConfig,
           selected_audio_stream: 0,
@@ -748,6 +760,45 @@ export const useJobStore = create<JobState>((set, get) => {
       }));
     },
 
+    setBatchProbes: (probes) => {
+      const sorted = probes.length > 1 ? naturalSortBy(probes, (p) => p.file_name) : [...probes];
+      set((state) => ({
+        batchProbes: sorted,
+        probeResult: sorted[0] ?? null,
+        pipelineConfig: {
+          ...state.pipelineConfig,
+          selected_audio_stream: 0,
+          selected_subtitle_stream: null,
+          glossary_profile: '',
+        },
+      }));
+    },
+
+    addBatchProbes: (probes) => {
+      if (probes.length === 0) return;
+      set((state) => {
+        const base = state.batchProbes.length > 0 ? state.batchProbes : state.probeResult ? [state.probeResult] : [];
+        const byPath = new Map(base.map((p) => [p.file_path, p]));
+        for (const p of probes) byPath.set(p.file_path, p);
+        const merged = Array.from(byPath.values());
+        const sorted = merged.length > 1 ? naturalSortBy(merged, (p) => p.file_name) : merged;
+        return {
+          batchProbes: sorted,
+          probeResult: sorted[0] ?? null,
+        };
+      });
+    },
+
+    removeBatchProbe: (filePath) => {
+      set((state) => {
+        const remaining = state.batchProbes.filter((p) => p.file_path !== filePath);
+        return {
+          batchProbes: remaining,
+          probeResult: remaining[0] ?? null,
+        };
+      });
+    },
+
     updatePipelineConfig: (config) => {
       const next = { ...get().pipelineConfig, ...config };
       saveConfig(next);
@@ -755,18 +806,64 @@ export const useJobStore = create<JobState>((set, get) => {
     },
 
     createAndStartJob: async () => {
-      const { probeResult, pipelineConfig, ingestMode, syncFile, syncLanguage, syncUseGemini } = get();
-      if (!probeResult) return null;
+      const { batchProbes, probeResult, pipelineConfig, ingestMode, syncFile, syncLanguage, syncUseGemini } = get();
+      const targets = batchProbes.length > 0 ? batchProbes : probeResult ? [probeResult] : [];
+      if (targets.length === 0) return null;
       const syncing = ingestMode === 'sync';
       if (syncing && !syncFile) return null;
 
+      if (targets.length > 1 && !syncing) {
+        const createdJobs: Job[] = [];
+        try {
+          set({ isLoading: true, error: null });
+          for (const target of targets) {
+            const job = await api.createJob({
+              ...pipelineConfig,
+              gemini_api_key_override: pipelineConfig.gemini_api_key_override || undefined,
+              auto_save_srt: !target.is_upload && Boolean(pipelineConfig.auto_save_srt),
+              video_path: target.file_path,
+              file_name: target.file_name,
+            });
+            createdJobs.push(job);
+          }
+          const firstJob = createdJobs[0];
+          set((state) => ({
+            activeJob: firstJob,
+            jobs: [...[...createdJobs].reverse(), ...state.jobs],
+            batchProbes: [],
+            probeResult: null,
+            isLoading: false,
+            selectedSegmentIndex: null,
+            seekRequest: null,
+            videoCurrentTime: 0,
+          }));
+          get().connectWebSocket(firstJob.id);
+          return firstJob;
+        } catch (e: any) {
+          if (createdJobs.length > 0) {
+            const firstJob = createdJobs[0];
+            set((state) => ({
+              activeJob: firstJob,
+              jobs: [...[...createdJobs].reverse(), ...state.jobs],
+              batchProbes: [],
+              probeResult: null,
+            }));
+            get().connectWebSocket(firstJob.id);
+          }
+          set({ error: e.message, isLoading: false });
+          return createdJobs[0] ?? null;
+        }
+      }
+
+      const target = targets[0];
       try {
         set({ isLoading: true, error: null });
         const newJob = await api.createJob({
           ...pipelineConfig,
           gemini_api_key_override: pipelineConfig.gemini_api_key_override || undefined,
-          video_path: probeResult.file_path,
-          file_name: probeResult.file_name,
+          auto_save_srt: !target.is_upload && Boolean(pipelineConfig.auto_save_srt),
+          video_path: target.file_path,
+          file_name: target.file_name,
           ...(syncing && syncFile
             ? {
                 enable_translation: false,
@@ -781,6 +878,7 @@ export const useJobStore = create<JobState>((set, get) => {
         set((state) => ({
           activeJob: newJob,
           jobs: [newJob, ...state.jobs],
+          batchProbes: [],
           isLoading: false,
           selectedSegmentIndex: null,
           seekRequest: null,
@@ -801,6 +899,41 @@ export const useJobStore = create<JobState>((set, get) => {
       try {
         await api.cancelJob(activeJob.id);
         set({ stageMessage: 'Cancelling...' });
+      } catch (e: any) {
+        set({ error: e.message });
+      }
+    },
+
+    cancelJobById: async (jobId: string) => {
+      try {
+        await api.cancelJob(jobId);
+        set((state) => ({
+          jobs: state.jobs.map((j) => (j.id === jobId ? { ...j, status: 'CANCELLED' as JobStatus } : j)),
+          activeJob:
+            state.activeJob?.id === jobId
+              ? { ...state.activeJob, status: 'CANCELLED' as JobStatus }
+              : state.activeJob,
+          ...(state.activeJob?.id === jobId ? { stageMessage: 'Cancelling...' } : {}),
+        }));
+        void get().fetchJobs();
+      } catch (e: any) {
+        set({ error: e.message });
+      }
+    },
+
+    cancelAllActiveJobs: async () => {
+      const active = get().jobs.filter((j) => isActiveStatus(j.status));
+      if (active.length === 0) return;
+      const ordered = [
+        ...active.filter((j) => j.status === 'QUEUED' || j.status === 'IDLE'),
+        ...active.filter((j) => j.status !== 'QUEUED' && j.status !== 'IDLE'),
+      ];
+      try {
+        await Promise.allSettled(ordered.map((j) => api.cancelJob(j.id)));
+        await get().fetchJobs();
+        if (get().activeJob && isActiveStatus(get().activeJob?.status)) {
+          await get().refreshActiveJob();
+        }
       } catch (e: any) {
         set({ error: e.message });
       }
@@ -854,6 +987,24 @@ export const useJobStore = create<JobState>((set, get) => {
       } catch (e: any) {
         set({ error: e.message });
       }
+    },
+
+    previewSegmentTiming: (segmentId, patch) => {
+      const { activeJob } = get();
+      if (!activeJob) return;
+      patchActiveJob({
+        segments: activeJob.segments.map((s) => {
+          if (s.id !== segmentId) return s;
+          const dur = Math.max(0.1, patch.end_time - patch.start_time);
+          const text = (s.translated_text || s.original_text || '').replace(/\n/g, '').trim();
+          return {
+            ...s,
+            start_time: patch.start_time,
+            end_time: patch.end_time,
+            cps: Math.round((text.length / dur) * 10) / 10,
+          };
+        }),
+      });
     },
 
     updateSegment: async (segmentId, patch) => {
