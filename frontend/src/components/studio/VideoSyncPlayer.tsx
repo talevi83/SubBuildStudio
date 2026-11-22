@@ -1,12 +1,13 @@
 import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import { desktopApi } from '../../utils/desktop';
 import { useJobStore } from '../../store/useJobStore';
-import { useUiStore } from '../../store/useUiStore';
+import { hexToRgba, subtitleFontStack, useUiStore } from '../../store/useUiStore';
 import { api } from '../../services/api';
 import { isRtlLanguage } from '../../types';
 import { findSegmentAt, formatClock, isTypingTarget } from '../../utils/time';
 import { useT } from '../../i18n';
-import { Film, Play, Pause, RotateCcw, Maximize, Minimize, AlertTriangle, Keyboard } from 'lucide-react';
+import { SubtitleStylePopover } from './SubtitleStylePopover';
+import { Film, Play, Pause, RotateCcw, Maximize, Minimize, AlertTriangle, Keyboard, Palette } from 'lucide-react';
 
 export const VideoSyncPlayer: React.FC = () => {
   const activeJob = useJobStore((s) => s.activeJob);
@@ -14,16 +15,19 @@ export const VideoSyncPlayer: React.FC = () => {
   const setSubtitleOverlayMode = useJobStore((s) => s.setSubtitleOverlayMode);
   const setVideoCurrentTime = useJobStore((s) => s.setVideoCurrentTime);
   const seekRequest = useJobStore((s) => s.seekRequest);
+  const subtitleStyle = useUiStore((s) => s.subtitleStyle);
   const t = useT();
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const styleButtonRef = useRef<HTMLButtonElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   // Component is keyed by job id (see App), so this initial state is per job
   const [duration, setDuration] = useState(activeJob?.video_duration || 0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [videoError, setVideoError] = useState<string | null>(null);
+  const [styleOpen, setStyleOpen] = useState(false);
 
   const onscreenPos = activeJob?.onscreen_position || 'top_center';
 
@@ -302,6 +306,25 @@ export const VideoSyncPlayer: React.FC = () => {
   const showOriginal = subtitleOverlayMode === 'dual' || subtitleOverlayMode === 'original';
   const showTranslated = subtitleOverlayMode === 'dual' || subtitleOverlayMode === 'translated';
 
+  const overlayFontFamily = subtitleFontStack(subtitleStyle.fontFamily);
+  const overlayFontSize = isFullscreen
+    ? Math.round(subtitleStyle.fontSizePx * 1.45)
+    : subtitleStyle.fontSizePx;
+  const hasOverlayBg = subtitleStyle.backgroundOpacity > 0;
+  const overlayBg = hasOverlayBg
+    ? hexToRgba(subtitleStyle.backgroundColor, subtitleStyle.backgroundOpacity)
+    : 'transparent';
+  const overlayTextShadow =
+    subtitleStyle.backgroundOpacity < 30
+      ? '0 1px 3px rgba(0,0,0,0.95), 0 0 6px rgba(0,0,0,0.9), 1px 0 2px rgba(0,0,0,0.9), -1px 0 2px rgba(0,0,0,0.9)'
+      : '0 1px 2px rgba(0,0,0,0.6)';
+  const overlayBoxStyle: React.CSSProperties = {
+    backgroundColor: overlayBg,
+    fontFamily: overlayFontFamily,
+    fontSize: `${overlayFontSize}px`,
+    lineHeight: 1.4,
+  };
+
   const modeButton = (mode: 'dual' | 'translated' | 'original', label: string, title: string) => (
     <button
       onClick={() => setSubtitleOverlayMode(mode)}
@@ -317,15 +340,40 @@ export const VideoSyncPlayer: React.FC = () => {
   return (
     <div className="flex flex-col h-full bg-surface border border-line rounded-xl overflow-hidden shadow-xl">
       {/* Top Controls Bar */}
-      <div className="px-4 py-2.5 bg-sunken border-b border-line flex items-center justify-between">
+      <div className="relative z-20 px-4 py-2.5 bg-sunken border-b border-line flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Film className="w-4 h-4 text-indigo-400" />
           <span className="text-xs font-semibold text-zinc-200">{t('player.title')}</span>
         </div>
-        <div className="flex bg-surface p-0.5 rounded-lg border border-line text-xs">
-          {modeButton('dual', t('player.dual'), t('player.dualTitle'))}
-          {modeButton('translated', t('player.translated'), t('player.translatedTitle'))}
-          {modeButton('original', t('player.original'), t('player.originalTitle'))}
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <button
+              ref={styleButtonRef}
+              type="button"
+              onClick={() => setStyleOpen((o) => !o)}
+              data-testid="open-subtitle-style"
+              title={t('player.style.buttonTitle')}
+              aria-expanded={styleOpen}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-medium transition-colors cursor-pointer ${
+                styleOpen
+                  ? 'bg-indigo-600/20 border-indigo-500 text-indigo-200'
+                  : 'bg-surface border-line text-zinc-300 hover:border-zinc-500'
+              }`}
+            >
+              <Palette className="w-3.5 h-3.5 text-indigo-400" />
+              <span>{t('player.style.button')}</span>
+            </button>
+            <SubtitleStylePopover
+              open={styleOpen}
+              onClose={() => setStyleOpen(false)}
+              anchorRef={styleButtonRef}
+            />
+          </div>
+          <div className="flex bg-surface p-0.5 rounded-lg border border-line text-xs">
+            {modeButton('dual', t('player.dual'), t('player.dualTitle'))}
+            {modeButton('translated', t('player.translated'), t('player.translatedTitle'))}
+            {modeButton('original', t('player.original'), t('player.originalTitle'))}
+          </div>
         </div>
       </div>
 
@@ -367,7 +415,7 @@ export const VideoSyncPlayer: React.FC = () => {
         )}
 
         {topOverlays.length > 0 && (
-          <div className={getOnscreenContainerClass(onscreenPos)}>
+          <div className={getOnscreenContainerClass(onscreenPos)} data-testid="player-top-overlay">
             {topOverlays.map((item) => {
               const displayOrig = showOriginal ? item.orig : (!item.trans ? item.orig : undefined);
               const displayTrans = showTranslated ? item.trans : undefined;
@@ -375,19 +423,31 @@ export const VideoSyncPlayer: React.FC = () => {
               return (
                 <div
                   key={item.key}
-                  className={`max-w-[90%] bg-black/80 px-4 py-1.5 rounded-lg space-y-1 border border-cyan-500/25 ${getOnscreenTextClass(onscreenPos)} ${
-                    isFullscreen ? 'text-2xl' : 'text-sm sm:text-base'
-                  }`}
+                  data-testid="player-top-subtitle-box"
+                  style={overlayBoxStyle}
+                  className={`max-w-[90%] px-4 py-1.5 rounded-lg space-y-1 ${
+                    hasOverlayBg ? 'border border-cyan-500/25' : ''
+                  } ${getOnscreenTextClass(onscreenPos)}`}
                 >
                   {displayOrig && (
-                    <p className="font-medium leading-relaxed whitespace-pre-line text-cyan-200 italic">
+                    <p
+                      className={`font-medium whitespace-pre-line italic ${
+                        displayTrans ? 'text-cyan-200' : ''
+                      }`}
+                      style={{
+                        color: displayTrans ? undefined : subtitleStyle.textColor,
+                        fontSize: displayTrans ? '0.88em' : undefined,
+                        textShadow: overlayTextShadow,
+                      }}
+                    >
                       {displayOrig}
                     </p>
                   )}
                   {displayTrans && (
                     <p
                       dir={isRtlTarget ? 'rtl' : 'ltr'}
-                      className="text-amber-300 font-medium leading-relaxed whitespace-pre-line font-rtl-hebrew"
+                      className="font-medium whitespace-pre-line"
+                      style={{ color: subtitleStyle.textColor, textShadow: overlayTextShadow }}
                     >
                       {displayTrans}
                     </p>
@@ -399,7 +459,10 @@ export const VideoSyncPlayer: React.FC = () => {
         )}
 
         {bottomOverlays.length > 0 && (
-          <div className="absolute bottom-6 inset-x-4 flex flex-col items-center gap-1.5 pointer-events-none z-10">
+          <div
+            className="absolute bottom-6 inset-x-4 flex flex-col items-center gap-1.5 pointer-events-none z-10"
+            data-testid="player-bottom-overlay"
+          >
             {bottomOverlays.map((item) => {
               const displayOrig = showOriginal ? item.orig : (!item.trans ? item.orig : undefined);
               const displayTrans = showTranslated ? item.trans : undefined;
@@ -407,19 +470,27 @@ export const VideoSyncPlayer: React.FC = () => {
               return (
                 <div
                   key={item.key}
-                  className={`max-w-[90%] bg-black/80 px-4 py-2 rounded-lg text-center space-y-1 ${
-                    isFullscreen ? 'text-2xl' : 'text-sm sm:text-base'
-                  }`}
+                  data-testid="player-bottom-subtitle-box"
+                  style={overlayBoxStyle}
+                  className="max-w-[90%] px-4 py-2 rounded-lg text-center space-y-1"
                 >
                   {displayOrig && (
-                    <p className="font-medium leading-relaxed whitespace-pre-line text-white">
+                    <p
+                      className="font-medium whitespace-pre-line"
+                      style={{
+                        color: displayTrans ? 'rgba(255, 255, 255, 0.88)' : subtitleStyle.textColor,
+                        fontSize: displayTrans ? '0.88em' : undefined,
+                        textShadow: overlayTextShadow,
+                      }}
+                    >
                       {displayOrig}
                     </p>
                   )}
                   {displayTrans && (
                     <p
                       dir={isRtlTarget ? 'rtl' : 'ltr'}
-                      className="text-amber-300 font-medium leading-relaxed whitespace-pre-line font-rtl-hebrew"
+                      className="font-medium whitespace-pre-line"
+                      style={{ color: subtitleStyle.textColor, textShadow: overlayTextShadow }}
                     >
                       {displayTrans}
                     </p>

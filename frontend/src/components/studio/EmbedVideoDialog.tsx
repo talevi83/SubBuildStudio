@@ -1,9 +1,18 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../../services/api';
 import { confirmDialog } from '../../store/useDialogStore';
-import type { EmbedFontSize, EmbedMode, EmbedQuality, EmbedVideoStatus } from '../../types';
+import {
+  MAX_SUBTITLE_FONT_SIZE,
+  MIN_SUBTITLE_FONT_SIZE,
+  SUBTITLE_FONTS,
+  fontSizePxToEmbedTier,
+  hexToRgba,
+  subtitleFontStack,
+  useUiStore,
+} from '../../store/useUiStore';
+import type { EmbedMode, EmbedQuality, EmbedVideoOptions, EmbedVideoStatus, SubtitleFontFamily } from '../../types';
 import { useT } from '../../i18n';
-import { CheckCircle2, Download, Film, Flame, Layers, Loader2, X, XCircle } from 'lucide-react';
+import { CheckCircle2, Download, Film, Flame, Layers, Loader2, Palette, X, XCircle } from 'lucide-react';
 
 interface Props {
   jobId: string;
@@ -22,10 +31,11 @@ const selectClass =
 /** Make a copy of the video with the subtitles inside: a switchable track, or burned into the picture. */
 export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslation, applyRtl, onClose, onDownload }) => {
   const t = useT();
+  const subtitleStyle = useUiStore((s) => s.subtitleStyle);
+  const setSubtitleStyle = useUiStore((s) => s.setSubtitleStyle);
   const [mode, setMode] = useState<EmbedMode>('soft');
   const [useTranslated, setUseTranslated] = useState(hasTranslation);
   const [setDefault, setSetDefault] = useState(true);
-  const [fontSize, setFontSize] = useState<EmbedFontSize>('medium');
   const [quality, setQuality] = useState<EmbedQuality>('standard');
   const [status, setStatus] = useState<EmbedVideoStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -78,13 +88,22 @@ export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslat
     setError(null);
     setStarting(true);
     try {
-      const options = {
+      const options: EmbedVideoOptions = {
         mode,
         use_translated: useTranslated && hasTranslation,
         apply_rtl: applyRtl,
         set_default: setDefault,
-        font_size: fontSize,
+        font_size: fontSizePxToEmbedTier(subtitleStyle.fontSizePx),
         quality,
+        ...(mode === 'burn'
+          ? {
+              font_family: subtitleStyle.fontFamily,
+              font_size_px: subtitleStyle.fontSizePx,
+              text_color: subtitleStyle.textColor,
+              background_color: subtitleStyle.backgroundColor,
+              background_opacity: subtitleStyle.backgroundOpacity,
+            }
+          : {}),
       };
       let result = await api.startEmbedVideo(jobId, options);
       if (result.state === 'exists') {
@@ -161,7 +180,7 @@ export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslat
           {modeCard('burn', <Flame className="w-3.5 h-3.5 text-amber-400" />, t('embed.burnTitle'), t('embed.burnHelp'))}
         </div>
 
-        <div className={`grid gap-3 ${mode === 'burn' ? 'grid-cols-3' : 'grid-cols-2'}`}>
+        <div className="grid grid-cols-2 gap-3">
           <label className="space-y-1 text-[11px] text-zinc-400">
             <span>{t('embed.subtitles')}</span>
             <select
@@ -188,37 +207,146 @@ export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslat
               {t('embed.setDefault')}
             </label>
           ) : (
-            <>
-              <label className="space-y-1 text-[11px] text-zinc-400">
-                <span>{t('embed.fontSize')}</span>
-                <select
-                  value={fontSize}
-                  onChange={(e) => setFontSize(e.target.value as EmbedFontSize)}
-                  disabled={running}
-                  className={selectClass}
-                  data-testid="embed-font-size"
-                >
-                  <option value="small">{t('embed.sizeSmall')}</option>
-                  <option value="medium">{t('embed.sizeMedium')}</option>
-                  <option value="large">{t('embed.sizeLarge')}</option>
-                </select>
-              </label>
-              <label className="space-y-1 text-[11px] text-zinc-400">
-                <span>{t('embed.quality')}</span>
-                <select
-                  value={quality}
-                  onChange={(e) => setQuality(e.target.value as EmbedQuality)}
-                  disabled={running}
-                  className={selectClass}
-                  data-testid="embed-quality"
-                >
-                  <option value="standard">{t('embed.qualityStandard')}</option>
-                  <option value="high">{t('embed.qualityHigh')}</option>
-                </select>
-              </label>
-            </>
+            <label className="space-y-1 text-[11px] text-zinc-400">
+              <span>{t('embed.quality')}</span>
+              <select
+                value={quality}
+                onChange={(e) => setQuality(e.target.value as EmbedQuality)}
+                disabled={running}
+                className={selectClass}
+                data-testid="embed-quality"
+              >
+                <option value="standard">{t('embed.qualityStandard')}</option>
+                <option value="high">{t('embed.qualityHigh')}</option>
+              </select>
+            </label>
           )}
         </div>
+
+        {mode === 'burn' && (
+          <div
+            data-testid="embed-burn-style"
+            className="bg-sunken border border-line rounded-lg p-3 space-y-2.5"
+          >
+            <div className="flex items-center justify-between gap-2 text-[11px]">
+              <span className="flex items-center gap-1.5 text-zinc-300 font-medium">
+                <Palette className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                {t('embed.styleSummary', {
+                  font: subtitleStyle.fontFamily,
+                  size: subtitleStyle.fontSizePx,
+                  opacity: subtitleStyle.backgroundOpacity,
+                })}
+              </span>
+              <span
+                className="px-2 py-0.5 rounded text-xs font-semibold border border-zinc-700/60"
+                style={{
+                  fontFamily: subtitleFontStack(subtitleStyle.fontFamily),
+                  color: subtitleStyle.textColor,
+                  backgroundColor:
+                    subtitleStyle.backgroundOpacity > 0
+                      ? hexToRgba(subtitleStyle.backgroundColor, subtitleStyle.backgroundOpacity)
+                      : 'transparent',
+                  textShadow:
+                    subtitleStyle.backgroundOpacity < 30
+                      ? '0 1px 2px rgba(0,0,0,0.95), 0 0 4px rgba(0,0,0,0.9)'
+                      : undefined,
+                }}
+              >
+                Aa אב
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="space-y-1 text-[11px] text-zinc-400">
+                <span>{t('player.style.fontFamily')}</span>
+                <select
+                  value={subtitleStyle.fontFamily}
+                  onChange={(e) => setSubtitleStyle({ fontFamily: e.target.value as SubtitleFontFamily })}
+                  disabled={running}
+                  className={selectClass}
+                  data-testid="embed-font-family"
+                >
+                  {SUBTITLE_FONTS.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="space-y-1 text-[11px] text-zinc-400">
+                <div className="flex items-center justify-between">
+                  <span>{t('embed.fontSize')}</span>
+                  <span className="font-mono text-indigo-300" dir="ltr">
+                    {subtitleStyle.fontSizePx}px
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={MIN_SUBTITLE_FONT_SIZE}
+                  max={MAX_SUBTITLE_FONT_SIZE}
+                  step={1}
+                  value={subtitleStyle.fontSizePx}
+                  onChange={(e) => setSubtitleStyle({ fontSizePx: Number(e.target.value) })}
+                  disabled={running}
+                  aria-label={t('embed.fontSize')}
+                  className="w-full accent-indigo-500 cursor-pointer mt-1"
+                  data-testid="embed-font-size"
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-2 text-[11px] text-zinc-400">
+                <span>{t('player.style.textColor')}</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-mono text-[10px] text-zinc-400" dir="ltr">
+                    {subtitleStyle.textColor}
+                  </span>
+                  <input
+                    type="color"
+                    value={subtitleStyle.textColor}
+                    onChange={(e) => setSubtitleStyle({ textColor: e.target.value })}
+                    disabled={running}
+                    aria-label={t('player.style.textColor')}
+                    data-testid="embed-text-color"
+                    className="w-6 h-6 rounded border border-line bg-transparent cursor-pointer p-0"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1 text-[11px] text-zinc-400">
+                <div className="flex items-center justify-between gap-2">
+                  <span>{t('player.style.bgOpacity')}</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono text-indigo-300" dir="ltr">
+                      {subtitleStyle.backgroundOpacity}%
+                    </span>
+                    <input
+                      type="color"
+                      value={subtitleStyle.backgroundColor}
+                      onChange={(e) => setSubtitleStyle({ backgroundColor: e.target.value })}
+                      disabled={running}
+                      aria-label={t('player.style.bgColor')}
+                      data-testid="embed-bg-color"
+                      className="w-5 h-5 rounded border border-line bg-transparent cursor-pointer p-0"
+                    />
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={subtitleStyle.backgroundOpacity}
+                  onChange={(e) => setSubtitleStyle({ backgroundOpacity: Number(e.target.value) })}
+                  disabled={running}
+                  aria-label={t('player.style.bgOpacity')}
+                  className="w-full accent-indigo-500 cursor-pointer"
+                  data-testid="embed-bg-opacity"
+                />
+              </div>
+            </div>
+          </div>
+        )}
 
         <p className="text-[11px] text-zinc-500 leading-relaxed">
           {isUpload ? t('embed.whereUpload') : mode === 'soft' ? t('embed.whereSoft') : t('embed.whereBurn')}
