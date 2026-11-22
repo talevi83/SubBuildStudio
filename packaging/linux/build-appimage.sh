@@ -18,7 +18,7 @@
 #
 # Needs: Linux x86_64, uv, git, curl, readelf (binutils), xvfb-run when there is no display, and
 # the X11 libraries Qt needs (apt: libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1
-# libxcb-render-util0 libxcb-util1 libxkbcommon-x11-0), which are bundled; network access.
+# libxcb-render-util0 libxcb-shape0 libxcb-util1 libxkbcommon-x11-0), which are bundled; network access.
 # Optional environment: REF (default HEAD), OUT_DIR (default build/linux), SKIP_APPIMAGE=1.
 set -euo pipefail
 
@@ -41,7 +41,7 @@ UV_URL="https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unkno
 APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
 # Libraries Qt's X11 plugin needs that minimal desktops may not have (libxcb-cursor0 above all)
 EXTRA_LIBS="libxcb-cursor.so.0 libxcb-icccm.so.4 libxcb-image.so.0 libxcb-keysyms.so.1
-libxcb-render-util.so.0 libxcb-util.so.1 libxkbcommon-x11.so.0"
+libxcb-render-util.so.0 libxcb-shape.so.0 libxcb-util.so.1 libxkbcommon-x11.so.0"
 
 step() { echo; echo "==> $*"; }
 die() { echo "[ERROR] $*" >&2; exit 1; }
@@ -208,7 +208,7 @@ done
 ls "$APPDIR/usr/lib/extra"
 # Qt's X11 plugin must find everything it links to with these (and the system's X11 / OpenGL)
 xcb_missing="$(LD_LIBRARY_PATH="$APPDIR/usr/lib/extra:$QT/Qt6/lib" ldd "$QT/Qt6/plugins/platforms/libqxcb.so" \
-    | awk '/not found/ {print $1}' | grep -E '^lib(xcb|xkbcommon)' || true)"
+    | awk '/not found/ {print $1}' | grep -E '^lib(xcb|xkbcommon)' | sort -u || true)"
 [[ -z "$xcb_missing" ]] || die "Qt's X11 plugin needs libraries that are not bundled:"$'\n'"$xcb_missing"
 
 # -----------------------------------------------------------------------------------------------
