@@ -11,3 +11,4 @@ VERSION export-subst
 # The AppImage entry point and desktop file have no extension
 packaging/linux/AppRun text eol=lf
 *.desktop text eol=lf
+.github/scripts/*.sh text eol=lf
