@@ -1,18 +1,37 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../services/api';
 import { confirmDialog } from '../../store/useDialogStore';
+import { useJobStore } from '../../store/useJobStore';
 import {
+  MAX_MARGIN_V,
+  MAX_OUTLINE_WIDTH,
   MAX_SUBTITLE_FONT_SIZE,
+  MIN_MARGIN_V,
+  MIN_OUTLINE_WIDTH,
   MIN_SUBTITLE_FONT_SIZE,
   SUBTITLE_FONTS,
+  SUBTITLE_STYLE_PRESETS,
+  type SubtitleStylePresetId,
+  buildSubtitleTextShadow,
   fontSizePxToEmbedTier,
   hexToRgba,
   subtitleFontStack,
   useUiStore,
 } from '../../store/useUiStore';
-import type { EmbedMode, EmbedQuality, EmbedVideoOptions, EmbedVideoStatus, SubtitleFontFamily } from '../../types';
+import { isRtlLanguage, type EmbedMode, type EmbedQuality, type EmbedVideoOptions, type EmbedVideoStatus, type SubtitleFontFamily } from '../../types';
 import { useT } from '../../i18n';
 import { CheckCircle2, Download, Film, Flame, Layers, Loader2, Palette, X, XCircle } from 'lucide-react';
+
+const PRESET_KEY_MAP: Record<
+  SubtitleStylePresetId,
+  'presetCinema' | 'presetYoutube' | 'presetReels' | 'presetPodcast' | 'presetBox'
+> = {
+  cinema: 'presetCinema',
+  youtube: 'presetYoutube',
+  reels: 'presetReels',
+  podcast: 'presetPodcast',
+  box: 'presetBox',
+};
 
 interface Props {
   jobId: string;
@@ -31,16 +50,42 @@ const selectClass =
 /** Make a copy of the video with the subtitles inside: a switchable track, or burned into the picture. */
 export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslation, applyRtl, onClose, onDownload }) => {
   const t = useT();
+  const activeJob = useJobStore((s) => s.activeJob);
   const subtitleStyle = useUiStore((s) => s.subtitleStyle);
   const setSubtitleStyle = useUiStore((s) => s.setSubtitleStyle);
   const [mode, setMode] = useState<EmbedMode>('soft');
   const [useTranslated, setUseTranslated] = useState(hasTranslation);
+  const [bilingual, setBilingual] = useState(false);
   const [setDefault, setSetDefault] = useState(true);
   const [quality, setQuality] = useState<EmbedQuality>('standard');
   const [status, setStatus] = useState<EmbedVideoStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [failedPreviewUrl, setFailedPreviewUrl] = useState<string | null>(null);
   const downloaded = useRef<string | null>(null);
+
+  const previewSample = useMemo(() => {
+    const segs = activeJob?.segments || [];
+    const sample = segs.find(
+      (s) => s.segment_type !== 'ON_SCREEN' && ((s.translated_text || s.original_text || '').trim().length > 0)
+    );
+    if (!sample) {
+      return { time: undefined as number | undefined, orig: t('embed.previewSample'), trans: t('embed.previewSample') };
+    }
+    return {
+      time: (sample.start_time + sample.end_time) / 2,
+      orig: sample.original_text || t('embed.previewSample'),
+      trans: sample.translated_text || sample.original_text || t('embed.previewSample'),
+    };
+  }, [activeJob?.segments, t]);
+
+  const previewFrameUrl = useMemo(() => api.getPreviewFrameUrl(jobId, previewSample.time), [jobId, previewSample.time]);
+  const frameFailed = failedPreviewUrl === previewFrameUrl;
+
+  const previewIsRtl =
+    useTranslated && hasTranslation
+      ? isRtlLanguage(activeJob?.target_language)
+      : isRtlLanguage(activeJob?.detected_language || activeJob?.source_language);
 
   const running = status?.state === 'running';
 
@@ -100,8 +145,15 @@ export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslat
               font_family: subtitleStyle.fontFamily,
               font_size_px: subtitleStyle.fontSizePx,
               text_color: subtitleStyle.textColor,
+              outline_color: subtitleStyle.outlineColor,
+              outline_width: subtitleStyle.outlineWidth,
               background_color: subtitleStyle.backgroundColor,
               background_opacity: subtitleStyle.backgroundOpacity,
+              margin_v: subtitleStyle.marginV,
+              bold: subtitleStyle.bold,
+              highlight_mode: subtitleStyle.highlightMode,
+              highlight_color: subtitleStyle.highlightColor,
+              bilingual: bilingual && hasTranslation && useTranslated,
             }
           : {}),
       };
@@ -161,7 +213,7 @@ export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslat
       onClick={onClose}
     >
       <div
-        className="w-full max-w-lg bg-surface border border-line rounded-xl p-5 space-y-4 shadow-2xl"
+        className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-surface border border-line rounded-xl p-5 space-y-4 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
         data-testid="embed-dialog"
       >
@@ -226,9 +278,59 @@ export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslat
         {mode === 'burn' && (
           <div
             data-testid="embed-burn-style"
-            className="bg-sunken border border-line rounded-lg p-3 space-y-2.5"
+            className="bg-sunken border border-line rounded-lg p-3 space-y-3"
           >
-            <div className="flex items-center justify-between gap-2 text-[11px]">
+            {/* Live Burn-in Frame Preview */}
+            <div
+              data-testid="embed-live-preview"
+              className="relative w-full aspect-video rounded-lg overflow-hidden bg-gradient-to-br from-zinc-900 via-zinc-950 to-slate-900 border border-line/80 flex items-center justify-center"
+            >
+              {!frameFailed && (
+                <img
+                  key={previewFrameUrl}
+                  src={previewFrameUrl}
+                  alt={t('embed.livePreview')}
+                  onError={() => setFailedPreviewUrl(previewFrameUrl)}
+                  className="w-full h-full object-cover"
+                />
+              )}
+              <span className="absolute top-2 start-2 px-1.5 py-0.5 rounded bg-black/60 text-[10px] text-zinc-300 border border-white/10">
+                {t('embed.livePreview')}
+              </span>
+              <div
+                className="absolute inset-x-4 flex flex-col items-center pointer-events-none"
+                style={{ bottom: `${Math.min(42, Math.max(4, Math.round(subtitleStyle.marginV * 0.28)))}%` }}
+              >
+                <div
+                  className="max-w-[92%] px-3 py-1 rounded text-center space-y-0.5"
+                  style={{
+                    fontFamily: subtitleFontStack(subtitleStyle.fontFamily),
+                    fontSize: `${Math.max(11, Math.round(subtitleStyle.fontSizePx * 0.85))}px`,
+                    fontWeight: subtitleStyle.bold ? 700 : 500,
+                    backgroundColor:
+                      subtitleStyle.backgroundOpacity > 0
+                        ? hexToRgba(subtitleStyle.backgroundColor, subtitleStyle.backgroundOpacity)
+                        : 'transparent',
+                    textShadow: buildSubtitleTextShadow(subtitleStyle),
+                  }}
+                >
+                  {bilingual && hasTranslation && useTranslated && previewSample.orig !== previewSample.trans && (
+                    <p className="text-zinc-200/90 text-[0.82em] leading-snug whitespace-pre-line">
+                      {previewSample.orig}
+                    </p>
+                  )}
+                  <p
+                    dir={previewIsRtl ? 'rtl' : 'ltr'}
+                    className="leading-snug whitespace-pre-line"
+                    style={{ color: subtitleStyle.textColor }}
+                  >
+                    {useTranslated && hasTranslation ? previewSample.trans : previewSample.orig}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
               <span className="flex items-center gap-1.5 text-zinc-300 font-medium">
                 <Palette className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
                 {t('embed.styleSummary', {
@@ -237,28 +339,49 @@ export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslat
                   opacity: subtitleStyle.backgroundOpacity,
                 })}
               </span>
-              <span
-                className="px-2 py-0.5 rounded text-xs font-semibold border border-zinc-700/60"
-                style={{
-                  fontFamily: subtitleFontStack(subtitleStyle.fontFamily),
-                  color: subtitleStyle.textColor,
-                  backgroundColor:
-                    subtitleStyle.backgroundOpacity > 0
-                      ? hexToRgba(subtitleStyle.backgroundColor, subtitleStyle.backgroundOpacity)
-                      : 'transparent',
-                  textShadow:
-                    subtitleStyle.backgroundOpacity < 30
-                      ? '0 1px 2px rgba(0,0,0,0.95), 0 0 4px rgba(0,0,0,0.9)'
-                      : undefined,
-                }}
-              >
-                Aa אב
-              </span>
+              <div className="flex flex-wrap items-center gap-1">
+                {SUBTITLE_STYLE_PRESETS.map((preset) => {
+                  const active =
+                    subtitleStyle.fontFamily === preset.style.fontFamily &&
+                    subtitleStyle.fontSizePx === preset.style.fontSizePx &&
+                    subtitleStyle.backgroundOpacity === preset.style.backgroundOpacity &&
+                    subtitleStyle.bold === preset.style.bold;
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => setSubtitleStyle(preset.style)}
+                      disabled={running}
+                      data-testid={`embed-style-preset-${preset.id}`}
+                      className={`px-2 py-0.5 rounded text-[10px] font-medium border transition-colors cursor-pointer ${
+                        active
+                          ? 'bg-indigo-600/25 border-indigo-500 text-indigo-200'
+                          : 'bg-surface border-line text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      {t(`player.style.${PRESET_KEY_MAP[preset.id]}`)}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <label className="space-y-1 text-[11px] text-zinc-400">
-                <span>{t('player.style.fontFamily')}</span>
+              <div className="space-y-1 text-[11px] text-zinc-400">
+                <div className="flex items-center justify-between">
+                  <span>{t('player.style.fontFamily')}</span>
+                  <label className="flex items-center gap-1 text-[11px] text-zinc-300 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={subtitleStyle.bold}
+                      onChange={(e) => setSubtitleStyle({ bold: e.target.checked })}
+                      disabled={running}
+                      data-testid="embed-bold"
+                      className="w-3.5 h-3.5 rounded border-zinc-700 text-indigo-600 bg-zinc-800"
+                    />
+                    <span>{t('player.style.bold')}</span>
+                  </label>
+                </div>
                 <select
                   value={subtitleStyle.fontFamily}
                   onChange={(e) => setSubtitleStyle({ fontFamily: e.target.value as SubtitleFontFamily })}
@@ -272,7 +395,7 @@ export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslat
                     </option>
                   ))}
                 </select>
-              </label>
+              </div>
 
               <div className="space-y-1 text-[11px] text-zinc-400">
                 <div className="flex items-center justify-between">
@@ -344,7 +467,76 @@ export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslat
                   data-testid="embed-bg-opacity"
                 />
               </div>
+
+              {subtitleStyle.backgroundOpacity < 100 && (
+                <div className="space-y-1 text-[11px] text-zinc-400">
+                  <div className="flex items-center justify-between gap-2">
+                    <span>{t('player.style.outlineWidth')}</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-mono text-indigo-300" dir="ltr">
+                        {subtitleStyle.outlineWidth.toFixed(1)}
+                      </span>
+                      <input
+                        type="color"
+                        value={subtitleStyle.outlineColor}
+                        onChange={(e) => setSubtitleStyle({ outlineColor: e.target.value })}
+                        disabled={running}
+                        aria-label={t('player.style.outlineColor')}
+                        data-testid="embed-outline-color"
+                        className="w-5 h-5 rounded border border-line bg-transparent cursor-pointer p-0"
+                      />
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min={MIN_OUTLINE_WIDTH}
+                    max={MAX_OUTLINE_WIDTH}
+                    step={0.2}
+                    value={subtitleStyle.outlineWidth}
+                    onChange={(e) => setSubtitleStyle({ outlineWidth: Number(e.target.value) })}
+                    disabled={running}
+                    aria-label={t('player.style.outlineWidth')}
+                    data-testid="embed-outline-width"
+                    className="w-full accent-indigo-500 cursor-pointer"
+                  />
+                </div>
+              )}
+
+              <div className="space-y-1 text-[11px] text-zinc-400">
+                <div className="flex items-center justify-between">
+                  <span>{t('player.style.bottomHeight')}</span>
+                  <span className="font-mono text-indigo-300" dir="ltr">
+                    {subtitleStyle.marginV}px
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={MIN_MARGIN_V}
+                  max={MAX_MARGIN_V}
+                  step={2}
+                  value={subtitleStyle.marginV}
+                  onChange={(e) => setSubtitleStyle({ marginV: Number(e.target.value) })}
+                  disabled={running}
+                  aria-label={t('player.style.bottomHeight')}
+                  data-testid="embed-margin-v"
+                  className="w-full accent-indigo-500 cursor-pointer"
+                />
+              </div>
             </div>
+
+            {hasTranslation && useTranslated && (
+              <label className="flex items-center gap-2 pt-1 border-t border-line/60 text-xs text-zinc-300 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={bilingual}
+                  onChange={(e) => setBilingual(e.target.checked)}
+                  disabled={running}
+                  data-testid="embed-bilingual"
+                  className="w-3.5 h-3.5 rounded border-zinc-700 text-indigo-600 bg-zinc-800"
+                />
+                <span>{t('embed.bilingual')}</span>
+              </label>
+            )}
           </div>
         )}
 

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { getItemWithLegacy } from '../utils/legacyStorage';
-import type { EmbedFontSize, SubtitleFontFamily, SubtitleStyleSettings } from '../types';
+import type { EmbedFontSize, SubtitleFontFamily, SubtitleHighlightMode, SubtitleStyleSettings } from '../types';
 
 export type Language = 'en' | 'he';
 export type Theme = 'dark' | 'light';
@@ -10,6 +10,10 @@ const STORAGE_KEY = 'subbuild.ui';
 
 export const MIN_SUBTITLE_FONT_SIZE = 12;
 export const MAX_SUBTITLE_FONT_SIZE = 36;
+export const MIN_OUTLINE_WIDTH = 0;
+export const MAX_OUTLINE_WIDTH = 6;
+export const MIN_MARGIN_V = 8;
+export const MAX_MARGIN_V = 120;
 
 export interface SubtitleFontOption {
   id: SubtitleFontFamily;
@@ -49,17 +53,124 @@ export const DEFAULT_SUBTITLE_STYLE: SubtitleStyleSettings = {
   fontFamily: 'Heebo',
   fontSizePx: 18,
   textColor: '#FCD34D',
+  outlineColor: '#000000',
+  outlineWidth: 1.6,
   backgroundColor: '#000000',
   backgroundOpacity: 75,
+  marginV: 16,
+  bold: false,
+  highlightMode: 'none',
+  highlightColor: '#22D3EE',
 };
+
+export type SubtitleStylePresetId = 'cinema' | 'youtube' | 'reels' | 'podcast' | 'box';
+
+export interface SubtitleStylePreset {
+  id: SubtitleStylePresetId;
+  style: SubtitleStyleSettings;
+}
+
+export const SUBTITLE_STYLE_PRESETS: SubtitleStylePreset[] = [
+  {
+    id: 'cinema',
+    style: {
+      fontFamily: 'Heebo',
+      fontSizePx: 18,
+      textColor: '#FFFFFF',
+      outlineColor: '#000000',
+      outlineWidth: 1.8,
+      backgroundColor: '#000000',
+      backgroundOpacity: 0,
+      marginV: 18,
+      bold: false,
+      highlightMode: 'none',
+      highlightColor: '#22D3EE',
+    },
+  },
+  {
+    id: 'youtube',
+    style: {
+      fontFamily: 'Assistant',
+      fontSizePx: 20,
+      textColor: '#FCD34D',
+      outlineColor: '#000000',
+      outlineWidth: 1.6,
+      backgroundColor: '#000000',
+      backgroundOpacity: 75,
+      marginV: 16,
+      bold: false,
+      highlightMode: 'none',
+      highlightColor: '#22D3EE',
+    },
+  },
+  {
+    id: 'reels',
+    style: {
+      fontFamily: 'Rubik',
+      fontSizePx: 26,
+      textColor: '#FFFFFF',
+      outlineColor: '#000000',
+      outlineWidth: 3.0,
+      backgroundColor: '#000000',
+      backgroundOpacity: 0,
+      marginV: 48,
+      bold: true,
+      highlightMode: 'word',
+      highlightColor: '#FACC15',
+    },
+  },
+  {
+    id: 'podcast',
+    style: {
+      fontFamily: 'Heebo',
+      fontSizePx: 20,
+      textColor: '#FFFFFF',
+      outlineColor: '#000000',
+      outlineWidth: 1.6,
+      backgroundColor: '#18181B',
+      backgroundOpacity: 80,
+      marginV: 20,
+      bold: false,
+      highlightMode: 'none',
+      highlightColor: '#38BDF8',
+    },
+  },
+  {
+    id: 'box',
+    style: {
+      fontFamily: 'Varela Round',
+      fontSizePx: 19,
+      textColor: '#FCD34D',
+      outlineColor: '#000000',
+      outlineWidth: 1.6,
+      backgroundColor: '#000000',
+      backgroundOpacity: 95,
+      marginV: 16,
+      bold: false,
+      highlightMode: 'none',
+      highlightColor: '#22D3EE',
+    },
+  },
+];
 
 const HEX_COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
 const FONT_IDS = new Set<string>(SUBTITLE_FONTS.map((f) => f.id));
+const HIGHLIGHT_MODES = new Set<string>(['none', 'word', 'karaoke']);
 
 function clampInt(value: unknown, min: number, max: number, fallback: number): number {
   const num = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(num)) return fallback;
   return Math.min(max, Math.max(min, Math.round(num)));
+}
+
+function clampDecimal(value: unknown, min: number, max: number, fallback: number): number {
+  const num = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.round(Math.min(max, Math.max(min, num)) * 10) / 10;
+}
+
+function normalizeHex(value: unknown, fallback: string): string {
+  return typeof value === 'string' && HEX_COLOR_RE.test(value.trim()) ? value.trim().toUpperCase() : fallback;
 }
 
 export function sanitizeSubtitleStyle(raw?: Partial<SubtitleStyleSettings> | null): SubtitleStyleSettings {
@@ -69,21 +180,32 @@ export function sanitizeSubtitleStyle(raw?: Partial<SubtitleStyleSettings> | nul
     typeof raw.fontFamily === 'string' && FONT_IDS.has(raw.fontFamily)
       ? (raw.fontFamily as SubtitleFontFamily)
       : base.fontFamily;
-  const textColor =
-    typeof raw.textColor === 'string' && HEX_COLOR_RE.test(raw.textColor.trim())
-      ? raw.textColor.trim().toUpperCase()
-      : base.textColor;
-  const backgroundColor =
-    typeof raw.backgroundColor === 'string' && HEX_COLOR_RE.test(raw.backgroundColor.trim())
-      ? raw.backgroundColor.trim().toUpperCase()
-      : base.backgroundColor;
+  const highlightMode =
+    typeof raw.highlightMode === 'string' && HIGHLIGHT_MODES.has(raw.highlightMode)
+      ? (raw.highlightMode as SubtitleHighlightMode)
+      : base.highlightMode;
   return {
     fontFamily,
     fontSizePx: clampInt(raw.fontSizePx, MIN_SUBTITLE_FONT_SIZE, MAX_SUBTITLE_FONT_SIZE, base.fontSizePx),
-    textColor,
-    backgroundColor,
+    textColor: normalizeHex(raw.textColor, base.textColor),
+    outlineColor: normalizeHex(raw.outlineColor, base.outlineColor),
+    outlineWidth: clampDecimal(raw.outlineWidth, MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH, base.outlineWidth),
+    backgroundColor: normalizeHex(raw.backgroundColor, base.backgroundColor),
     backgroundOpacity: clampInt(raw.backgroundOpacity, 0, 100, base.backgroundOpacity),
+    marginV: clampInt(raw.marginV, MIN_MARGIN_V, MAX_MARGIN_V, base.marginV),
+    bold: typeof raw.bold === 'boolean' ? raw.bold : base.bold,
+    highlightMode,
+    highlightColor: normalizeHex(raw.highlightColor, base.highlightColor),
   };
+}
+
+export function buildSubtitleTextShadow(style: SubtitleStyleSettings): string {
+  if (style.backgroundOpacity < 30 && style.outlineWidth > 0) {
+    const c = hexToRgba(style.outlineColor, 95);
+    const w = Math.max(1, Math.round(style.outlineWidth));
+    return `0 1px ${w + 1}px ${c}, 0 0 ${w * 3}px ${c}, ${w}px 0 2px ${c}, -${w}px 0 2px ${c}`;
+  }
+  return '0 1px 2px rgba(0,0,0,0.6)';
 }
 
 export function subtitleFontStack(fontFamily: SubtitleFontFamily): string {

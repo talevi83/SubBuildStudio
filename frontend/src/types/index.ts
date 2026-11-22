@@ -593,6 +593,7 @@ export interface JobUsage {
 export type EmbedMode = 'soft' | 'burn';
 export type EmbedFontSize = 'small' | 'medium' | 'large';
 export type EmbedQuality = 'standard' | 'high';
+export type SubtitleHighlightMode = 'none' | 'word' | 'karaoke';
 
 export type SubtitleFontFamily =
   | 'Heebo'
@@ -612,10 +613,22 @@ export interface SubtitleStyleSettings {
   fontSizePx: number;
   /** Primary text color (#RRGGBB, default #FCD34D) */
   textColor: string;
+  /** Outline stroke color (#RRGGBB, default #000000) */
+  outlineColor: string;
+  /** Outline stroke width (0..6, default 1.6) */
+  outlineWidth: number;
   /** Background box color (#RRGGBB, default #000000) */
   backgroundColor: string;
   /** Background opacity percentage 0..100 (default 75) */
   backgroundOpacity: number;
+  /** Bottom margin in reference pixels (8..120, default 16) */
+  marginV: number;
+  /** Bold font weight */
+  bold: boolean;
+  /** Active-word highlight mode for creator clips */
+  highlightMode: SubtitleHighlightMode;
+  /** Active-word / karaoke fill color (#RRGGBB) */
+  highlightColor: string;
 }
 
 export interface EmbedVideoOptions {
@@ -628,8 +641,16 @@ export interface EmbedVideoOptions {
   font_family?: string;
   font_size_px?: number;
   text_color?: string;
+  outline_color?: string;
+  outline_width?: number;
   background_color?: string;
   background_opacity?: number;
+  margin_v?: number;
+  bold?: boolean;
+  color_speakers?: boolean;
+  highlight_mode?: SubtitleHighlightMode;
+  highlight_color?: string;
+  bilingual?: boolean;
   quality?: EmbedQuality;
   overwrite?: boolean;
 }

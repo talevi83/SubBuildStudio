@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import { desktopApi } from '../../utils/desktop';
 import { useJobStore } from '../../store/useJobStore';
-import { hexToRgba, subtitleFontStack, useUiStore } from '../../store/useUiStore';
+import { buildSubtitleTextShadow, hexToRgba, subtitleFontStack, useUiStore } from '../../store/useUiStore';
 import { api } from '../../services/api';
 import { isRtlLanguage } from '../../types';
 import { findSegmentAt, formatClock, isTypingTarget } from '../../utils/time';
@@ -314,14 +314,13 @@ export const VideoSyncPlayer: React.FC = () => {
   const overlayBg = hasOverlayBg
     ? hexToRgba(subtitleStyle.backgroundColor, subtitleStyle.backgroundOpacity)
     : 'transparent';
-  const overlayTextShadow =
-    subtitleStyle.backgroundOpacity < 30
-      ? '0 1px 3px rgba(0,0,0,0.95), 0 0 6px rgba(0,0,0,0.9), 1px 0 2px rgba(0,0,0,0.9), -1px 0 2px rgba(0,0,0,0.9)'
-      : '0 1px 2px rgba(0,0,0,0.6)';
+  const overlayTextShadow = buildSubtitleTextShadow(subtitleStyle);
+  const overlayFontWeight = subtitleStyle.bold ? 700 : 500;
   const overlayBoxStyle: React.CSSProperties = {
     backgroundColor: overlayBg,
     fontFamily: overlayFontFamily,
     fontSize: `${overlayFontSize}px`,
+    fontWeight: overlayFontWeight,
     lineHeight: 1.4,
   };
 
@@ -460,7 +459,8 @@ export const VideoSyncPlayer: React.FC = () => {
 
         {bottomOverlays.length > 0 && (
           <div
-            className="absolute bottom-6 inset-x-4 flex flex-col items-center gap-1.5 pointer-events-none z-10"
+            className="absolute inset-x-4 flex flex-col items-center gap-1.5 pointer-events-none z-10"
+            style={{ bottom: `${subtitleStyle.marginV}px` }}
             data-testid="player-bottom-overlay"
           >
             {bottomOverlays.map((item) => {

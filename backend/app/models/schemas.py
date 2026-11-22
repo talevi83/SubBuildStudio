@@ -378,7 +378,7 @@ class SystemInfoResponse(BaseModel):
 
 class SaveNextToVideoRequest(RequestModel):
     """Write the subtitles into the folder of the job's video (Movie.he.srt next to Movie.mkv)."""
-    format: Literal["srt", "vtt"] = "srt"
+    format: Literal["srt", "vtt", "ass"] = "srt"
     use_translated: bool = True
     apply_rtl: bool = True
     # A file with the same name already next to the video is only replaced when this is true
@@ -405,8 +405,16 @@ class EmbedVideoRequest(RequestModel):
     font_family: Optional[str] = Field(default=None, max_length=64)
     font_size_px: Optional[int] = Field(default=None, ge=12, le=36)
     text_color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    outline_color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    outline_width: Optional[float] = Field(default=None, ge=0.0, le=6.0)
     background_color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     background_opacity: Optional[int] = Field(default=None, ge=0, le=100)
+    margin_v: Optional[int] = Field(default=None, ge=8, le=120)
+    bold: bool = False
+    color_speakers: bool = False
+    highlight_mode: Literal["none", "word", "karaoke"] = "none"
+    highlight_color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    bilingual: bool = False
     quality: Literal["standard", "high"] = "standard"
     # A video with the same name already next to the original is only replaced when this is true
     overwrite: bool = False
