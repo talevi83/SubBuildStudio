@@ -1,4 +1,4 @@
-import type { ParsedSubtitles, SegmentCreate, SyncCue, SystemInfo, UpdateStatus, UpdateApplyResponse, GpuLibsStatus, ProbeResponse, Job, JobConfig, SubtitleSegment, SegmentPatch, SegmentsChange, QAIssue, SpeakerGuess, StorageReport, StorageCleanResult, SaveNextToVideoResult, EmbedVideoOptions, EmbedVideoStatus, EditHistory, HistoryRestoreResult, Glossary, RetranslateOptions, AppSettings, SettingsResponse, CostEstimate, ModelCheckResponse } from '../types';
+import type { ParsedSubtitles, SegmentCreate, SyncCue, SystemInfo, UpdateStatus, UpdateApplyResponse, GpuLibsStatus, ProbeResponse, Job, JobConfig, SubtitleSegment, SegmentPatch, SegmentsChange, QAIssue, SpeakerGuess, StorageReport, StorageCleanResult, SaveNextToVideoResult, EmbedVideoOptions, EmbedVideoStatus, EditHistory, HistoryRestoreResult, Glossary, RetranslateOptions, AppSettings, SettingsResponse, CostEstimate, ModelCheckResponse, WaveformData } from '../types';
 
 import { hashBlobSha256 } from '../utils/sha256';
 
@@ -165,6 +165,10 @@ export const api = {
 
   getJob(jobId: string): Promise<Job> {
     return request(`${API_BASE}/jobs/${jobId}`, undefined, `Failed to load job ${jobId}`);
+  },
+
+  getWaveform(jobId: string): Promise<WaveformData> {
+    return request(`${API_BASE}/jobs/${jobId}/waveform`, undefined, 'Failed to load audio waveform');
   },
 
   updateJobSettings(jobId: string, patch: { onscreen_position?: import('../types').OnscreenPosition }): Promise<Job> {

@@ -182,6 +182,7 @@ def _delete_job(session: Session, job: Job) -> None:
     session.commit()
     delete_job_log(job_id)
     (settings.storage_dir / "regions" / f"{job_id}.json").unlink(missing_ok=True)
+    (settings.storage_dir / "regions" / f"{job_id}.waveform.json").unlink(missing_ok=True)
     shutil.rmtree(settings.storage_dir / "frames" / job_id, ignore_errors=True)
     shutil.rmtree(settings.storage_dir / "exports" / f"embed_{job_id}", ignore_errors=True)
     if owns:

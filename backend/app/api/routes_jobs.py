@@ -40,8 +40,16 @@ from app.models.schemas import (
     MergeSegmentsRequest,
     SplitSegmentRequest,
     SubtitleSegmentSchema,
+    WaveformResponse,
 )
-from app.pipeline.orchestrator import PipelineOrchestrator, spawn_background, ACTIVE_STATUSES, _now
+from app.pipeline.orchestrator import (
+    ACTIVE_STATUSES,
+    PipelineOrchestrator,
+    _get_pipeline_semaphore,
+    _now,
+    active_pipelines,
+    spawn_background,
+)
 from app.utils.filenames import safe_basename
 from app.utils.rtl_fixer import strip_directional_marks
 from app.utils.srt_formatter import calculate_cps
@@ -180,6 +188,7 @@ def _job_to_response(
         convert_to_metric=getattr(job, "convert_to_metric", False),
         remove_sdh_speakers=getattr(job, "remove_sdh_speakers", False),
         skip_end_credits=getattr(job, "skip_end_credits", True),
+        auto_save_srt=bool(getattr(job, "auto_save_srt", False)),
         enable_translation=job.enable_translation,
         target_language=job.target_language,
         gemini_model=job.gemini_model,
@@ -260,14 +269,20 @@ async def create_job(req: JobCreate, session: Session = Depends(get_session)):
         raise HTTPException(status_code=400, detail="The subtitle file needs at least 3 lines to sync")
 
     saved_settings = load_settings()
+    is_upload_file = is_in_uploads(str(resolved))
+    limit = max(1, settings.max_concurrent_transcriptions)
+    running_slots = sum(1 for p in active_pipelines.values() if p.mode in ("full", "sync"))
+    is_queued = _get_pipeline_semaphore().locked() or running_slots >= limit
+
     new_job = Job(
         id=job_id,
         video_path=str(resolved),
         # Display name from the browser; it also names exported files, so keep it a plain file name
         file_name=safe_basename(req.file_name, fallback=path.name) if req.file_name else path.name,
         file_size=path.stat().st_size,
-        is_upload=is_in_uploads(str(resolved)),
-        status=JobStatus.IDLE,
+        is_upload=is_upload_file,
+        status=JobStatus.QUEUED if is_queued else JobStatus.IDLE,
+        current_stage="QUEUED" if is_queued else None,
         selected_audio_stream=req.selected_audio_stream,
         whisper_model=req.whisper_model,
         source_language=req.source_language,
@@ -296,6 +311,7 @@ async def create_job(req: JobCreate, session: Session = Depends(get_session)):
             if req.skip_end_credits is not None
             else getattr(saved_settings, "skip_end_credits", True)
         ),
+        auto_save_srt=bool(getattr(req, "auto_save_srt", False)) and not is_upload_file,
         enable_translation=req.enable_translation,
         target_language=req.target_language,
         gemini_model=req.gemini_model or saved_settings.translation.model,
@@ -343,6 +359,36 @@ def list_jobs(session: Session = Depends(get_session)):
 def get_job(job_id: str, session: Session = Depends(get_session)):
     """Retrieve full job details and all subtitle segments."""
     return _job_to_response(_get_job_or_404(session, job_id))
+
+
+@router.get("/{job_id}/waveform", response_model=WaveformResponse)
+async def get_job_waveform(job_id: str, session: Session = Depends(get_session)):
+    """Return cached or freshly extracted audio amplitude peaks (50 peaks/s) for the Studio timeline."""
+    from app.pipeline.waveform import cache_path, get_or_create_waveform
+
+    job = _get_job_or_404(session, job_id)
+    cached_file = cache_path(job.id)
+    wav_file = settings.storage_dir / "audio" / f"{job.id}.wav"
+    if not cached_file.is_file() and not wav_file.is_file():
+        if not job.video_path or not Path(job.video_path).is_file():
+            raise HTTPException(status_code=404, detail="Source video is unavailable for waveform generation")
+
+    stream, channels = _job_audio_params(job)
+    try:
+        data = await get_or_create_waveform(
+            job_id=job.id,
+            video_path=job.video_path,
+            audio_stream=stream,
+            channels=channels,
+            comms_boost=job.comms_boost,
+            duration=job.video_duration or 0.0,
+        )
+        return WaveformResponse(**data)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(f"Waveform extraction failed for job {job_id}: {exc}")
+        raise HTTPException(status_code=500, detail=f"Could not extract audio waveform: {exc}")
 
 
 _VALID_ONSCREEN_POSITIONS = {"top_center", "middle_right", "middle_left", "top_right", "top_left", "middle_center"}
@@ -642,6 +688,7 @@ def _delete_single_job(session: Session, job: Job) -> Tuple[str, bool]:
     delete_job_log(job_id)
     try:
         (settings.storage_dir / "regions" / f"{job_id}.json").unlink(missing_ok=True)
+        (settings.storage_dir / "regions" / f"{job_id}.waveform.json").unlink(missing_ok=True)
     except OSError:
         pass
     try:
@@ -747,7 +794,7 @@ def update_segment(
     _history_record(
         session, job, recording, "edit_timing" if timing_only else "edit",
         {"index": seg.index, "segment_id": seg.id, "fields": fields},
-        coalesce_key=f"{'timing' if timing_only else 'text'}:{seg.id}:{','.join(fields)}",
+        coalesce_key=None if timing_only else f"text:{seg.id}:{','.join(fields)}",
     )
     session.refresh(seg)
     return _segment_to_schema(seg)

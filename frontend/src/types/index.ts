@@ -131,6 +131,7 @@ export interface Job {
   convert_to_metric?: boolean;
   remove_sdh_speakers?: boolean;
   skip_end_credits?: boolean;
+  auto_save_srt?: boolean;
   enable_translation: boolean;
   target_language: string;
   gemini_model: string;
@@ -300,6 +301,7 @@ export interface JobConfig {
   convert_to_metric?: boolean;
   remove_sdh_speakers?: boolean;
   skip_end_credits?: boolean;
+  auto_save_srt?: boolean;
   enable_translation: boolean;
   target_language: string;
   gemini_api_key_override?: string;
@@ -694,5 +696,12 @@ export interface EditHistory {
 export interface HistoryRestoreResult {
   segments: SubtitleSegment[];
   history: EditHistory;
+}
+
+export interface WaveformData {
+  job_id: string;
+  peaks_per_second: number;
+  duration: number;
+  peaks: number[];
 }
 

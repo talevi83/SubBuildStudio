@@ -41,6 +41,14 @@ _background_tasks: Set[asyncio.Task] = set()
 
 # Limits how many jobs transcribe at once (each one loads a model onto the GPU).
 _gpu_semaphore: Optional[asyncio.Semaphore] = None
+_gpu_semaphore_loop: Optional[asyncio.AbstractEventLoop] = None
+_gpu_semaphore_limit: Optional[int] = None
+
+# Limits how many full/sync jobs run concurrently (serializes batch episodes for CPU/RAM,
+# rate limits, and cumulative living series glossaries).
+_pipeline_semaphore: Optional[asyncio.Semaphore] = None
+_pipeline_semaphore_loop: Optional[asyncio.AbstractEventLoop] = None
+_pipeline_semaphore_limit: Optional[int] = None
 
 ACTIVE_STATUSES = {
     JobStatus.IDLE,
@@ -71,10 +79,39 @@ def _now() -> datetime:
 
 
 def _get_gpu_semaphore() -> asyncio.Semaphore:
-    global _gpu_semaphore
-    if _gpu_semaphore is None:
-        _gpu_semaphore = asyncio.Semaphore(max(1, settings.max_concurrent_transcriptions))
+    global _gpu_semaphore, _gpu_semaphore_loop, _gpu_semaphore_limit
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    limit = max(1, settings.max_concurrent_transcriptions)
+    if (
+        _gpu_semaphore is None
+        or (loop is not None and _gpu_semaphore_loop is not loop)
+        or _gpu_semaphore_limit != limit
+    ):
+        _gpu_semaphore = asyncio.Semaphore(limit)
+        _gpu_semaphore_loop = loop
+        _gpu_semaphore_limit = limit
     return _gpu_semaphore
+
+
+def _get_pipeline_semaphore() -> asyncio.Semaphore:
+    global _pipeline_semaphore, _pipeline_semaphore_loop, _pipeline_semaphore_limit
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    limit = max(1, settings.max_concurrent_transcriptions)
+    if (
+        _pipeline_semaphore is None
+        or (loop is not None and _pipeline_semaphore_loop is not loop)
+        or _pipeline_semaphore_limit != limit
+    ):
+        _pipeline_semaphore = asyncio.Semaphore(limit)
+        _pipeline_semaphore_loop = loop
+        _pipeline_semaphore_limit = limit
+    return _pipeline_semaphore
 
 
 def spawn_background(coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
@@ -171,6 +208,7 @@ class PipelineOrchestrator:
         self.cancel_event = asyncio.Event()
         self.cancel_flag = threading.Event()
         self._gpu_held = False
+        self._pipeline_held = False
         self._segments_saved = False
         self._history_recorded = False
         self._prior_usage_dict: Optional[Dict[str, Any]] = None
@@ -441,6 +479,50 @@ class PipelineOrchestrator:
             self._gpu_held = False
             _get_gpu_semaphore().release()
 
+    async def _acquire_pipeline_slot(self) -> None:
+        if self.mode not in ("full", "sync"):
+            return
+        sem = _get_pipeline_semaphore()
+        if sem.locked():
+            self._update_job(status=JobStatus.QUEUED, current_stage="QUEUED", progress_percent=0.0)
+            await self._broadcast({
+                "event": "STAGE_PROGRESS",
+                "stage": JobStatus.QUEUED.value,
+                "progress_percent": 0.0,
+                "message": "Waiting in queue for earlier episode to finish...",
+            })
+        acquire = asyncio.ensure_future(sem.acquire())
+        cancelled = asyncio.ensure_future(self.cancel_event.wait())
+        await asyncio.wait({acquire, cancelled}, return_when=asyncio.FIRST_COMPLETED)
+        if acquire.done() and not acquire.cancelled():
+            self._pipeline_held = True
+        else:
+            acquire.cancel()
+            await asyncio.gather(acquire, return_exceptions=True)
+        if not cancelled.done():
+            cancelled.cancel()
+            await asyncio.gather(cancelled, return_exceptions=True)
+        if self.cancel_flag.is_set():
+            raise PipelineCancelled()
+
+    def _release_pipeline_slot(self) -> None:
+        if self._pipeline_held:
+            self._pipeline_held = False
+            _get_pipeline_semaphore().release()
+
+    async def _auto_save_if_enabled(self, ctx: PipelineContext) -> None:
+        if self.mode != "full":
+            return
+        from app.api.routes_export import auto_save_job_srt
+
+        try:
+            saved_path = await asyncio.to_thread(auto_save_job_srt, self.job_id)
+            if saved_path:
+                logger.info(f"Auto-saved SRT next to video: {saved_path}")
+        except Exception as exc:
+            logger.warning(f"Auto-save SRT failed for job {self.job_id}: {exc}")
+            ctx.warnings.append(f"Auto-save SRT failed: {exc}")
+
     def _save_segments(self, segments: List[Dict[str, Any]]) -> None:
         """Replace the job's segments and write the new DB ids back into the dicts."""
         with Session(engine) as session:
@@ -610,6 +692,7 @@ class PipelineOrchestrator:
     async def _run(self) -> None:
         ctx: Optional[PipelineContext] = None
         try:
+            await self._acquire_pipeline_slot()
             ctx = self._build_context()
             if ctx is None:
                 return
@@ -712,6 +795,7 @@ class PipelineOrchestrator:
                         })
 
             ctx.raise_if_cancelled()
+            await self._auto_save_if_enabled(ctx)
             warnings = [w for w in [*ctx.warnings, ctx.translation_warning] if w]
             fallbacks = ctx.usage.flex_fallbacks() if hasattr(ctx.usage, "flex_fallbacks") else 0
             if fallbacks:
@@ -754,6 +838,7 @@ class PipelineOrchestrator:
                 await self._handle_failure(str(exc))
         finally:
             self._release_gpu()
+            self._release_pipeline_slot()
             self._delete_audio()
             await self._stop_frame_sampling(ctx)
             await self._stop_burned_detection(ctx)

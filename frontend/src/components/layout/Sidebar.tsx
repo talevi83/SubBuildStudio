@@ -11,7 +11,7 @@ import {
 } from '../settings/labels';
 import { useT, formatUsd } from '../../i18n';
 import { isActiveStatus } from '../../types';
-import { Film, PlusCircle, Cpu, Trash2, CheckCircle2, AlertCircle, Loader2, Settings, HelpCircle, X } from 'lucide-react';
+import { Film, PlusCircle, Cpu, Trash2, CheckCircle2, AlertCircle, Loader2, Settings, HelpCircle, X, Clock, Ban } from 'lucide-react';
 
 export const Sidebar: React.FC = () => {
   const jobs = useJobStore((s) => s.jobs);
@@ -24,6 +24,8 @@ export const Sidebar: React.FC = () => {
   const deleteJob = useJobStore((s) => s.deleteJob);
   const deleteJobs = useJobStore((s) => s.deleteJobs);
   const deleteAllJobs = useJobStore((s) => s.deleteAllJobs);
+  const cancelJobById = useJobStore((s) => s.cancelJobById);
+  const cancelAllActiveJobs = useJobStore((s) => s.cancelAllActiveJobs);
   const view = useUiStore((s) => s.view);
   const setView = useUiStore((s) => s.setView);
   const language = useUiStore((s) => s.language);
@@ -130,6 +132,15 @@ export const Sidebar: React.FC = () => {
     return () => clearInterval(timer);
   }, [hasBackgroundWork, fetchJobs]);
 
+  const activeQueueJobs = jobs.filter((j) => isActiveStatus(j.status));
+  const queuedJobs = activeQueueJobs.filter((j) => j.status === 'QUEUED' || j.status === 'IDLE');
+  const runningJobs = activeQueueJobs.filter((j) => j.status !== 'QUEUED' && j.status !== 'IDLE');
+  const showQueueBar = activeQueueJobs.length > 1 || queuedJobs.length > 0;
+  const queueProgress =
+    activeQueueJobs.length > 0
+      ? Math.round(activeQueueJobs.reduce((acc, j) => acc + (j.progress_percent || 0), 0) / activeQueueJobs.length)
+      : 0;
+
   const hw = systemInfo?.hardware;
   const isCuda = hw?.cuda_available;
   const appSettings = useSettingsStore((s) => s.settings);
@@ -231,6 +242,38 @@ export const Sidebar: React.FC = () => {
           )}
         </div>
 
+        {showQueueBar && (
+          <div
+            className="p-2.5 rounded-lg bg-indigo-950/35 border border-indigo-500/35 space-y-1.5 text-xs"
+            data-testid="sidebar-batch-queue-bar"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold text-indigo-200 truncate">
+                {t('sidebar.batchQueueStatus', {
+                  running: runningJobs.length,
+                  queued: queuedJobs.length,
+                  percent: queueProgress,
+                })}
+              </span>
+              <button
+                type="button"
+                onClick={() => void cancelAllActiveJobs()}
+                data-testid="sidebar-cancel-queue-btn"
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-600/80 hover:bg-rose-500 text-white text-[10px] font-semibold transition-colors cursor-pointer flex-shrink-0"
+              >
+                <Ban className="w-2.5 h-2.5" />
+                {t('sidebar.cancelQueue')}
+              </button>
+            </div>
+            <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden" dir="ltr">
+              <div
+                className="h-full bg-indigo-500 transition-all duration-300"
+                style={{ width: `${Math.max(4, queueProgress)}%` }}
+              />
+            </div>
+          </div>
+        )}
+
         {selectedJobIds.size > 0 && (
           <div
             className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-rose-950/30 border border-rose-500/30 text-xs"
@@ -307,6 +350,21 @@ export const Sidebar: React.FC = () => {
                   <span className="text-xs font-medium text-zinc-200 truncate flex-1" dir="auto">
                     {job.file_name}
                   </span>
+                  {isProcessing && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void cancelJobById(job.id);
+                      }}
+                      data-testid={`sidebar-cancel-job-${job.id}`}
+                      className="opacity-70 group-hover:opacity-100 text-zinc-400 hover:text-amber-400 p-0.5 rounded transition-opacity cursor-pointer"
+                      title={t('sidebar.cancelJobTitle')}
+                      aria-label={t('sidebar.cancelJobTitle')}
+                    >
+                      <Ban className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                   <button
                     onClick={async (e) => {
                       e.stopPropagation();
@@ -355,12 +413,16 @@ export const Sidebar: React.FC = () => {
                         {t('status.CANCELLED')}
                       </span>
                     )}
-                    {isProcessing && (
+                    {isProcessing && job.status === 'QUEUED' && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-300 border border-amber-500/20 font-medium">
+                        <Clock className="w-3 h-3" />
+                        {t('status.QUEUED')}
+                      </span>
+                    )}
+                    {isProcessing && job.status !== 'QUEUED' && (
                       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-indigo-500/10 text-indigo-400 font-medium animate-pulse">
                         <Loader2 className="w-3 h-3 animate-spin" />
-                        {job.status === 'QUEUED'
-                          ? t('status.QUEUED')
-                          : `${t(`status.${job.status}`)} (${Math.round(job.progress_percent)}%)`}
+                        {`${t(`status.${job.status}`)} (${Math.round(job.progress_percent)}%)`}
                       </span>
                     )}
                   </div>
