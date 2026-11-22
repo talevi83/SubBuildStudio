@@ -176,6 +176,12 @@ export const he: Messages = {
     notes: 'הערות רקע (רשות): על מה הסרטון ומי מדבר',
     notesPlaceholder: 'לדוגמה: ראיון בערוץ בישול. המנחה מדברת בלשון נקבה. להשאיר שמות מותגים באנגלית.',
     translationDisabled: 'התרגום כבוי. התוצאה תכיל רק את הכתוביות המתומללות בשפת המקור.',
+    hebrewModelHint: 'נבחרה עברית — מודל ivrit-ai Turbo נותן דיוק גבוה משמעותית לדיבור בעברית.',
+    hebrewModelSwitch: 'עבור ל-ivrit-ai',
+    sameLangPolishTitle: 'הגהה וליטוש AI באותה שפה',
+    sameLangPolishDesc:
+      'שפת המקור והיעד זהות. ה-AI יתקן שגיאות תמלול, פיסוק וכתיב בלי לשכתב את הניסוח.',
+    sameLangDisableAi: 'תמלול Whisper בלבד (ללא AI)',
     commsTitle: 'חיזוק קשר ומכשירי רדיו',
     commsDescription:
       'מדגיש תדרי ווקי־טוקי ורדיו, מנקה רעשי סטטי ומכוונן את זיהוי הדיבור של Whisper כדי לקלוט קשר צבאי מעוות ולחישות.',
@@ -904,6 +910,7 @@ export const he: Messages = {
     small: 'small (מאוזן)',
     medium: 'medium (מדויק)',
     'large-v3-turbo': 'large-v3-turbo (דיוק קרוב ל־large-v3, פי 3 מהיר)',
+    'ivrit-ai/whisper-large-v3-turbo-ct2': 'ivrit-ai Turbo (מומחה לעברית)',
     'large-v3': 'large-v3 (דיוק מקסימלי)',
   },
   ux: {

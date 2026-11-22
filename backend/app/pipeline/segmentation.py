@@ -138,12 +138,29 @@ def split_at_pauses(raw_segments: List[RawSegment], max_gap: float = PAUSE_SPLIT
     return out
 
 
-_TERMINAL_PUNCT = ('.', '?', '!', '\u2026', '."', '?"', '!"', '.\u201d', '?\u201d', '!\u201d')
-_ANY_PUNCT = _TERMINAL_PUNCT + (',', ';', ':', ',"', ',\u201d')
+_TERMINAL_PUNCT = ('.', '?', '!', '\u2026', '."', '?"', '!"', '.\u201d', '?\u201d', '!\u201d', '.\u05f4', '?\u05f4', '!\u05f4')
+_ANY_PUNCT = _TERMINAL_PUNCT + (',', ';', ':', ',"', ',\u201d', ',\u05f4')
 _ORPHAN_MAX_WORDS = 3
 _ORPHAN_LEAD = 0.2  # seconds each reattached word is placed before the next line's first word
 _ORPHAN_TAIL_PAD = 0.2  # seconds each reattached ending word extends the previous line
-_UNPUNCTUATED_OPENERS = {"hey", "hi", "hello", "yo", "well", "look", "listen", "wait", "oh"}
+_UNPUNCTUATED_OPENERS = {
+    "hey", "hi", "hello", "yo", "well", "look", "listen", "wait", "oh",
+    "היי", "שלום", "תשמע", "תשמעי", "תראה", "תראי", "רגע", "חכה", "חכי", "תקשיב", "תקשיבי",
+}
+
+
+def _is_unspaced_script(ch: str) -> bool:
+    """True for CJK/Japanese/Korean/Thai scripts where consecutive segments join without a space."""
+    if not ch:
+        return False
+    code = ord(ch)
+    return (
+        0x4E00 <= code <= 0x9FFF
+        or 0x3400 <= code <= 0x4DBF
+        or 0x3040 <= code <= 0x30FF
+        or 0xAC00 <= code <= 0xD7AF
+        or 0x0E00 <= code <= 0x0E7F
+    )
 
 
 def _orphan_tail(words: List[Any]) -> List[Any]:
@@ -297,7 +314,7 @@ def _tokens_from_raw(raw_segments: List[RawSegment]) -> List[_Tok]:
         if toks and seg_toks and not seg_toks[0].text[:1].isspace():
             prev_last = toks[-1].text[-1:]
             first = seg_toks[0].text[:1]
-            if prev_last.isascii() and prev_last.isalnum() and first.isascii() and first.isalnum():
+            if prev_last.isalnum() and first.isalnum() and not _is_unspaced_script(prev_last) and not _is_unspaced_script(first):
                 seg_toks[0].text = " " + seg_toks[0].text
 
         for i, tok in enumerate(seg_toks):

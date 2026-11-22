@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { api } from '../services/api';
-import { isActiveStatus } from '../types';
+import { isActiveStatus, isRtlLanguage } from '../types';
 import type {
   Job,
   JobStatus,
@@ -639,6 +639,9 @@ export const useJobStore = create<JobState>((set, get) => {
       try {
         set({ isLoading: true, error: null });
         const job = await api.getJob(jobId);
+        const hasTranslation = job.segments.some((s) => Boolean(s.translated_text));
+        const isRtlSource = isRtlLanguage(job.detected_language || job.source_language);
+        const untranslatedRtl = !hasTranslation && isRtlSource;
         set({
           activeJob: job,
           history: null,
@@ -652,6 +655,12 @@ export const useJobStore = create<JobState>((set, get) => {
           stageMessage: null,
           savingCount: 0,
           lastSavedAt: null,
+          ...(untranslatedRtl
+            ? {
+                applyRtlExport: true,
+                ...(get().subtitleOverlayMode === 'translated' ? { subtitleOverlayMode: 'original' as const } : {}),
+              }
+            : {}),
         });
         get().connectWebSocket(jobId);
         void get().refreshHistory();
@@ -678,7 +687,18 @@ export const useJobStore = create<JobState>((set, get) => {
           for (const seg of fresh.segments) merged.set(seg.index, seg);
           nextSegments = [...merged.values()].sort((a, b) => a.index - b.index);
         }
-        set({ activeJob: { ...fresh, segments: nextSegments } });
+        const hasTranslation = nextSegments.some((s) => Boolean(s.translated_text));
+        const isRtlSource = isRtlLanguage(fresh.detected_language || fresh.source_language);
+        const untranslatedRtl = !isActiveStatus(fresh.status) && nextSegments.length > 0 && !hasTranslation && isRtlSource;
+        set({
+          activeJob: { ...fresh, segments: nextSegments },
+          ...(untranslatedRtl
+            ? {
+                applyRtlExport: true,
+                ...(get().subtitleOverlayMode === 'translated' ? { subtitleOverlayMode: 'original' as const } : {}),
+              }
+            : {}),
+        });
       } catch (e) {
         console.error('Failed to refresh job:', e);
       }

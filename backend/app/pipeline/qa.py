@@ -35,32 +35,46 @@ def _contains_word(text: str, word: str) -> bool:
     return re.search(r"(?<![\w])" + re.escape(word.lower()) + r"(?![\w])", text.lower()) is not None
 
 
-def check_segment(seg_id: int, index: int, original: str, translated: Optional[str],
-                  segment_type: str, failed: bool, glossary: Optional[Dict]) -> List[QAIssue]:
+def check_segment(
+    seg_id: int,
+    index: int,
+    original: str,
+    translated: Optional[str],
+    segment_type: str,
+    failed: bool,
+    glossary: Optional[Dict],
+    translation_enabled: bool = True,
+) -> List[QAIssue]:
     issues: List[QAIssue] = []
     if segment_type == "ON_SCREEN" and not translated:
         return issues
-    if failed or not (translated or "").strip():
-        if (original or "").strip():
-            issues.append(QAIssue(seg_id, index, "missing", "No translation"))
-        return issues
-    text = translated or ""
+
+    has_translated = bool((translated or "").strip())
+    if failed or not has_translated:
+        if translation_enabled:
+            if (original or "").strip():
+                issues.append(QAIssue(seg_id, index, "missing", "No translation"))
+            return issues
+        text = translated if has_translated else (original or "")
+    else:
+        text = translated or ""
 
     if _HEBREW.search(text):
-        for m in _LATIN_WORD.finditer(text):
-            w = m.group(0)
-            if len(w) < 2 or w.isupper() or w.lower() in _LATIN_ALLOWED:
-                continue
-            issues.append(QAIssue(seg_id, index, "latin", f"Untranslated word: {w}"))
-            break
+        if has_translated:
+            for m in _LATIN_WORD.finditer(text):
+                w = m.group(0)
+                if len(w) < 2 or w.isupper() or w.lower() in _LATIN_ALLOWED:
+                    continue
+                issues.append(QAIssue(seg_id, index, "latin", f"Untranslated word: {w}"))
+                break
 
-    for pat, label in ((_FEM_PRON_MASC_VERB, "feminine pronoun + masculine verb"),
-                       (_MASC_PRON_FEM_VERB, "masculine pronoun + feminine verb")):
-        m = pat.search(text)
-        if m:
-            issues.append(QAIssue(seg_id, index, "agreement", f"Pronoun/verb mismatch ({label}): {m.group(0)}"))
+        for pat, label in ((_FEM_PRON_MASC_VERB, "feminine pronoun + masculine verb"),
+                           (_MASC_PRON_FEM_VERB, "masculine pronoun + feminine verb")):
+            m = pat.search(text)
+            if m:
+                issues.append(QAIssue(seg_id, index, "agreement", f"Pronoun/verb mismatch ({label}): {m.group(0)}"))
 
-    if glossary:
+    if glossary and has_translated:
         for c in glossary.get("characters", []) or []:
             src, tgt = (c.get("name") or "").strip(), (c.get("target_name") or "").strip()
             if src and tgt and _contains_word(original or "", src) and tgt not in text:
@@ -102,13 +116,13 @@ def _overlap_issues(rows: List) -> Dict[int, QAIssue]:
     return overlaps
 
 
-def check_rows(rows: Iterable, glossary: Optional[Dict]) -> List[QAIssue]:
+def check_rows(rows: Iterable, glossary: Optional[Dict], translation_enabled: bool = True) -> List[QAIssue]:
     row_list = list(rows)
     overlap_by_id = _overlap_issues(row_list)
     out: List[QAIssue] = []
     for r in row_list:
         out.extend(check_segment(r.id, r.index, r.original_text, r.translated_text, r.segment_type,
-                                 bool(r.translation_failed), glossary))
+                                 bool(r.translation_failed), glossary, translation_enabled=translation_enabled))
         if r.id in overlap_by_id:
             out.append(overlap_by_id[r.id])
         if _has_timing(r):

@@ -613,7 +613,9 @@ def quality_check(job_id: str, session: Session = Depends(get_session)):
             glossary = json.loads(job.glossary_json)
         except Exception:
             glossary = None
-    issues = check_rows(_ordered_rows(session, job_id), glossary)
+    rows = _ordered_rows(session, job_id)
+    translation_enabled = bool(job.enable_translation or any(r.translated_text for r in rows))
+    issues = check_rows(rows, glossary, translation_enabled=translation_enabled)
     return [QAIssueSchema(segment_id=i.segment_id, index=i.index, kind=i.kind, message=i.message) for i in issues]
 
 

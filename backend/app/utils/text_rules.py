@@ -2,14 +2,15 @@
 import re
 
 # A token that ends a sentence: "word." "word?!" "word…" 'word."' and CJK full stops.
-SENTENCE_END = re.compile(r"""[.!?…。！？]+["'”’)\]]*$""")
+SENTENCE_END = re.compile(r"""[.!?…。！？]+["'”’״׳)\]]*$""")
 # A token that ends a clause: commas, semicolons, colons, dashes.
-CLAUSE_END = re.compile(r"""[,;:،、，—–]["'”’)\]]*$|--$""")
+CLAUSE_END = re.compile(r"""[,;:،、，—–]["'”’״׳)\]]*$|--$""")
 
 # Abbreviations whose trailing period does not end a sentence.
 ABBREVIATIONS = {
     "mr.", "mrs.", "ms.", "dr.", "st.", "sr.", "jr.", "lt.", "col.", "gen.", "capt.", "cpt.",
     "sgt.", "cmdr.", "adm.", "prof.", "vs.", "etc.", "u.s.", "u.k.", "a.m.", "p.m.",
+    'ד"ר', "ד״ר", "פרופ'", "פרופ׳", "עמ'", "עמ׳", "מס'", "מס׳", "וכו'", "וכו׳",
 }
 
 # Lines/blocks should not end on these (they belong to the following words).
@@ -31,6 +32,11 @@ WEAK_END_WORDS = {
     "don't", "doesn't", "didn't", "can't", "couldn't", "won't", "wouldn't", "shouldn't",
     "isn't", "aren't", "wasn't", "weren't", "haven't", "hasn't", "hadn't", "mustn't",
     "mr.", "mrs.", "ms.", "dr.", "st.", "prof.", "gen.", "col.", "lt.", "sgt.", "capt.",
+    # Hebrew function words & pronouns
+    "של", "על", "אל", "עם", "את", "לא", "אין", "יש", "כי", "אם", "כדי", "בגלל",
+    "לפני", "אחרי", "כמו", "בין", "תחת", "מול", "ליד", "בתוך",
+    "מה", "מי", "איך", "איפה", "מתי", "למה", "כמה", "איזה", "איזו", "אילו",
+    "גם", "רק", "עוד", "כל", "הוא", "היא", "אני", "אתה", "אנחנו", "הם", "הן",
 }
 
 # Natural places to start a new line/block.
@@ -38,9 +44,10 @@ BREAK_BEFORE_WORDS = {
     "and", "but", "or", "because", "so", "that", "which", "who", "whom", "whose", "when",
     "if", "while", "although", "though", "until", "unless", "then", "where", "after",
     "before", "since", "whether",
+    "אבל", "אך", "או", "כי", "אז", "כדי", "בגלל", "אם", "אחרי", "לפני", "למרות", "כאשר", "בעוד", "עד",
 }
 
-_STRIP = "\"'“”‘’()[]{}.,!?;:…-—–"
+_STRIP = "\"'“”‘’״׳()[]{}.,!?;:…-—–"
 
 
 def bare(word: str) -> str:

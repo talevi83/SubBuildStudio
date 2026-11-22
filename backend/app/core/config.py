@@ -41,7 +41,15 @@ class Settings(BaseSettings):
     # >0 enables faster-whisper's BatchedInferencePipeline on CUDA (much faster, more VRAM).
     # 0 = classic sequential decoding.
     whisper_batch_size: int = 8
-    whisper_models: List[str] = ["tiny", "base", "small", "medium", "large-v3-turbo", "large-v3"]
+    whisper_models: List[str] = [
+        "tiny",
+        "base",
+        "small",
+        "medium",
+        "large-v3-turbo",
+        "ivrit-ai/whisper-large-v3-turbo-ct2",
+        "large-v3",
+    ]
     # How many jobs may use the GPU (transcription) at the same time
     max_concurrent_transcriptions: int = 1
     # Re-listen (Whisper without VAD) to stretches no subtitle covers: recovers speech the voice

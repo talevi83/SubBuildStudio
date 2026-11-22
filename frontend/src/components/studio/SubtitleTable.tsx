@@ -89,6 +89,7 @@ export const SubtitleTable: React.FC = () => {
     return ids;
   }, [segments]);
   const isRtl = isRtlLanguage(activeJob?.target_language);
+  const isRtlSource = isRtlLanguage(activeJob?.detected_language || activeJob?.source_language);
   const jobFinished = !!activeJob && !isActiveStatus(activeJob.status);
   // Only promise "Translating…" while a translation is actually running
   const translationEnabled = !!activeJob?.enable_translation && isActiveStatus(activeJob?.status);
@@ -457,6 +458,7 @@ export const SubtitleTable: React.FC = () => {
                       isActive={isActive}
                       isSelected={selectedSegmentIndex === seg.index}
                       isRtl={isRtl}
+                      isRtlSource={isRtlSource}
                       translationEnabled={translationEnabled}
                       maxCps={maxCps}
                       onSelect={onSelect}

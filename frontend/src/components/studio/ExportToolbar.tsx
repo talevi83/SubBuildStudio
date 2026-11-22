@@ -42,7 +42,8 @@ export const ExportToolbar: React.FC = () => {
   // Lines a translated export would still show in the original language
   const untranslatedCount = hasTranslation ? activeJob.segments.filter((s) => !s.translated_text).length : 0;
   const target = targetLanguage ?? activeJob.target_language;
-  const isRtl = isRtlLanguage(target);
+  const isRtlSource = isRtlLanguage(activeJob.detected_language || activeJob.source_language);
+  const isRtl = hasTranslation ? isRtlLanguage(target) : isRtlSource;
   const activeProvider =
     appSettings?.translation.provider || inferProviderFromModelId(activeJob.gemini_model || appSettings?.translation.model);
   const canTranslate =
@@ -68,7 +69,7 @@ export const ExportToolbar: React.FC = () => {
     setSaving(true);
     try {
       await flushPendingEdits();
-      const options = { format: 'srt' as const, use_translated: true, apply_rtl: applyRtlExport };
+      const options = { format: 'srt' as const, use_translated: hasTranslation, apply_rtl: isRtl && applyRtlExport };
       let result = await api.saveNextToVideo(activeJob.id, options);
       if (!result.saved && result.exists) {
         const replace = await confirmDialog({
@@ -263,7 +264,7 @@ export const ExportToolbar: React.FC = () => {
             {t('toolbar.bilingualSrt')}
           </button>
         )}
-        {hasTranslation && (
+        {hasSegments && (
           <button
             onClick={() => void saveNextToVideo()}
             disabled={!hasSegments || saving || !!activeJob.is_upload}
@@ -297,7 +298,7 @@ export const ExportToolbar: React.FC = () => {
           </span>
         )}
         <button
-          onClick={() => void downloadFile(api.getExportUrl(activeJob.id, 'srt', false, false))}
+          onClick={() => void downloadFile(api.getExportUrl(activeJob.id, 'srt', false, isRtlSource ? applyRtlExport : false))}
           disabled={!hasSegments}
           data-testid="export-original-srt"
           className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-200 border border-zinc-700/60 rounded-lg text-xs font-medium transition-colors cursor-pointer"
@@ -306,7 +307,7 @@ export const ExportToolbar: React.FC = () => {
           {t('toolbar.originalSrt')}
         </button>
         <button
-          onClick={() => void downloadFile(api.getExportUrl(activeJob.id, 'vtt', hasTranslation, hasTranslation && applyRtlExport))}
+          onClick={() => void downloadFile(api.getExportUrl(activeJob.id, 'vtt', hasTranslation, isRtl && applyRtlExport))}
           disabled={!hasSegments}
           data-testid="export-vtt"
           className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-200 border border-zinc-700/60 rounded-lg text-xs font-medium transition-colors cursor-pointer"

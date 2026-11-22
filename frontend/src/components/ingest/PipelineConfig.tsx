@@ -7,7 +7,7 @@ import { useSettingsStore } from '../../store/useSettingsStore';
 import { useT, formatUsd } from '../../i18n';
 import type { MessageKey } from '../../i18n';
 import { useCostEstimate } from '../../hooks/useCostEstimate';
-import { SOURCE_LANGUAGES, TARGET_LANGUAGES, sameLanguage } from './languages';
+import { SOURCE_LANGUAGES, TARGET_LANGUAGES, sameLanguage, isSameExplicitLanguage } from './languages';
 import {
   inferProviderFromModelId,
   isProviderReady,
@@ -107,7 +107,7 @@ export const PipelineConfig: React.FC = () => {
   );
   const whisperModels = systemInfo?.whisper_models?.length
     ? systemInfo.whisper_models
-    : ['tiny', 'base', 'small', 'medium', 'large-v3-turbo', 'large-v3'];
+    : ['tiny', 'base', 'small', 'medium', 'large-v3-turbo', 'ivrit-ai/whisper-large-v3-turbo-ct2', 'large-v3'];
   // Mirrors the backend's choice: a text-based forced/"signs" track beats scanning frames
   const forcedTrack = (probeResult?.subtitle_streams || []).find(
     (s) => s.text_based && (s.forced || /forced|signs/i.test(s.title || ''))
@@ -181,7 +181,16 @@ export const PipelineConfig: React.FC = () => {
               >
                 {whisperModels.map((m) => (
                   <option key={m} value={m}>
-                    {m in { tiny: 1, base: 1, small: 1, medium: 1, 'large-v3-turbo': 1, 'large-v3': 1 }
+                    {m in
+                    {
+                      tiny: 1,
+                      base: 1,
+                      small: 1,
+                      medium: 1,
+                      'large-v3-turbo': 1,
+                      'ivrit-ai/whisper-large-v3-turbo-ct2': 1,
+                      'large-v3': 1,
+                    }
                       ? t(`whisperModels.${m}` as MessageKey)
                       : m}
                   </option>
@@ -201,6 +210,24 @@ export const PipelineConfig: React.FC = () => {
                   </option>
                 ))}
               </select>
+              {pipelineConfig.source_language === 'he' &&
+                pipelineConfig.whisper_model !== 'ivrit-ai/whisper-large-v3-turbo-ct2' &&
+                whisperModels.includes('ivrit-ai/whisper-large-v3-turbo-ct2') && (
+                  <div
+                    data-testid="hebrew-model-banner"
+                    className="mt-2 p-2 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-2 text-[11px] text-amber-200"
+                  >
+                    <span>{t('config.hebrewModelHint')}</span>
+                    <button
+                      type="button"
+                      data-testid="use-ivrit-model"
+                      onClick={() => updatePipelineConfig({ whisper_model: 'ivrit-ai/whisper-large-v3-turbo-ct2' })}
+                      className="px-2 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-100 font-semibold whitespace-nowrap cursor-pointer"
+                    >
+                      {t('config.hebrewModelSwitch')}
+                    </button>
+                  </div>
+                )}
             </div>
             <label className="pt-1 flex items-center justify-between gap-3 cursor-pointer">
               <span>
@@ -378,6 +405,23 @@ export const PipelineConfig: React.FC = () => {
                     </option>
                   ))}
                 </select>
+                {isSameExplicitLanguage(pipelineConfig.source_language, pipelineConfig.target_language) && (
+                  <div
+                    data-testid="same-lang-polish-banner"
+                    className="mt-2 p-2.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 space-y-1.5 text-[11px]"
+                  >
+                    <div className="font-semibold text-cyan-200">{t('config.sameLangPolishTitle')}</div>
+                    <p className="text-cyan-300/90 leading-relaxed">{t('config.sameLangPolishDesc')}</p>
+                    <button
+                      type="button"
+                      data-testid="disable-translation-btn"
+                      onClick={() => updatePipelineConfig({ enable_translation: false })}
+                      className="px-2 py-1 rounded bg-surface hover:bg-zinc-800 border border-line text-zinc-200 font-medium cursor-pointer"
+                    >
+                      {t('config.sameLangDisableAi')}
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="p-2.5 rounded-lg bg-surface border border-line space-y-2">

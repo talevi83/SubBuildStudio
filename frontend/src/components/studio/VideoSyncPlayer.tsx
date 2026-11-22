@@ -302,6 +302,8 @@ export const VideoSyncPlayer: React.FC = () => {
     );
   };
 
+  const containsRtl = (text: string) => /[\u0590-\u05FF\u0600-\u06FF]/.test(text);
+  const isRtlSource = isRtlLanguage(activeJob?.detected_language || activeJob?.source_language);
   const isRtlTarget = isRtlLanguage(activeJob?.target_language);
   const showOriginal = subtitleOverlayMode === 'dual' || subtitleOverlayMode === 'original';
   const showTranslated = subtitleOverlayMode === 'dual' || subtitleOverlayMode === 'translated';
@@ -430,6 +432,7 @@ export const VideoSyncPlayer: React.FC = () => {
                 >
                   {displayOrig && (
                     <p
+                      dir={isRtlSource || containsRtl(displayOrig) ? 'rtl' : 'ltr'}
                       className={`font-medium whitespace-pre-line italic ${
                         displayTrans ? 'text-cyan-200' : ''
                       }`}
@@ -476,6 +479,7 @@ export const VideoSyncPlayer: React.FC = () => {
                 >
                   {displayOrig && (
                     <p
+                      dir={isRtlSource || containsRtl(displayOrig) ? 'rtl' : 'ltr'}
                       className="font-medium whitespace-pre-line"
                       style={{
                         color: displayTrans ? 'rgba(255, 255, 255, 0.88)' : subtitleStyle.textColor,

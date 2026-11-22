@@ -47,3 +47,10 @@ export function sameLanguage(fileLanguage: string | null | undefined, spoken: st
   if (!file) return false;
   return spoken && spoken !== 'auto' ? spoken === file : file === 'en';
 }
+
+/** True when both source and target resolve to the same explicit (non-auto) language code. */
+export function isSameExplicitLanguage(source?: string | null, target?: string | null): boolean {
+  const src = languageCode(source);
+  const tgt = languageCode(target);
+  return Boolean(src && tgt && src === tgt);
+}

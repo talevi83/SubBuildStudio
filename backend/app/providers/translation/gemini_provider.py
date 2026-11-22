@@ -15,10 +15,17 @@ from app.providers.translation.base import (
     TranslatableSegment,
     BatchProgressCallback,
 )
-from app.utils.languages import is_rtl
+from app.utils.languages import is_rtl, language_code
 from app.utils.rtl_fixer import apply_rtl_fix, strip_directional_marks
 
 logger = logging.getLogger(__name__)
+
+
+def is_same_language(source_lang: str, target_lang: str) -> bool:
+    """True when source and target resolve to the same language code (same-language proofreading mode)."""
+    src = language_code(source_lang)
+    tgt = language_code(target_lang)
+    return bool(src and tgt and src == tgt)
 
 # Keep the glossary request comfortably inside the model's context window
 _GLOSSARY_MAX_CHARS = 150_000
@@ -112,13 +119,66 @@ def build_subtitle_system_prompt(
     convert_to_metric: bool = False,
     remove_sdh_speakers: bool = False,
 ) -> str:
-    """Construct the system prompt engineered for cinema/broadcast subtitle translation."""
+    """Construct the system prompt engineered for cinema/broadcast subtitle translation or same-language polish."""
     extra_context = (
         f"\n### SHOW / MOVIE SPECIFIC CONTEXT (from the user — highest priority):\n{context_notes.strip()}\n"
         if context_notes and context_notes.strip()
         else ""
     )
     glossary_block = format_glossary(glossary)
+    same_lang = is_same_language(source_lang, target_lang)
+
+    if same_lang:
+        hebrew_polish = ""
+        if target_lang.strip().lower() in ("hebrew", "he", "עברית"):
+            hebrew_polish = """
+6. **Hebrew Proofreading & Orthography:**
+   - Fix common Whisper/ASR Hebrew homophone and suffix mishearings from context (e.g., אם/עם, אל/על, לו/לא, ש/כש, gender endings matching the speaker/listener).
+   - Use natural modern Israeli spelling (כתיב מלא תקני) without changing spoken slang or colloquial phrasing (keep "יאללה", "אחי", "וואלה", "ממש", etc. intact).
+   - Use proper Hebrew gershayim ״ and geresh ׳ for abbreviations and foreign letters (ד״ר, צה״ל, אב״כ, ג׳ון).
+"""
+        metric_polish = ""
+        if convert_to_metric:
+            metric_polish = """
+7. **Metric Conversion (if any imperial units appear):**
+   - Convert literal non-metric measurements into natural metric equivalents while leaving figurative idioms untouched.
+"""
+        sdh_polish = ""
+        if remove_sdh_speakers:
+            sdh_polish = """
+8. **SDH Speaker Labels Stripping:**
+   - Strip `[Name]` or `Name:` closed-caption speaker tags from dialogue while preserving genuine on-screen `[...]` titles.
+"""
+        return f"""You are an elite broadcast subtitle proofreader and copy-editor for {target_lang} speech transcripts.
+
+### CORE OBJECTIVE
+Polish the `target_batch` {target_lang} ASR transcript into clean, broadcast-ready {target_lang} subtitles while **preserving the speaker's exact wording, phrasing, register, and slang** and strictly maintaining a 1-to-1 mapping with each segment `index`.
+- **DO NOT rewrite, paraphrase, or over-formalize** what the speaker actually said.
+- **ONLY fix:** automatic speech recognition (ASR) typos/misheard words (guided by context and the glossary), punctuation, capitalization/spelling, proper nouns/brands from the glossary, speaker-turn hyphens (`- `), and 2-line formatting.
+{extra_context}
+{glossary_block}
+### STRICT TECHNICAL RULES
+1. **1-to-1 Index Mapping:**
+   - Return the exact same number of items as provided in `target_batch`, with exact matching `index`. Never merge, skip, or invent indices, and do NOT output items from `previous_context` or `lookahead_context`.
+
+2. **Line Length & Formatting Constraints:**
+   - Maximum **{max_chars_per_line} characters per line** and maximum **2 lines per subtitle segment** (separated by `\\n`).
+   - Respect `duration_sec` (aim for {settings.target_cps:.0f} characters per second or fewer) without omitting words unless trimming clear ASR filler stutters.
+
+3. **Split Sentences & Continuity (No Orphan Words):**
+   - Inspect `previous_context`, adjacent items in `target_batch`, and `lookahead_context` so sentences spanning boundaries are punctuated coherently and 1–2 orphan words are not left on the wrong side of a boundary.
+
+4. **Dialogue & Dual Speakers:**
+   - If a segment contains two different speakers, place each turn on its own line starting with `- ` (`- ...\\n- ...`).
+
+5. **Segment Types (`segment_type`):**
+   - Preserve `ON_SCREEN` square brackets `[...]`; keep `COMMS` terse; polish `DIALOGUE` and `FOREIGN` naturally.
+{hebrew_polish}
+{metric_polish}
+{sdh_polish}
+9. **Output hygiene:** Plain text only. Keep punctuation at the logical end of sentences; do NOT insert Unicode direction marks or manually reverse punctuation. Never put the ASCII double-quote character (") inside `translated_text` — use “ ” or Hebrew ״ / ׳.
+"""
+
     hebrew_rules = ""
     if target_lang.strip().lower() in ("hebrew", "he", "עברית"):
         chyron_sdh_note = " (Note: Do not confuse on-screen chyrons with SDH speaker labels in dialogue like `[John] Hello` when SDH stripping is enabled)" if remove_sdh_speakers else ""
@@ -396,14 +456,24 @@ class GeminiTranslator(BaseTranslator):
         if len(transcript) > _GLOSSARY_MAX_CHARS:
             transcript = transcript[:_GLOSSARY_MAX_CHARS]
         notes = f"\nUser notes about the show:\n{context_notes.strip()}\n" if context_notes.strip() else ""
-        system_prompt = (
-            f"You prepare subtitle translators. Read the full {source_lang} transcript of a movie/episode and "
-            f"produce a concise glossary for translating it into {target_lang}: the main characters (with their "
-            f"gender, inferred from pronouns, titles and how others address them), recurring terminology, ranks, "
-            f"places and call signs with a recommended {target_lang} rendering, and notes on tone/register. "
-            f"Only include what the transcript supports; mark gender 'unknown' when unsure.{notes}"
-            f"{_known_glossary_note(known_glossary)}"
-        )
+        if is_same_language(source_lang, target_lang):
+            system_prompt = (
+                f"You prepare subtitle proofreaders. Read the full {target_lang} transcript of a video and produce "
+                f"a concise glossary for copy-editing it in {target_lang}: the main speakers/people mentioned "
+                f"(exact {target_lang} spelling, gender), recurring technical terminology, brands, places and jargon "
+                f"with their authoritative {target_lang} spelling, and notes on tone/register. "
+                f"Only include what the transcript supports; mark gender 'unknown' when unsure.{notes}"
+                f"{_known_glossary_note(known_glossary)}"
+            )
+        else:
+            system_prompt = (
+                f"You prepare subtitle translators. Read the full {source_lang} transcript of a movie/episode and "
+                f"produce a concise glossary for translating it into {target_lang}: the main characters (with their "
+                f"gender, inferred from pronouns, titles and how others address them), recurring terminology, ranks, "
+                f"places and call signs with a recommended {target_lang} rendering, and notes on tone/register. "
+                f"Only include what the transcript supports; mark gender 'unknown' when unsure.{notes}"
+                f"{_known_glossary_note(known_glossary)}"
+            )
         try:
             response = await self._generate(
                 transcript, system_prompt, GlossarySchema, temperature=0.1,

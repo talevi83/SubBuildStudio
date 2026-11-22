@@ -13,6 +13,7 @@ interface SubtitleRowProps {
   isActive: boolean;
   isSelected: boolean;
   isRtl: boolean;
+  isRtlSource?: boolean;
   translationEnabled: boolean;
   maxCps: number;
   onSelect: (seg: SubtitleSegment) => void;
@@ -195,6 +196,7 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
   isActive,
   isSelected,
   isRtl,
+  isRtlSource,
   translationEnabled,
   maxCps,
   onSelect,
@@ -471,7 +473,7 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
           value={seg.original_text}
           disabled={!editable}
           dir="auto"
-          className={`${textareaClass} border-transparent text-zinc-200`}
+          className={`${textareaClass} border-transparent text-zinc-200${isRtlSource ? ' font-rtl-hebrew' : ''}`}
           onCommit={commit('original_text')}
         />
       </td>

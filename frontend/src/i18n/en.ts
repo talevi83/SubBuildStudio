@@ -174,6 +174,12 @@ export const en = {
     notes: 'Context notes (optional): what the video is about, who is speaking',
     notesPlaceholder: 'e.g. Cooking channel interview. The host is a woman. Keep brand names in English.',
     translationDisabled: 'Translation is off. The output will contain the original transcribed subtitles only.',
+    hebrewModelHint: 'Hebrew detected — ivrit-ai Turbo gives far higher accuracy for Hebrew speech.',
+    hebrewModelSwitch: 'Switch to ivrit-ai',
+    sameLangPolishTitle: 'Same-Language AI Proofread & Polish',
+    sameLangPolishDesc:
+      'Source and target are the same language. AI will fix ASR typos, punctuation, and spelling without rewriting wording.',
+    sameLangDisableAi: 'Raw Whisper only (no AI)',
     commsTitle: 'Tactical Comms & Radio Boost',
     commsDescription:
       'Enhances walkie-talkie/radio frequencies, reduces static, and tunes Whisper VAD to capture distorted military comms and whispers.',
@@ -904,6 +910,7 @@ export const en = {
     small: 'small (balanced)',
     medium: 'medium (accurate)',
     'large-v3-turbo': 'large-v3-turbo (near large-v3 accuracy, ~3x faster)',
+    'ivrit-ai/whisper-large-v3-turbo-ct2': 'ivrit-ai Turbo (Hebrew specialist)',
     'large-v3': 'large-v3 (maximum accuracy)',
   },
   ux: {
