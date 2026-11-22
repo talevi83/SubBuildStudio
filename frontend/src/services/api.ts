@@ -436,6 +436,31 @@ export const api = {
     return t !== undefined ? `${API_BASE}/jobs/${jobId}/preview-frame?t=${t.toFixed(2)}` : `${API_BASE}/jobs/${jobId}/preview-frame`;
   },
 
+  getFcpxmlExportUrl(jobId: string, useTranslated: boolean, applyRtl = true, fps = 25): string {
+    const params = new URLSearchParams({
+      use_translated: String(useTranslated),
+      apply_rtl: String(applyRtl),
+      fps: String(fps),
+    });
+    return `${API_BASE}/jobs/${jobId}/export/fcpxml?${params.toString()}`;
+  },
+
+  getMarkdownExportUrl(jobId: string, useTranslated: boolean, bilingual = false): string {
+    const params = new URLSearchParams({
+      use_translated: String(useTranslated),
+      bilingual: String(bilingual),
+    });
+    return `${API_BASE}/jobs/${jobId}/export/markdown?${params.toString()}`;
+  },
+
+  getDocxExportUrl(jobId: string, useTranslated: boolean, bilingual = false): string {
+    const params = new URLSearchParams({
+      use_translated: String(useTranslated),
+      bilingual: String(bilingual),
+    });
+    return `${API_BASE}/jobs/${jobId}/export/docx?${params.toString()}`;
+  },
+
   /** The project's edit history (steps oldest first, and the current one). */
   getHistory(jobId: string): Promise<EditHistory> {
     return request(`${API_BASE}/jobs/${jobId}/history`, undefined, 'Could not load the edit history');

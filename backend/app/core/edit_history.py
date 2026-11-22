@@ -32,7 +32,7 @@ COALESCE_SECONDS = 90.0
 
 SNAPSHOT_FIELDS = (
     "id", "index", "start_time", "end_time", "original_text", "translated_text",
-    "translation_failed", "segment_type", "confidence", "cps",
+    "translation_failed", "segment_type", "confidence", "cps", "words_json",
 )
 
 # job id -> [lock, number of holders + waiters]; an entry is dropped when nobody uses it, so ids of

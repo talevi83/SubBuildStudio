@@ -40,6 +40,7 @@ from app.models.schemas import (
     MergeSegmentsRequest,
     SplitSegmentRequest,
     SubtitleSegmentSchema,
+    WordTimingSchema,
 )
 from app.pipeline.orchestrator import PipelineOrchestrator, spawn_background, ACTIVE_STATUSES, _now
 from app.utils.filenames import safe_basename
@@ -77,6 +78,31 @@ def _history_record(session: Session, job: Job, recording: bool, action: str,
         logger.warning(f"Could not record edit history for {job.id}: {e}")
 
 
+def _parse_words_raw(raw: Optional[str]) -> Optional[List[dict]]:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            return None
+        return [item for item in parsed if isinstance(item, dict) and "w" in item and "s" in item and "e" in item]
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_words_json(raw: Optional[str]) -> Optional[List[WordTimingSchema]]:
+    parsed = _parse_words_raw(raw)
+    if not parsed:
+        return None
+    out: List[WordTimingSchema] = []
+    for item in parsed:
+        try:
+            out.append(WordTimingSchema(w=str(item["w"]), s=float(item["s"]), e=float(item["e"])))
+        except (ValueError, TypeError):
+            continue
+    return out or None
+
+
 def _segment_to_schema(s: SubtitleSegmentRecord) -> SubtitleSegmentSchema:
     return SubtitleSegmentSchema(
         id=s.id,
@@ -91,6 +117,7 @@ def _segment_to_schema(s: SubtitleSegmentRecord) -> SubtitleSegmentSchema:
         segment_type=s.segment_type or "DIALOGUE",
         confidence=s.confidence,
         cps=s.cps,
+        words=_parse_words_json(getattr(s, "words_json", None)),
     )
 
 
@@ -704,6 +731,10 @@ def _apply_segment_patch(seg: SubtitleSegmentRecord, patch: SegmentUpdate) -> No
         raise HTTPException(status_code=422, detail=f"Segment #{seg.index}: end time must be after start time")
     seg.start_time, seg.end_time = start, end
     if patch.original_text is not None:
+        if patch.original_text != seg.original_text:
+            existing_words = _parse_words_raw(getattr(seg, "words_json", None))
+            if existing_words is not None and len(patch.original_text.split()) != len(existing_words):
+                seg.words_json = None
         seg.original_text = patch.original_text
     if patch.translated_text is not None:
         seg.translated_text = strip_directional_marks(patch.translated_text)
@@ -949,10 +980,14 @@ def split_segment(
     recording = _history_begin(session, job)
     old_end = seg.end_time
     old_index = seg.index
+    raw_words = _parse_words_raw(getattr(seg, "words_json", None))
+    left_words = [w for w in raw_words if float(w["s"]) < split_at] if raw_words else []
+    right_words = [w for w in raw_words if float(w["s"]) >= split_at] if raw_words else []
 
     seg.end_time = split_at
     seg.original_text = orig1 or seg.original_text
     seg.translated_text = (tr1 or seg.translated_text) if has_tr else None
+    seg.words_json = json.dumps(left_words, ensure_ascii=False) if left_words else None
     _refresh_cps(seg)
     session.add(seg)
 
@@ -966,6 +1001,7 @@ def split_segment(
         translation_failed=seg.translation_failed,
         segment_type=seg.segment_type,
         confidence=seg.confidence,
+        words_json=json.dumps(right_words, ensure_ascii=False) if right_words else None,
     )
     _refresh_cps(second)
     session.add(second)
@@ -1038,6 +1074,11 @@ def merge_segments(job_id: str, req: MergeSegmentsRequest, session: Session = De
         first.translation_failed = untranslated_part
     else:
         first.translation_failed = any(t.translation_failed for t in targets)
+    word_chunks = [_parse_words_raw(getattr(t, "words_json", None)) for t in targets if (t.original_text or "").strip()]
+    if word_chunks and all(word_chunks):
+        first.words_json = json.dumps([w for chunk in word_chunks for w in (chunk or [])], ensure_ascii=False)
+    else:
+        first.words_json = None
     _refresh_cps(first)
     session.add(first)
 
@@ -1074,6 +1115,7 @@ def shift_segments(job_id: str, req: ShiftSegmentsRequest, session: Session = De
 
     recording = _history_begin(session, job)
     for seg in targets:
+        old_start = seg.start_time
         dur = max(0.1, round(seg.end_time - seg.start_time, 3))
         shifted_start = seg.start_time + req.offset_seconds
         new_start = max(0.0, round(shifted_start, 3))
@@ -1083,6 +1125,15 @@ def shift_segments(job_id: str, req: ShiftSegmentsRequest, session: Session = De
             new_end = max(round(new_start + 0.1, 3), round(seg.end_time + req.offset_seconds, 3))
         seg.start_time = new_start
         seg.end_time = new_end
+        parsed_words = _parse_words_raw(getattr(seg, "words_json", None))
+        if parsed_words:
+            delta = round(new_start - old_start, 3)
+            shifted_words = []
+            for w in parsed_words:
+                ws = round(max(0.0, float(w["s"]) + delta), 3)
+                we = round(max(ws, float(w["e"]) + delta), 3)
+                shifted_words.append({"w": w["w"], "s": ws, "e": we})
+            seg.words_json = json.dumps(shifted_words, ensure_ascii=False)
         _refresh_cps(seg)
         session.add(seg)
     session.flush()
@@ -1213,6 +1264,7 @@ def move_segment(job_id: str, req: MoveSegmentRequest, session: Session = Depend
     except Exception as e:
         retimed, message = False, f"Rows moved, but the timing check failed: {e}"
     for r in rows[lo:hi + 1]:
+        r.words_json = None
         _refresh_cps(r)
         session.add(r)
     session.commit()

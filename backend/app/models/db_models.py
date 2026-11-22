@@ -42,6 +42,7 @@ class SubtitleSegmentRecord(SQLModel, table=True):
     segment_type: str = Field(default=SegmentType.DIALOGUE.value)
     confidence: Optional[float] = 1.0
     cps: Optional[float] = 0.0
+    words_json: Optional[str] = None
 
     job: Optional["Job"] = Relationship(back_populates="segments")
 

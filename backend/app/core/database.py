@@ -103,6 +103,7 @@ _ADDED_COLUMNS = {
     "subtitle_segments": {
         "translation_failed": "BOOLEAN NOT NULL DEFAULT 0",
         "segment_type": "VARCHAR NOT NULL DEFAULT 'DIALOGUE'",
+        "words_json": "VARCHAR",
     },
 }
 

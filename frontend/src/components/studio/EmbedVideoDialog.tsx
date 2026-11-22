@@ -18,7 +18,7 @@ import {
   subtitleFontStack,
   useUiStore,
 } from '../../store/useUiStore';
-import { isRtlLanguage, type EmbedMode, type EmbedQuality, type EmbedVideoOptions, type EmbedVideoStatus, type SubtitleFontFamily } from '../../types';
+import { isRtlLanguage, type EmbedMode, type EmbedQuality, type EmbedVideoOptions, type EmbedVideoStatus, type SubtitleFontFamily, type SubtitleHighlightMode } from '../../types';
 import { useT } from '../../i18n';
 import { CheckCircle2, Download, Film, Flame, Layers, Loader2, Palette, X, XCircle } from 'lucide-react';
 
@@ -324,7 +324,21 @@ export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslat
                     className="leading-snug whitespace-pre-line"
                     style={{ color: subtitleStyle.textColor }}
                   >
-                    {useTranslated && hasTranslation ? previewSample.trans : previewSample.orig}
+                    {subtitleStyle.highlightMode !== 'none'
+                      ? (useTranslated && hasTranslation ? previewSample.trans : previewSample.orig)
+                          .split(/(\s+)/)
+                          .map((part, idx) =>
+                            idx === 0 ? (
+                              <span key={idx} style={{ color: subtitleStyle.highlightColor, fontWeight: 800 }}>
+                                {part}
+                              </span>
+                            ) : (
+                              <React.Fragment key={idx}>{part}</React.Fragment>
+                            )
+                          )
+                      : useTranslated && hasTranslation
+                      ? previewSample.trans
+                      : previewSample.orig}
                   </p>
                 </div>
               </div>
@@ -521,6 +535,35 @@ export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslat
                   data-testid="embed-margin-v"
                   className="w-full accent-indigo-500 cursor-pointer"
                 />
+              </div>
+
+              <div className="space-y-1 text-[11px] text-zinc-400">
+                <div className="flex items-center justify-between gap-2">
+                  <span>{t('player.style.highlightMode')}</span>
+                  {subtitleStyle.highlightMode !== 'none' && (
+                    <input
+                      type="color"
+                      value={subtitleStyle.highlightColor}
+                      onChange={(e) => setSubtitleStyle({ highlightColor: e.target.value })}
+                      disabled={running}
+                      aria-label={t('player.style.highlightColor')}
+                      data-testid="embed-highlight-color"
+                      className="w-5 h-5 rounded border border-line bg-transparent cursor-pointer p-0"
+                    />
+                  )}
+                </div>
+                <select
+                  value={subtitleStyle.highlightMode}
+                  onChange={(e) => setSubtitleStyle({ highlightMode: e.target.value as SubtitleHighlightMode })}
+                  disabled={running}
+                  aria-label={t('player.style.highlightMode')}
+                  data-testid="embed-highlight-mode"
+                  className={selectClass}
+                >
+                  <option value="none">{t('player.style.highlightNone')}</option>
+                  <option value="word">{t('player.style.highlightWord')}</option>
+                  <option value="karaoke">{t('player.style.highlightKaraoke')}</option>
+                </select>
               </div>
             </div>
 

@@ -160,6 +160,12 @@ class JobSettingsUpdate(RequestModel):
     )
 
 
+class WordTimingSchema(BaseModel):
+    w: str
+    s: float
+    e: float
+
+
 class SubtitleSegmentSchema(BaseModel):
     id: Optional[int] = None
     job_id: str
@@ -172,6 +178,7 @@ class SubtitleSegmentSchema(BaseModel):
     segment_type: str = "DIALOGUE"
     confidence: Optional[float] = 1.0
     cps: Optional[float] = 0.0
+    words: Optional[List[WordTimingSchema]] = None
 
 
 class SegmentUpdate(RequestModel):

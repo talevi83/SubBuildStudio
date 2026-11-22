@@ -630,6 +630,11 @@ def refine_raw_segments(
     for b in blocks:
         text = split_long_lines(b.text, max_chars_per_line=max_chars_per_line)
         start, end = round(max(0.0, b.start), 3), round(b.end, 3)
+        words_payload = [
+            {"w": t.text.strip(), "s": round(max(0.0, t.start), 3), "e": round(max(t.start, t.end), 3)}
+            for t in b.toks
+            if t.text.strip()
+        ]
         refined.append({
             "index": len(refined) + 1,
             "start_time": start,
@@ -640,6 +645,7 @@ def refine_raw_segments(
             "segment_type": SegmentType.DIALOGUE.value,
             "confidence": round(sum(t.prob for t in b.toks) / len(b.toks), 2),
             "cps": calculate_cps(text, max(0.1, end - start)),
+            "words": words_payload or None,
         })
     from app.utils.speaker_split import split_dual_speaker_segments
 

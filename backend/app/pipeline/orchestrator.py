@@ -124,6 +124,16 @@ def _norm_text(value: Optional[str]) -> str:
     return strip_directional_marks(value) if value else ""
 
 
+def _parse_words(raw: Optional[str]) -> Optional[List[Dict[str, Any]]]:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, list) else None
+    except (ValueError, TypeError):
+        return None
+
+
 def _segment_payload(job_id: str, seg: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": seg.get("id"),
@@ -137,6 +147,7 @@ def _segment_payload(job_id: str, seg: Dict[str, Any]) -> Dict[str, Any]:
         "segment_type": seg.get("segment_type", "DIALOGUE"),
         "confidence": seg.get("confidence", 1.0),
         "cps": seg.get("cps", 0.0),
+        "words": seg.get("words"),
     }
 
 
@@ -311,6 +322,7 @@ class PipelineOrchestrator:
                         "segment_type": s.segment_type or "DIALOGUE",
                         "confidence": s.confidence,
                         "cps": s.cps,
+                        "words": _parse_words(getattr(s, "words_json", None)),
                     }
                     for s in job.segments
                 ]
@@ -464,6 +476,7 @@ class PipelineOrchestrator:
                     segment_type=s.get("segment_type", "DIALOGUE"),
                     confidence=s.get("confidence", 1.0),
                     cps=s.get("cps", 0.0),
+                    words_json=json.dumps(s["words"], ensure_ascii=False) if s.get("words") else None,
                 )
                 session.add(rec)
                 records.append(rec)
@@ -510,6 +523,7 @@ class PipelineOrchestrator:
                     seg["translated_text"] = row.translated_text
                     seg["translation_failed"] = bool(row.translation_failed)
                     seg["cps"] = row.cps
+                    seg["words"] = _parse_words(getattr(row, "words_json", None))
                     adopted += 1
         return adopted
 

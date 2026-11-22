@@ -71,6 +71,12 @@ export interface ProbeResponse {
   subtitle_streams?: SubtitleStreamInfo[];
 }
 
+export interface WordTiming {
+  w: string;
+  s: number;
+  e: number;
+}
+
 export interface SubtitleSegment {
   id?: number;
   job_id: string;
@@ -83,6 +89,7 @@ export interface SubtitleSegment {
   segment_type?: SegmentType;
   confidence?: number;
   cps?: number;
+  words?: WordTiming[] | null;
 }
 
 export interface GlossaryCharacter {

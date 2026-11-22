@@ -14,8 +14,10 @@ from app.models.db_models import Job
 from app.models.schemas import EmbedVideoRequest, EmbedVideoStatus, SaveNextToVideoRequest, SaveNextToVideoResponse
 from app.utils.ass_formatter import AssStyleConfig, serialize_to_ass
 from app.utils.filenames import safe_basename
-from app.utils.languages import language_code, language_code3, language_name
+from app.utils.languages import is_rtl, language_code, language_code3, language_name
+from app.utils.nle_export import serialize_to_fcpxml
 from app.utils.srt_formatter import serialize_to_srt, serialize_to_vtt
+from app.utils.transcript_export import serialize_to_docx, serialize_to_markdown
 
 router = APIRouter(prefix="/api/jobs", tags=["Export"])
 
@@ -191,6 +193,96 @@ def export_ass(
     return _export(
         job_id, session, use_translated, apply_rtl, max_chars_per_line, "ass",
         bilingual=bilingual, ass_style=style,
+    )
+
+
+@router.get("/{job_id}/export/fcpxml")
+def export_fcpxml(
+    job_id: str,
+    use_translated: bool = Query(False, description="Export translated subtitle text if True"),
+    apply_rtl: bool = Query(True, description="Apply BiDi RTL marks for Hebrew/Arabic"),
+    fps: float = Query(25.0, ge=1.0, le=120.0, description="Timeline frame rate"),
+    max_chars_per_line: Optional[int] = Query(None, ge=10, le=200, description="Line length limit"),
+    session: Session = Depends(get_session),
+):
+    """Export timeline titles and markers as Final Cut Pro XML (FCPXML 1.9) for DaVinci Resolve / Premiere / FCP."""
+    with history.job_lock(job_id):
+        session.expire_all()
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        xml_str = serialize_to_fcpxml(
+            job.segments,
+            title=Path(job.file_name).stem or "SubBuild Studio",
+            duration=job.video_duration,
+            fps=fps,
+            use_translated=use_translated,
+            apply_rtl=apply_rtl,
+            max_chars_per_line=max_chars_per_line or settings.max_chars_per_line,
+            speakers=_job_speakers(job),
+        )
+        headers = _attachment_headers(_build_filename(job, use_translated, "fcpxml"))
+    return Response(content=xml_str.encode("utf-8"), media_type="application/xml; charset=utf-8", headers=headers)
+
+
+@router.get("/{job_id}/export/markdown")
+def export_markdown(
+    job_id: str,
+    use_translated: bool = Query(False, description="Export translated transcript text if True"),
+    bilingual: bool = Query(False, description="Include both translated and original text"),
+    session: Session = Depends(get_session),
+):
+    """Export a formatted, speaker-grouped Markdown (.md) transcript."""
+    with history.job_lock(job_id):
+        session.expire_all()
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        lang = job.target_language if use_translated else (job.detected_language or job.source_language)
+        md_str = serialize_to_markdown(
+            job.segments,
+            title=Path(job.file_name).stem or "Transcript",
+            language=lang,
+            duration=job.video_duration,
+            use_translated=use_translated,
+            bilingual=bilingual,
+            speakers=_job_speakers(job),
+        )
+        headers = _attachment_headers(_build_filename(job, use_translated, "md", bilingual=bilingual))
+    return Response(content=md_str.encode("utf-8"), media_type="text/markdown; charset=utf-8", headers=headers)
+
+
+@router.get("/{job_id}/export/docx")
+def export_docx(
+    job_id: str,
+    use_translated: bool = Query(False, description="Export translated transcript text if True"),
+    bilingual: bool = Query(False, description="Include both translated and original text"),
+    rtl: Optional[bool] = Query(None, description="Force RTL BiDi layout; defaults to target/source language direction"),
+    session: Session = Depends(get_session),
+):
+    """Export a formatted Word (.docx) transcript with BiDi RTL support."""
+    with history.job_lock(job_id):
+        session.expire_all()
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        lang = job.target_language if use_translated else (job.detected_language or job.source_language)
+        use_rtl = is_rtl(lang) if rtl is None else rtl
+        blob = serialize_to_docx(
+            job.segments,
+            title=Path(job.file_name).stem or "Transcript",
+            language=lang,
+            duration=job.video_duration,
+            use_translated=use_translated,
+            bilingual=bilingual,
+            rtl=use_rtl,
+            speakers=_job_speakers(job),
+        )
+        headers = _attachment_headers(_build_filename(job, use_translated, "docx", bilingual=bilingual))
+    return Response(
+        content=blob,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers=headers,
     )
 
 

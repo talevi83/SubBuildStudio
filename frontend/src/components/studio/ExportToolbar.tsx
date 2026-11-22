@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useJobStore } from '../../store/useJobStore';
+import { useUiStore } from '../../store/useUiStore';
 import { confirmDialog } from '../../store/useDialogStore';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { inferProviderFromModelId, isAnyAiReady, isProviderReady } from '../settings/labels';
@@ -10,7 +11,7 @@ import { TARGET_LANGUAGES } from '../ingest/languages';
 import { useT } from '../../i18n';
 import { GlossaryDialog } from './GlossaryDialog';
 import { EmbedVideoDialog } from './EmbedVideoDialog';
-import { AlertTriangle, Download, Film, FileText, FolderDown, Languages, LayoutTemplate, Loader2, RotateCw, ScrollText, Users } from 'lucide-react';
+import { AlertTriangle, ChevronDown, Download, Film, FileText, FolderDown, Languages, LayoutTemplate, Loader2, RotateCw, ScrollText, Users } from 'lucide-react';
 
 export const ExportToolbar: React.FC = () => {
   const activeJob = useJobStore((s) => s.activeJob);
@@ -25,13 +26,34 @@ export const ExportToolbar: React.FC = () => {
   const setProblemFilter = useJobStore((s) => s.setProblemFilter);
   const setSelectedSegmentIndex = useJobStore((s) => s.setSelectedSegmentIndex);
   const flushPendingEdits = useJobStore((s) => s.flushPendingEdits);
+  const subtitleStyle = useUiStore((s) => s.subtitleStyle);
   const appSettings = useSettingsStore((s) => s.settings);
   const [targetLanguage, setTargetLanguage] = useState<string | null>(null);
   const [glossaryOpen, setGlossaryOpen] = useState(false);
   const [embedOpen, setEmbedOpen] = useState(false);
+  const [moreExportsOpen, setMoreExportsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveNote, setSaveNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const moreMenuRef = useRef<HTMLDivElement | null>(null);
   const t = useT();
+
+  useEffect(() => {
+    if (!moreExportsOpen) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
+        setMoreExportsOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMoreExportsOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [moreExportsOpen]);
 
   if (!activeJob) return null;
 
@@ -315,6 +337,83 @@ export const ExportToolbar: React.FC = () => {
           <FileText className="w-3.5 h-3.5 text-zinc-400" />
           {t('toolbar.webvtt')}
         </button>
+        <div ref={moreMenuRef} className="relative">
+          <button
+            type="button"
+            disabled={!hasSegments}
+            onClick={() => setMoreExportsOpen((o) => !o)}
+            data-testid="more-exports-toggle"
+            aria-expanded={moreExportsOpen}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-200 border border-zinc-700/60 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+          >
+            <Download className="w-3.5 h-3.5 text-indigo-300" />
+            <span>{t('toolbar.moreFormats')}</span>
+            <ChevronDown className="w-3 h-3 text-zinc-400" />
+          </button>
+          {moreExportsOpen && (
+            <div
+              data-testid="more-exports-menu"
+              className="absolute bottom-full end-0 mb-1.5 w-64 bg-surface border border-line rounded-xl shadow-2xl p-1.5 space-y-0.5 z-40"
+            >
+              <button
+                type="button"
+                data-testid="export-ass"
+                onClick={() => {
+                  setMoreExportsOpen(false);
+                  void downloadFile(
+                    api.getAssExportUrl(activeJob.id, {
+                      useTranslated: hasTranslation,
+                      applyRtl: isRtl && applyRtlExport,
+                      style: subtitleStyle,
+                    })
+                  );
+                }}
+                className="w-full text-start px-2.5 py-1.5 rounded-lg text-xs text-zinc-200 hover:bg-zinc-800 cursor-pointer flex items-center gap-2"
+              >
+                <FileText className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                <span className="truncate">{t('toolbar.exportAss')}</span>
+              </button>
+              <button
+                type="button"
+                data-testid="export-fcpxml"
+                onClick={() => {
+                  setMoreExportsOpen(false);
+                  void downloadFile(
+                    api.getFcpxmlExportUrl(activeJob.id, hasTranslation, isRtl && applyRtlExport)
+                  );
+                }}
+                className="w-full text-start px-2.5 py-1.5 rounded-lg text-xs text-zinc-200 hover:bg-zinc-800 cursor-pointer flex items-center gap-2"
+              >
+                <Film className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                <span className="truncate">{t('toolbar.exportFcpxml')}</span>
+              </button>
+              <button
+                type="button"
+                data-testid="export-markdown"
+                onClick={() => {
+                  setMoreExportsOpen(false);
+                  void downloadFile(api.getMarkdownExportUrl(activeJob.id, hasTranslation, false));
+                }}
+                className="w-full text-start px-2.5 py-1.5 rounded-lg text-xs text-zinc-200 hover:bg-zinc-800 cursor-pointer flex items-center gap-2"
+              >
+                <FileText className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span className="truncate">{t('toolbar.exportMarkdown')}</span>
+              </button>
+              <button
+                type="button"
+                data-testid="export-docx"
+                onClick={() => {
+                  setMoreExportsOpen(false);
+                  void downloadFile(api.getDocxExportUrl(activeJob.id, hasTranslation, false));
+                }}
+                className="w-full text-start px-2.5 py-1.5 rounded-lg text-xs text-zinc-200 hover:bg-zinc-800 cursor-pointer flex items-center gap-2"
+              >
+                <FileText className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                <span className="truncate">{t('toolbar.exportDocx')}</span>
+              </button>
+            </div>
+          )}
+        </div>
         <button
           onClick={() => downloadFile(api.getJobLogUrl(activeJob.id))}
           title={t('toolbar.jobLogTitle')}

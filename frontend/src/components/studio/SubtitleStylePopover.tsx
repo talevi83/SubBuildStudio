@@ -15,7 +15,7 @@ import {
   type SubtitleStylePresetId,
   useUiStore,
 } from '../../store/useUiStore';
-import type { SubtitleFontFamily } from '../../types';
+import type { SubtitleFontFamily, SubtitleHighlightMode } from '../../types';
 
 interface Props {
   open: boolean;
@@ -348,6 +348,34 @@ export const SubtitleStylePopover: React.FC<Props> = ({ open, onClose, anchorRef
           />
         </div>
       )}
+
+      {/* Word Highlight (Creator mode) */}
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between gap-2 text-[11px]">
+          <span className="font-medium text-zinc-400">{t('player.style.highlightMode')}</span>
+          {subtitleStyle.highlightMode !== 'none' && (
+            <input
+              type="color"
+              value={subtitleStyle.highlightColor}
+              onChange={(e) => setSubtitleStyle({ highlightColor: e.target.value })}
+              aria-label={t('player.style.highlightColor')}
+              data-testid="subtitle-highlight-color"
+              className="w-5 h-5 rounded border border-line bg-transparent cursor-pointer p-0"
+            />
+          )}
+        </div>
+        <select
+          value={subtitleStyle.highlightMode}
+          onChange={(e) => setSubtitleStyle({ highlightMode: e.target.value as SubtitleHighlightMode })}
+          aria-label={t('player.style.highlightMode')}
+          data-testid="style-highlight-mode"
+          className="w-full bg-sunken border border-line rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 focus:outline-none focus:border-indigo-500 cursor-pointer"
+        >
+          <option value="none">{t('player.style.highlightNone')}</option>
+          <option value="word">{t('player.style.highlightWord')}</option>
+          <option value="karaoke">{t('player.style.highlightKaraoke')}</option>
+        </select>
+      </div>
 
       {/* Bottom height */}
       <div className="space-y-1">
