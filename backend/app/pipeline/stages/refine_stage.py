@@ -89,6 +89,19 @@ class RefineStage(PipelineStage):
             allow_overlap=allow_overlap,
         )
 
+        if getattr(ctx, "diarization_timeline", None):
+            from app.pipeline.diarization import assign_speakers_to_segments
+
+            missing = [
+                s for s in ctx.refined_segments
+                if (s.get("segment_type") or "DIALOGUE") != SegmentType.ON_SCREEN.value and not s.get("speaker")
+            ]
+            if missing:
+                assign_speakers_to_segments(missing, ctx.diarization_timeline)
+            for s in ctx.refined_segments:
+                if (s.get("segment_type") or "DIALOGUE") == SegmentType.ON_SCREEN.value:
+                    s["speaker"] = None
+
         credits_removed = 0
         if getattr(ctx, "skip_end_credits", True):
             from app.pipeline.credits_detect import filter_credits_segments

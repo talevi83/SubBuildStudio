@@ -1,5 +1,6 @@
 import logging
-from typing import Awaitable, Callable, Dict, List, Optional
+import re
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 from app.core.config import settings
 from app.core.glossary_profiles import load_profile, merge_glossary, save_profile
 from app.pipeline.context import PipelineContext, PipelineCancelled
@@ -25,6 +26,44 @@ def _notes_with_hint(notes: Optional[str], hint: Optional[str], rows: List[Trans
         f"including the glossary: {hint.strip()}"
     )
     return f"{base}\n\n{scoped}" if base else scoped
+
+
+_DEFAULT_SPEAKER_LABEL_RE = re.compile(r"^Speaker \d+$", re.IGNORECASE)
+
+
+def _format_speaker_info(speaker_id: Optional[str], speakers: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not speaker_id:
+        return None
+    info = (speakers or {}).get(speaker_id)
+    if not isinstance(info, dict):
+        return speaker_id
+    label = str(info.get("label") or "").strip()
+    gender = str(info.get("gender") or "").strip().lower()
+    parts: List[str] = []
+    if label and not _DEFAULT_SPEAKER_LABEL_RE.match(label):
+        parts.append(label)
+    if gender in ("male", "female"):
+        parts.append(gender)
+    return f"{speaker_id} ({', '.join(parts)})" if parts else speaker_id
+
+
+def _sync_glossary_to_speakers(glossary: Optional[Dict[str, Any]], speakers: Optional[Dict[str, Any]]) -> None:
+    if not glossary or not isinstance(speakers, dict) or not speakers:
+        return
+    for ch in glossary.get("characters") or []:
+        if not isinstance(ch, dict):
+            continue
+        sid = str(ch.get("speaker_id") or "").strip()
+        if not sid or sid not in speakers or not isinstance(speakers[sid], dict):
+            continue
+        cur_label = str(speakers[sid].get("label") or "").strip()
+        new_label = str(ch.get("target_name") or ch.get("name") or "").strip()
+        if new_label and (not cur_label or _DEFAULT_SPEAKER_LABEL_RE.match(cur_label)):
+            speakers[sid]["label"] = new_label
+        ch_gender = str(ch.get("gender") or "").strip().lower()
+        cur_gender = str(speakers[sid].get("gender") or "unknown").strip().lower()
+        if ch_gender in ("male", "female") and cur_gender in ("", "unknown"):
+            speakers[sid]["gender"] = ch_gender
 
 
 class TranslateStage(PipelineStage):
@@ -103,6 +142,7 @@ class TranslateStage(PipelineStage):
                     await on_progress(100.0, None, None, ctx.translation_warning, None)
                 return
 
+        speakers_map = getattr(ctx, "speakers", None) or {}
         by_index: Dict[int, dict] = {s["index"]: s for s in ctx.refined_segments}
         all_segments: List[TranslatableSegment] = [
             TranslatableSegment(
@@ -113,6 +153,8 @@ class TranslateStage(PipelineStage):
                 translated_text=s.get("translated_text"),
                 translation_failed=bool(s.get("translation_failed")),
                 segment_type=s.get("segment_type") or "DIALOGUE",
+                speaker=s.get("speaker"),
+                speaker_info=_format_speaker_info(s.get("speaker"), speakers_map),
             )
             for s in ctx.refined_segments
         ]
@@ -198,6 +240,10 @@ class TranslateStage(PipelineStage):
             elif ctx.glossary is None and known:
                 ctx.glossary = known
 
+            _sync_glossary_to_speakers(ctx.glossary, getattr(ctx, "speakers", None))
+            for seg_obj in all_segments:
+                seg_obj.speaker_info = _format_speaker_info(seg_obj.speaker, getattr(ctx, "speakers", None))
+
             effective_notes = _notes_with_hint(ctx.context_notes, ctx.translation_hint, to_translate)
             try:
                 from app.core.user_settings import load_settings
@@ -221,6 +267,7 @@ class TranslateStage(PipelineStage):
                             usage=ctx.usage,
                             cloud_model=getattr(translator, "model_name", None),
                             on_batch=_on_local_batch,
+                            speakers=getattr(ctx, "speakers", None),
                         )
                         if local_hints:
                             hint_block = format_hints_for_context_notes(local_hints)

@@ -17,6 +17,7 @@ from app.models.db_models import Job, JobStatus, SubtitleSegmentRecord
 from app.models.schemas import AudioStreamInfo
 from app.pipeline.context import PipelineCancelled, PipelineContext, RawSegment
 from app.pipeline.stages.audio_stage import AudioExtractionStage
+from app.pipeline.stages.diarize_stage import DiarizeStage
 from app.pipeline.frame_sampling import remove_frames
 from app.pipeline.job_report import log_job_start, log_job_summary
 from app.pipeline.stages.ocr_stage import OnScreenTextStage
@@ -48,6 +49,7 @@ ACTIVE_STATUSES = {
     JobStatus.PROBING,
     JobStatus.EXTRACTING_AUDIO,
     JobStatus.TRANSCRIBING,
+    JobStatus.DIARIZING,
     JobStatus.SCANNING_ONSCREEN,
     JobStatus.REFINING,
     JobStatus.TRANSLATING,
@@ -59,6 +61,7 @@ STAGE_WEIGHTS = {
     JobStatus.PROBING: 2,
     JobStatus.EXTRACTING_AUDIO: 6,
     JobStatus.TRANSCRIBING: 62,
+    JobStatus.DIARIZING: 10,
     JobStatus.SCANNING_ONSCREEN: 12,
     JobStatus.REFINING: 2,
     JobStatus.TRANSLATING: 28,
@@ -148,6 +151,7 @@ def _segment_payload(job_id: str, seg: Dict[str, Any]) -> Dict[str, Any]:
         "confidence": seg.get("confidence", 1.0),
         "cps": seg.get("cps", 0.0),
         "words": seg.get("words"),
+        "speaker": seg.get("speaker"),
     }
 
 
@@ -259,6 +263,14 @@ class PipelineOrchestrator:
                     glossary = json.loads(job.glossary_json)
                 except Exception:
                     pass
+            speakers: Dict[str, Dict[str, Any]] = {}
+            if getattr(job, "speakers_json", None):
+                try:
+                    parsed_sp = json.loads(job.speakers_json)
+                    if isinstance(parsed_sp, dict):
+                        speakers = parsed_sp
+                except Exception:
+                    pass
             if job.usage_json:
                 try:
                     self._prior_usage_dict = json.loads(job.usage_json)
@@ -286,6 +298,8 @@ class PipelineOrchestrator:
                 convert_to_metric=getattr(job, "convert_to_metric", False),
                 remove_sdh_speakers=getattr(job, "remove_sdh_speakers", False),
                 skip_end_credits=getattr(job, "skip_end_credits", True),
+                enable_diarization=bool(getattr(job, "enable_diarization", False)),
+                speakers=speakers,
                 enable_translation=job.enable_translation or self.mode == "translate",
                 target_language=job.target_language,
                 gemini_model=job.gemini_model,
@@ -323,6 +337,7 @@ class PipelineOrchestrator:
                         "confidence": s.confidence,
                         "cps": s.cps,
                         "words": _parse_words(getattr(s, "words_json", None)),
+                        "speaker": getattr(s, "speaker", None),
                     }
                     for s in job.segments
                 ]
@@ -350,6 +365,8 @@ class PipelineOrchestrator:
             (JobStatus.EXTRACTING_AUDIO, AudioExtractionStage()),
             (JobStatus.TRANSCRIBING, TranscribeStage()),
         ]
+        if ctx.enable_diarization:
+            stages.append((JobStatus.DIARIZING, DiarizeStage()))
         if ctx.detect_onscreen_text:
             stages.append((JobStatus.SCANNING_ONSCREEN, OnScreenTextStage()))
         stages.append((JobStatus.REFINING, RefineStage()))
@@ -477,6 +494,7 @@ class PipelineOrchestrator:
                     confidence=s.get("confidence", 1.0),
                     cps=s.get("cps", 0.0),
                     words_json=json.dumps(s["words"], ensure_ascii=False) if s.get("words") else None,
+                    speaker=s.get("speaker"),
                 )
                 session.add(rec)
                 records.append(rec)
@@ -524,6 +542,7 @@ class PipelineOrchestrator:
                     seg["translation_failed"] = bool(row.translation_failed)
                     seg["cps"] = row.cps
                     seg["words"] = _parse_words(getattr(row, "words_json", None))
+                    seg["speaker"] = getattr(row, "speaker", None)
                     adopted += 1
         return adopted
 
@@ -609,6 +628,7 @@ class PipelineOrchestrator:
                     "translated_text": stored.get(b.index, {}).get("translated_text", b.translated_text),
                     "translation_failed": stored.get(b.index, {}).get("translation_failed", b.translation_failed),
                     "segment_type": b.segment_type,
+                    "speaker": b.speaker,
                 }
                 for b in batch
             ],
@@ -685,12 +705,18 @@ class PipelineOrchestrator:
                     except Exception as e:
                         logger.debug(f"Could not unload Whisper model after transcription: {e}")
                     self._release_gpu()
-                    if self.mode != "sync":  # syncing still needs the audio for voice detection
+                    if self.mode != "sync" and not ctx.enable_diarization:  # defer deletion if diarization needs the WAV
                         self._delete_audio()
                     self._update_job(detected_language=ctx.detected_language)
+                elif stage_status == JobStatus.DIARIZING:
+                    if ctx.speakers:
+                        self._update_job(speakers_json=json.dumps(ctx.speakers, ensure_ascii=False))
+                    self._delete_audio()
                 elif stage_status == JobStatus.SCANNING_ONSCREEN:
                     await self._stop_frame_sampling(ctx)
                 elif stage_status == JobStatus.REFINING:
+                    if ctx.speakers:
+                        self._update_job(speakers_json=json.dumps(ctx.speakers, ensure_ascii=False))
                     self._save_segments(ctx.refined_segments)
                     await self._broadcast({
                         "event": "SEGMENTS_REFINED",
@@ -712,8 +738,13 @@ class PipelineOrchestrator:
                         "segments_batch": [_segment_payload(self.job_id, s) for s in ctx.refined_segments],
                     })
                 elif stage_status == JobStatus.TRANSLATING:
-                    if ctx.glossary is not None:
-                        self._update_job(glossary_json=json.dumps(ctx.glossary, ensure_ascii=False))
+                    if ctx.glossary is not None or ctx.speakers:
+                        fields: Dict[str, Any] = {}
+                        if ctx.glossary is not None:
+                            fields["glossary_json"] = json.dumps(ctx.glossary, ensure_ascii=False)
+                        if ctx.speakers:
+                            fields["speakers_json"] = json.dumps(ctx.speakers, ensure_ascii=False)
+                        self._update_job(**fields)
                     if any(s.get("id") is None for s in ctx.refined_segments):
                         # Lines were split: the whole list replaces the stored rows, so keep edits first
                         self._adopt_user_edits(ctx.refined_segments)

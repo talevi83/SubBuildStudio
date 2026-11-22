@@ -212,6 +212,28 @@ export const api = {
     );
   },
 
+  updateSpeakers(
+    jobId: string,
+    speakers: Record<string, import('../types').SpeakerProfile>
+  ): Promise<Job> {
+    return request(
+      `${API_BASE}/jobs/${jobId}/speakers`,
+      json('PUT', { speakers }),
+      'Could not save speaker profiles'
+    );
+  },
+
+  diarizeJob(
+    jobId: string,
+    opts?: { min_speakers?: number; max_speakers?: number; threshold?: number }
+  ): Promise<Job> {
+    return request(
+      `${API_BASE}/jobs/${jobId}/diarize`,
+      json('POST', opts || {}),
+      'Could not detect speakers from audio'
+    );
+  },
+
   listGlossaryProfiles(): Promise<string[]> {
     return request(`${API_BASE}/glossary-profiles`, undefined, 'Could not load the series list');
   },

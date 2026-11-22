@@ -32,6 +32,7 @@ export const en = {
     translate_all: 'Translate all lines',
     translate_failed: 'Retranslate failed lines',
     translate_rows: 'Retranslate {count} lines',
+    diarize: 'Detect speakers (audio)',
     external: 'Other changes',
     unknown: 'Change',
   },
@@ -41,6 +42,7 @@ export const en = {
     PROBING: 'Probing',
     EXTRACTING_AUDIO: 'Extracting audio',
     TRANSCRIBING: 'Transcribing',
+    DIARIZING: 'Detecting speakers',
     SCANNING_ONSCREEN: 'Scanning on-screen text',
     REFINING: 'Refining',
     TRANSLATING: 'Translating',
@@ -220,6 +222,9 @@ export const en = {
     skipEndCreditsTitle: 'Smart End-Credits Filter (Keep Post-Credits Scenes)',
     skipEndCreditsDescription:
       'Skips end-credits rolls, cast/crew cards and closing songs at the end of a video, while keeping any scene that comes after the credits.',
+    diarization: 'Acoustic Speaker Diarization (Voice ID)',
+    diarizationDesc:
+      'Identifies and separates voices (Speaker 1, Speaker 2…) locally via voiceprints so grammatical gender stays consistent — even off-screen.',
     highSpeechSensitivityTitle: 'High Speech Sensitivity (Catch Whispers)',
     highSpeechSensitivityDesc:
       'Relaxes voice activity thresholds to catch quiet whispers, rapid speech, and dialogue over loud background music.',
@@ -267,6 +272,7 @@ export const en = {
     PROBING: 'Probe Streams',
     EXTRACTING_AUDIO: 'Extract Audio',
     TRANSCRIBING: 'Transcribe (Whisper)',
+    DIARIZING: 'Speaker diarization',
     SCANNING_ONSCREEN: 'On-Screen Text',
     REFINING: 'Refine & Time',
     TRANSLATING: 'Translate (AI)',
@@ -515,6 +521,10 @@ export const en = {
     title: '{cps} characters per second ({label})',
   },
   glossary: {
+    speakersSection: 'Speakers (Audio Voiceprints)',
+    detectSpeakers: 'Detect Speakers from Audio',
+    detectingSpeakers: 'Analyzing voices…',
+    noSpeakersYet: 'No speakers detected yet — click Detect Speakers to analyze voiceprints locally.',
     profile: 'Series profile (shared by all its videos)',
     profilePlaceholder: 'Series name (leave empty for none)',
     profileHelp: 'Saved under this name. Later videos that use it start from this list, and their glossary pass only adds new names and terms.',
@@ -543,7 +553,20 @@ export const en = {
     group: 'Mixed group',
     empty: 'No characters yet - add the main ones.',
   },
+  speakers: {
+    genderLabel: 'Gender',
+    unknown: 'Unknown',
+    male: 'Male',
+    female: 'Female',
+    cues: '{count} lines',
+    unassigned: 'No speaker',
+  },
+  selection: {
+    assignSpeaker: 'Assign speaker…',
+  },
   toolbar: {
+    filterSpeaker: 'Filter by speaker',
+    allSpeakers: 'All speakers',
     targetLanguage: 'Target language',
     translate: 'Translate',
     retranslateAll: 'Retranslate all',
@@ -600,6 +623,7 @@ export const en = {
     bgNoneLabel: 'no box (outline)',
     livePreview: 'Live frame preview',
     bilingual: 'Burn both languages (dual)',
+    colorSpeakers: 'Color-code speakers',
     previewSample: 'Sample subtitle preview',
     whereSoft: 'A new file is saved next to the original video (Video.he.subs.mkv). The original is not changed.',
     whereBurn: 'A new file is saved next to the original video (Video.he.burned.mp4). The original is not changed.',

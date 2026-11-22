@@ -57,6 +57,7 @@ class GlossaryCharacter(BaseModel):
     target_name: str = Field(description="How the name should be written in the target language")
     gender: str = Field(description="male, female, mixed group, or unknown")
     notes: str = Field(default="", description="Role, relationships, how they speak (formal, slang...)")
+    speaker_id: str = Field(default="", description="Optional audio SPEAKER_XX id matching this character, or empty")
 
 
 class GlossaryTerm(BaseModel):
@@ -170,6 +171,7 @@ Polish the `target_batch` {target_lang} ASR transcript into clean, broadcast-rea
 
 4. **Dialogue & Dual Speakers:**
    - If a segment contains two different speakers, place each turn on its own line starting with `- ` (`- ...\\n- ...`).
+   - If a segment includes a `speaker` field (with optional character name/gender), keep grammatical gender consistent for that speaker across every line including off-screen dialogue.
 
 5. **Segment Types (`segment_type`):**
    - Preserve `ON_SCREEN` square brackets `[...]`; keep `COMMS` terse; polish `DIALOGUE` and `FOREIGN` naturally.
@@ -239,6 +241,7 @@ Translate the `target_batch` subtitle segments into natural, idiomatic, spoken {
 
 4. **Dialogue & Dual Speakers:**
    - If a single segment contains two different speakers (whether indicated by leading hyphens, e.g., `- Hello.\\n- Hi.`, or an unpunctuated ASR run-on containing a question/statement and another person's reply), format each speaker's turn on its own line starting with `- ` (`- ...\\n- ...`) so downstream processing can split them into separate single-speaker subtitles.
+   - If a segment includes a `speaker` field (with optional character name/gender), keep grammatical gender 100% consistent for that speaker across every line including off-screen dialogue.
 
 5. **Segment Types (`segment_type`):**
    - "DIALOGUE": normal speech.
@@ -452,17 +455,28 @@ class GeminiTranslator(BaseTranslator):
         context_notes: str = "",
         known_glossary: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        transcript = "\n".join(f"{s.index}: {s.original_text.replace(chr(10), ' ')}" for s in segments)
+        has_speaker_tags = any(getattr(s, "speaker", None) for s in segments)
+        transcript = "\n".join(
+            f"{s.index}: "
+            + (f"[{s.speaker}] " if getattr(s, "speaker", None) else "")
+            + s.original_text.replace(chr(10), " ")
+            for s in segments
+        )
         if len(transcript) > _GLOSSARY_MAX_CHARS:
             transcript = transcript[:_GLOSSARY_MAX_CHARS]
         notes = f"\nUser notes about the show:\n{context_notes.strip()}\n" if context_notes.strip() else ""
+        speaker_note = (
+            " When transcript lines start with [SPEAKER_XX] audio tags that clearly correspond to a character, set `speaker_id` to that tag."
+            if has_speaker_tags
+            else ""
+        )
         if is_same_language(source_lang, target_lang):
             system_prompt = (
                 f"You prepare subtitle proofreaders. Read the full {target_lang} transcript of a video and produce "
                 f"a concise glossary for copy-editing it in {target_lang}: the main speakers/people mentioned "
                 f"(exact {target_lang} spelling, gender), recurring technical terminology, brands, places and jargon "
                 f"with their authoritative {target_lang} spelling, and notes on tone/register. "
-                f"Only include what the transcript supports; mark gender 'unknown' when unsure.{notes}"
+                f"Only include what the transcript supports; mark gender 'unknown' when unsure.{speaker_note}{notes}"
                 f"{_known_glossary_note(known_glossary)}"
             )
         else:
@@ -471,7 +485,7 @@ class GeminiTranslator(BaseTranslator):
                 f"produce a concise glossary for translating it into {target_lang}: the main characters (with their "
                 f"gender, inferred from pronouns, titles and how others address them), recurring terminology, ranks, "
                 f"places and call signs with a recommended {target_lang} rendering, and notes on tone/register. "
-                f"Only include what the transcript supports; mark gender 'unknown' when unsure.{notes}"
+                f"Only include what the transcript supports; mark gender 'unknown' when unsure.{speaker_note}{notes}"
                 f"{_known_glossary_note(known_glossary)}"
             )
         try:
@@ -594,6 +608,11 @@ class GeminiTranslator(BaseTranslator):
                         "index": seg.index,
                         "original_text": seg.original_text,
                         "translated_text": strip_directional_marks(seg.translated_text or ""),
+                        **(
+                            {"speaker": seg.speaker_info or seg.speaker}
+                            if getattr(seg, "speaker_info", None) or getattr(seg, "speaker", None)
+                            else {}
+                        ),
                     }
                     for seg in prev_context
                 ],
@@ -603,6 +622,11 @@ class GeminiTranslator(BaseTranslator):
                         "segment_type": seg.segment_type,
                         "duration_sec": seg.duration,
                         "original_text": seg.original_text,
+                        **(
+                            {"speaker": seg.speaker_info or seg.speaker}
+                            if getattr(seg, "speaker_info", None) or getattr(seg, "speaker", None)
+                            else {}
+                        ),
                     }
                     for seg in pending
                 ],

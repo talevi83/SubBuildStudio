@@ -29,6 +29,7 @@ from app.models.schemas import (
     JobSettingsUpdate,
     DetectSpeakersRequest,
     DetectSpeakersResponse,
+    DiarizeJobRequest,
     MoveSegmentRequest,
     QAIssueSchema,
     RetimeRequest,
@@ -37,6 +38,8 @@ from app.models.schemas import (
     SegmentUpdate,
     SegmentsChangeResponse,
     ShiftSegmentsRequest,
+    SpeakerProfileSchema,
+    SpeakersUpdateRequest,
     MergeSegmentsRequest,
     SplitSegmentRequest,
     SubtitleSegmentSchema,
@@ -118,6 +121,7 @@ def _segment_to_schema(s: SubtitleSegmentRecord) -> SubtitleSegmentSchema:
         confidence=s.confidence,
         cps=s.cps,
         words=_parse_words_json(getattr(s, "words_json", None)),
+        speaker=getattr(s, "speaker", None),
     )
 
 
@@ -137,6 +141,18 @@ def _job_to_response(
     if job.glossary_json:
         try:
             glossary = json.loads(job.glossary_json)
+        except Exception:
+            pass
+    speakers = None
+    if getattr(job, "speakers_json", None):
+        try:
+            raw_speakers = json.loads(job.speakers_json)
+            if isinstance(raw_speakers, dict):
+                speakers = {
+                    str(k): SpeakerProfileSchema(**v)
+                    for k, v in raw_speakers.items()
+                    if isinstance(v, dict)
+                } or None
         except Exception:
             pass
     sync_report = None
@@ -207,6 +223,8 @@ def _job_to_response(
         convert_to_metric=getattr(job, "convert_to_metric", False),
         remove_sdh_speakers=getattr(job, "remove_sdh_speakers", False),
         skip_end_credits=getattr(job, "skip_end_credits", True),
+        enable_diarization=bool(getattr(job, "enable_diarization", False)),
+        speakers=speakers,
         enable_translation=job.enable_translation,
         target_language=job.target_language,
         gemini_model=job.gemini_model,
@@ -323,6 +341,7 @@ async def create_job(req: JobCreate, session: Session = Depends(get_session)):
             if req.skip_end_credits is not None
             else getattr(saved_settings, "skip_end_credits", True)
         ),
+        enable_diarization=bool(getattr(req, "enable_diarization", False)),
         enable_translation=req.enable_translation,
         target_language=req.target_language,
         gemini_model=req.gemini_model or saved_settings.translation.model,
@@ -567,6 +586,86 @@ def update_glossary(job_id: str, body: GlossaryUpdate, session: Session = Depend
     return glossary
 
 
+@router.put("/{job_id}/speakers", response_model=JobResponse)
+def update_speakers(job_id: str, body: SpeakersUpdateRequest, session: Session = Depends(get_session)):
+    """Save edited speaker profiles (names, genders, colors) on a job."""
+    job = _get_job_or_404(session, job_id)
+    _require_not_running(job, "edit speaker profiles")
+    serialized = {k: v.model_dump() for k, v in body.speakers.items()}
+    job.speakers_json = json.dumps(serialized, ensure_ascii=False)
+    job.updated_at = _now()
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    return _job_to_response(job)
+
+
+@router.post("/{job_id}/diarize", response_model=JobResponse)
+async def diarize_job(
+    job_id: str,
+    req: Optional[DiarizeJobRequest] = None,
+    session: Session = Depends(get_session),
+):
+    """Run local ONNX acoustic speaker diarization retroactively on an existing job."""
+    from app.pipeline import diarization, speech_regions
+
+    job = _get_job_or_404(session, job_id)
+    _require_not_running(job, "detect speakers from audio")
+    if not job.video_path or not Path(job.video_path).is_file():
+        raise HTTPException(status_code=404, detail="Source video file not found")
+
+    rows = _ordered_rows(session, job_id)
+    if not rows:
+        return _job_to_response(job)
+
+    spans = [(r.start_time, r.end_time) for r in rows if (r.segment_type or "DIALOGUE") != "ON_SCREEN"]
+    if not spans:
+        return _job_to_response(job)
+
+    stream, channels = _job_audio_params(job)
+    wav_path = settings.storage_dir / "audio" / f"{job_id}_diarize.wav"
+    wav_path.parent.mkdir(parents=True, exist_ok=True)
+    threshold = req.threshold if (req and req.threshold is not None) else 0.45
+    min_sp = req.min_speakers if req else None
+    max_sp = req.max_speakers if req else None
+
+    def _run_diarization():
+        speech_regions._extract(job.video_path, str(wav_path), stream, channels, job.comms_boost, 0.0, None)
+        onnx_path = diarization.ensure_diarization_model()
+        embedder = diarization.OnnxSpeakerEmbedder(onnx_path=onnx_path)
+        return diarization.diarize_audio_spans(
+            wav_path,
+            spans,
+            embedder=embedder,
+            threshold=threshold,
+            min_speakers=min_sp,
+            max_speakers=max_sp,
+        )
+
+    try:
+        timeline, speakers = await asyncio.to_thread(_run_diarization)
+    finally:
+        wav_path.unlink(missing_ok=True)
+
+    with history.job_lock(job_id):
+        session.expire_all()
+        job = _get_job_or_404(session, job_id)
+        _require_not_running(job, "detect speakers from audio")
+        rows = _ordered_rows(session, job_id)
+        recording = _history_begin(session, job)
+        diarization.assign_speakers_to_segments(rows, timeline)
+        for r in rows:
+            session.add(r)
+        job.speakers_json = json.dumps(speakers, ensure_ascii=False)
+        job.enable_diarization = True
+        job.updated_at = _now()
+        session.add(job)
+        session.commit()
+        _history_record(session, job, recording, "diarize", {"count": len(speakers)})
+        session.refresh(job)
+        return _job_to_response(job)
+
+
 @router.post("/{job_id}/detect-speakers", response_model=DetectSpeakersResponse)
 async def detect_speakers_from_video(job_id: str, req: DetectSpeakersRequest, session: Session = Depends(get_session)):
     """Ask the configured vision-capable LLM, from a few video frames plus dialogue, who speaks to whom."""
@@ -740,6 +839,8 @@ def _apply_segment_patch(seg: SubtitleSegmentRecord, patch: SegmentUpdate) -> No
         seg.translated_text = strip_directional_marks(patch.translated_text)
         if seg.translated_text.strip():
             seg.translation_failed = False
+    if "speaker" in patch.model_fields_set:
+        seg.speaker = (patch.speaker or "").strip() or None
 
     text_for_cps = seg.translated_text if seg.translated_text else seg.original_text
     seg.cps = calculate_cps(text_for_cps, max(0.1, seg.end_time - seg.start_time))
@@ -877,7 +978,7 @@ def create_segment(job_id: str, req: SegmentCreate, session: Session = Depends(g
     new = SubtitleSegmentRecord(
         job_id=job_id, index=0, start_time=start, end_time=end,
         original_text=original, translated_text=translated or None, translation_failed=False,
-        segment_type=kind, confidence=1.0,
+        segment_type=kind, confidence=1.0, speaker=(req.speaker or "").strip() or None,
     )
     _refresh_cps(new)
     session.add(new)
@@ -1002,6 +1103,7 @@ def split_segment(
         segment_type=seg.segment_type,
         confidence=seg.confidence,
         words_json=json.dumps(right_words, ensure_ascii=False) if right_words else None,
+        speaker=getattr(seg, "speaker", None),
     )
     _refresh_cps(second)
     session.add(second)
@@ -1079,6 +1181,7 @@ def merge_segments(job_id: str, req: MergeSegmentsRequest, session: Session = De
         first.words_json = json.dumps([w for chunk in word_chunks for w in (chunk or [])], ensure_ascii=False)
     else:
         first.words_json = None
+    first.speaker = next((getattr(t, "speaker", None) for t in targets if getattr(t, "speaker", None)), None)
     _refresh_cps(first)
     session.add(first)
 
@@ -1150,7 +1253,7 @@ def shift_segments(job_id: str, req: ShiftSegmentsRequest, session: Session = De
 
 # --- Timing-only tools -------------------------------------------------------------------------
 
-_MOVE_FIELDS = ("original_text", "translated_text", "translation_failed", "segment_type", "confidence")
+_MOVE_FIELDS = ("original_text", "translated_text", "translation_failed", "segment_type", "confidence", "speaker")
 _WINDOW_PAD = 3.0
 
 

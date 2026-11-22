@@ -4,6 +4,7 @@ export type JobStatus =
   | 'PROBING'
   | 'EXTRACTING_AUDIO'
   | 'TRANSCRIBING'
+  | 'DIARIZING'
   | 'SCANNING_ONSCREEN'
   | 'REFINING'
   | 'TRANSLATING'
@@ -18,6 +19,7 @@ export const ACTIVE_STATUSES: JobStatus[] = [
   'PROBING',
   'EXTRACTING_AUDIO',
   'TRANSCRIBING',
+  'DIARIZING',
   'SCANNING_ONSCREEN',
   'REFINING',
   'TRANSLATING',
@@ -77,6 +79,12 @@ export interface WordTiming {
   e: number;
 }
 
+export interface SpeakerProfile {
+  label: string;
+  gender: 'male' | 'female' | 'unknown';
+  color: string;
+}
+
 export interface SubtitleSegment {
   id?: number;
   job_id: string;
@@ -90,6 +98,7 @@ export interface SubtitleSegment {
   confidence?: number;
   cps?: number;
   words?: WordTiming[] | null;
+  speaker?: string | null;
 }
 
 export interface GlossaryCharacter {
@@ -97,6 +106,7 @@ export interface GlossaryCharacter {
   target_name?: string;
   gender: string;
   notes?: string;
+  speaker_id?: string;
 }
 
 export interface Glossary {
@@ -138,6 +148,8 @@ export interface Job {
   convert_to_metric?: boolean;
   remove_sdh_speakers?: boolean;
   skip_end_credits?: boolean;
+  enable_diarization?: boolean;
+  speakers?: Record<string, SpeakerProfile> | null;
   enable_translation: boolean;
   target_language: string;
   gemini_model: string;
@@ -307,6 +319,7 @@ export interface JobConfig {
   convert_to_metric?: boolean;
   remove_sdh_speakers?: boolean;
   skip_end_credits?: boolean;
+  enable_diarization?: boolean;
   enable_translation: boolean;
   target_language: string;
   gemini_api_key_override?: string;
@@ -334,7 +347,7 @@ export interface RetranslateOptions {
 export type Gender = 'male' | 'female' | 'group';
 
 export type SegmentPatch = Partial<
-  Pick<SubtitleSegment, 'start_time' | 'end_time' | 'original_text' | 'translated_text'>
+  Pick<SubtitleSegment, 'start_time' | 'end_time' | 'original_text' | 'translated_text' | 'speaker'>
 >;
 
 export type StorageCategoryId = 'temp' | 'cache' | 'logs' | 'exports' | 'uploads' | 'jobs';
@@ -378,6 +391,7 @@ export interface SegmentCreate {
   original_text: string;
   translated_text?: string | null;
   segment_type?: SegmentType;
+  speaker?: string | null;
 }
 
 /** Where the "add a line" dialog opens: at a time (the playhead), or right after a line. */
@@ -700,6 +714,7 @@ export type HistoryAction =
   | 'move'
   | 'retime'
   | 'translate'
+  | 'diarize'
   | 'external';
 
 /** One step of a project's edit history (the subtitles as they were after it) */

@@ -43,6 +43,9 @@ export const SubtitleTable: React.FC = () => {
   const moveSegment = useJobStore((s) => s.moveSegment);
   const savingCount = useJobStore((s) => s.savingCount);
   const lastSavedAt = useJobStore((s) => s.lastSavedAt);
+  const speakerFilter = useJobStore((s) => s.speakerFilter);
+  const setSpeakerFilter = useJobStore((s) => s.setSpeakerFilter);
+  const bulkUpdateSpeaker = useJobStore((s) => s.bulkUpdateSpeaker);
   const retranslate = useJobStore((s) => s.retranslateActiveJob);
   const systemInfo = useJobStore((s) => s.systemInfo);
   const keyOverride = useJobStore((s) => s.pipelineConfig.gemini_api_key_override);
@@ -90,6 +93,9 @@ export const SubtitleTable: React.FC = () => {
   }, [segments]);
   const isRtl = isRtlLanguage(activeJob?.target_language);
   const isRtlSource = isRtlLanguage(activeJob?.detected_language || activeJob?.source_language);
+  const speakers = activeJob?.speakers ?? null;
+  const speakerEntries = useMemo(() => (speakers ? Object.entries(speakers) : []), [speakers]);
+  const hasAnySpeakers = speakerEntries.length > 0 || segments.some((s) => Boolean(s.speaker));
   const jobFinished = !!activeJob && !isActiveStatus(activeJob.status);
   // Only promise "Translating…" while a translation is actually running
   const translationEnabled = !!activeJob?.enable_translation && isActiveStatus(activeJob?.status);
@@ -119,6 +125,7 @@ export const SubtitleTable: React.FC = () => {
     maxCps,
     problemFilter,
     tagFilter,
+    speakerFilter,
     searchTerm: deferredSearchTerm,
     useRegex,
     matchCase,
@@ -131,7 +138,13 @@ export const SubtitleTable: React.FC = () => {
   const canRecheck = !!activeJob && jobFinished && segments.length > 0;
   // Moving rows only makes sense in the full, time-ordered list of a finished job
   const canDrag =
-    !!activeJob && jobFinished && !searchTerm && problemFilter === 'NONE' && tagFilter === 'ALL' && !timingBusy;
+    !!activeJob &&
+    jobFinished &&
+    !searchTerm &&
+    problemFilter === 'NONE' &&
+    tagFilter === 'ALL' &&
+    speakerFilter === 'ALL' &&
+    !timingBusy;
 
   const {
     checked,
@@ -325,6 +338,24 @@ export const SubtitleTable: React.FC = () => {
 
             <TagFilterSelect value={tagFilter} onChange={setTagFilter} counts={tagCounts} />
 
+            {hasAnySpeakers && (
+              <select
+                value={speakerFilter}
+                onChange={(e) => setSpeakerFilter(e.target.value)}
+                aria-label={t('toolbar.filterSpeaker')}
+                data-testid="speaker-filter"
+                className="bg-surface border border-line rounded-lg px-2 py-1 text-[11px] text-zinc-300 focus:outline-none focus:border-indigo-500 cursor-pointer"
+              >
+                <option value="ALL">{t('toolbar.allSpeakers')}</option>
+                {speakerEntries.map(([id, sp]) => (
+                  <option key={id} value={id}>
+                    {sp.label || id}
+                  </option>
+                ))}
+                <option value="__NONE__">{t('speakers.unassigned')}</option>
+              </select>
+            )}
+
             {filteredSegments.length > 20 && (
               <JumpToRow
                 filteredSegments={filteredSegments}
@@ -376,6 +407,8 @@ export const SubtitleTable: React.FC = () => {
           onMerge={() => void handleMergeSelected()}
           canDelete={canInsert}
           onDelete={() => void handleDeleteSelected()}
+          speakers={speakers}
+          onBulkAssignSpeaker={canSelect ? (sp) => void bulkUpdateSpeaker([...checked], sp) : undefined}
           onClear={() => setChecked(new Set())}
         />
       )}
@@ -461,6 +494,7 @@ export const SubtitleTable: React.FC = () => {
                       isRtlSource={isRtlSource}
                       translationEnabled={translationEnabled}
                       maxCps={maxCps}
+                      speakers={speakers}
                       onSelect={onSelect}
                       onSave={updateSegment}
                       rowRef={isActive ? activeRowRef : undefined}

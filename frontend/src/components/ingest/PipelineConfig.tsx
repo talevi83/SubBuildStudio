@@ -28,7 +28,8 @@ export const FeatureToggle: React.FC<{
   onChange: (value: boolean) => void;
   note?: React.ReactNode;
   children?: React.ReactNode;
-}> = ({ icon, title, description, checked, onChange, note, children }) => (
+  testId?: string;
+}> = ({ icon, title, description, checked, onChange, note, children, testId }) => (
   <div
     className={`p-3 rounded-lg border transition-colors ${
       checked ? 'bg-indigo-500/10 border-indigo-500/40' : 'bg-surface border-line hover:border-zinc-600'
@@ -49,6 +50,7 @@ export const FeatureToggle: React.FC<{
         aria-checked={checked}
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
+        data-testid={testId}
         className="sr-only peer"
       />
       <span
@@ -590,6 +592,14 @@ export const PipelineConfig: React.FC = () => {
           description={t('config.commsDescription')}
           checked={pipelineConfig.comms_boost}
           onChange={(v) => updatePipelineConfig({ comms_boost: v })}
+        />
+        <FeatureToggle
+          icon="🗣️"
+          title={t('config.diarization')}
+          description={t('config.diarizationDesc')}
+          checked={!!pipelineConfig.enable_diarization}
+          onChange={(v) => updatePipelineConfig({ enable_diarization: v })}
+          testId="toggle-diarization"
         />
         <FeatureToggle
           icon="📺"

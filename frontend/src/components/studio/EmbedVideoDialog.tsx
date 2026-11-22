@@ -40,6 +40,7 @@ interface Props {
   hasTranslation: boolean;
   /** The toolbar's RTL punctuation choice, applied to the embedded text too */
   applyRtl: boolean;
+  hasSpeakers?: boolean;
   onClose: () => void;
   onDownload: (url: string) => void;
 }
@@ -48,14 +49,16 @@ const selectClass =
   'w-full bg-sunken border border-line rounded-lg px-2 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-indigo-500';
 
 /** Make a copy of the video with the subtitles inside: a switchable track, or burned into the picture. */
-export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslation, applyRtl, onClose, onDownload }) => {
+export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslation, applyRtl, hasSpeakers: propHasSpeakers, onClose, onDownload }) => {
   const t = useT();
   const activeJob = useJobStore((s) => s.activeJob);
   const subtitleStyle = useUiStore((s) => s.subtitleStyle);
   const setSubtitleStyle = useUiStore((s) => s.setSubtitleStyle);
+  const hasSpeakers = propHasSpeakers ?? Boolean(activeJob?.speakers && Object.keys(activeJob.speakers).length > 0);
   const [mode, setMode] = useState<EmbedMode>('soft');
   const [useTranslated, setUseTranslated] = useState(hasTranslation);
   const [bilingual, setBilingual] = useState(false);
+  const [colorSpeakers, setColorSpeakers] = useState(true);
   const [setDefault, setSetDefault] = useState(true);
   const [quality, setQuality] = useState<EmbedQuality>('standard');
   const [status, setStatus] = useState<EmbedVideoStatus | null>(null);
@@ -153,6 +156,7 @@ export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslat
               bold: subtitleStyle.bold,
               highlight_mode: subtitleStyle.highlightMode,
               highlight_color: subtitleStyle.highlightColor,
+              color_speakers: hasSpeakers ? colorSpeakers : false,
               bilingual: bilingual && hasTranslation && useTranslated,
             }
           : {}),
@@ -567,18 +571,35 @@ export const EmbedVideoDialog: React.FC<Props> = ({ jobId, isUpload, hasTranslat
               </div>
             </div>
 
-            {hasTranslation && useTranslated && (
-              <label className="flex items-center gap-2 pt-1 border-t border-line/60 text-xs text-zinc-300 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={bilingual}
-                  onChange={(e) => setBilingual(e.target.checked)}
-                  disabled={running}
-                  data-testid="embed-bilingual"
-                  className="w-3.5 h-3.5 rounded border-zinc-700 text-indigo-600 bg-zinc-800"
-                />
-                <span>{t('embed.bilingual')}</span>
-              </label>
+            {(hasSpeakers || (hasTranslation && useTranslated)) && (
+              <div className="flex flex-wrap items-center gap-4 pt-1 border-t border-line/60">
+                {hasTranslation && useTranslated && (
+                  <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={bilingual}
+                      onChange={(e) => setBilingual(e.target.checked)}
+                      disabled={running}
+                      data-testid="embed-bilingual"
+                      className="w-3.5 h-3.5 rounded border-zinc-700 text-indigo-600 bg-zinc-800"
+                    />
+                    <span>{t('embed.bilingual')}</span>
+                  </label>
+                )}
+                {hasSpeakers && (
+                  <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={colorSpeakers}
+                      onChange={(e) => setColorSpeakers(e.target.checked)}
+                      disabled={running}
+                      data-testid="embed-color-speakers"
+                      className="w-3.5 h-3.5 rounded border-zinc-700 text-indigo-600 bg-zinc-800"
+                    />
+                    <span>{t('embed.colorSpeakers')}</span>
+                  </label>
+                )}
+              </div>
             )}
           </div>
         )}

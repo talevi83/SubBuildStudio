@@ -59,14 +59,24 @@ def pick_ollama_model(models_payload: Sequence[Dict[str, Any]]) -> Optional[str]
     return names[0]
 
 
-def find_ambiguous_segments(segments: Sequence[Any]) -> List[Dict[str, Any]]:
+def find_ambiguous_segments(
+    segments: Sequence[Any],
+    speakers: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     """Return segments whose text contains ambiguous English 1st/2nd-person forms."""
     ambiguous: List[Dict[str, Any]] = []
     for seg in segments:
         idx = seg["index"] if isinstance(seg, dict) else getattr(seg, "index", 0)
         text = seg["original_text"] if isinstance(seg, dict) else getattr(seg, "original_text", "")
         if text and AMBIGUOUS_PRONOUN_RE.search(text):
-            ambiguous.append({"index": int(idx), "text": str(text)})
+            item: Dict[str, Any] = {"index": int(idx), "text": str(text)}
+            sp_id = seg.get("speaker") if isinstance(seg, dict) else getattr(seg, "speaker", None)
+            if sp_id:
+                sp_info = (speakers or {}).get(sp_id) if isinstance(speakers, dict) else None
+                sp_gender = sp_info.get("gender") if isinstance(sp_info, dict) else None
+                sp_label = sp_info.get("label") if isinstance(sp_info, dict) else None
+                item["speaker"] = f"{sp_label or sp_id} ({sp_gender})" if sp_gender in ("male", "female") else (sp_label or str(sp_id))
+            ambiguous.append(item)
     return ambiguous
 
 
@@ -112,6 +122,7 @@ async def pretag_gender_hints(
     usage: Any = None,
     cloud_model: Optional[str] = None,
     on_batch: Optional[Any] = None,
+    speakers: Optional[Dict[str, Any]] = None,
 ) -> Dict[int, str]:
     """
     Query local Ollama for ambiguous lines and return `{segment_index: "[Speaker: M/F, To: M/F]"}`.
@@ -120,9 +131,19 @@ async def pretag_gender_hints(
     if not is_gendered_target_language(target_lang) or not segments:
         return {}
 
-    ambiguous = find_ambiguous_segments(segments)
+    ambiguous = find_ambiguous_segments(segments, speakers=speakers)
     if not ambiguous:
         return {}
+
+    known_gender_by_index: Dict[int, str] = {}
+    if isinstance(speakers, dict) and speakers:
+        for seg in segments:
+            idx = int(seg["index"] if isinstance(seg, dict) else getattr(seg, "index", 0))
+            sp_id = seg.get("speaker") if isinstance(seg, dict) else getattr(seg, "speaker", None)
+            if sp_id and isinstance(speakers.get(sp_id), dict):
+                code = _normalize_gender_code(speakers[sp_id].get("gender"))
+                if code:
+                    known_gender_by_index[idx] = code
 
     model = await detect_ollama_model(timeout=2.0)
     if not model:
@@ -175,12 +196,16 @@ async def pretag_gender_hints(
                     for item in items:
                         if not isinstance(item, dict) or "index" not in item:
                             continue
+                        seg_idx = int(item["index"])
+                        sp_raw = item.get("speaker") or item.get("speaker_gender")
+                        if seg_idx in known_gender_by_index:
+                            sp_raw = known_gender_by_index[seg_idx]
                         tag = format_gender_tag(
-                            item.get("speaker") or item.get("speaker_gender"),
+                            sp_raw,
                             item.get("to") or item.get("addressee") or item.get("addressee_gender"),
                         )
                         if tag:
-                            hints[int(item["index"])] = tag
+                            hints[seg_idx] = tag
                             batch_tagged += 1
 
                 if usage is not None and hasattr(usage, "record_local_ai"):

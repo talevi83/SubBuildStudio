@@ -34,6 +34,7 @@ const GENRE_PRESETS: GenrePresetDefinition[] = [
       onscreen_position: 'top_center',
       convert_to_metric: false,
       remove_sdh_speakers: true,
+      enable_diarization: false,
       enable_translation: true,
     },
   },
@@ -43,7 +44,7 @@ const GENRE_PRESETS: GenrePresetDefinition[] = [
     titleKey: 'config.presetPodcastTitle',
     descKey: 'config.presetPodcastDesc',
     preferredWhisperModel: 'large-v3-turbo',
-    tags: ['Interview', 'Turbo'],
+    tags: ['Interview', 'Turbo', 'Voice ID'],
     config: {
       vad_filter: true,
       high_speech_sensitivity: false,
@@ -56,6 +57,7 @@ const GENRE_PRESETS: GenrePresetDefinition[] = [
       onscreen_position: 'top_center',
       convert_to_metric: false,
       remove_sdh_speakers: false,
+      enable_diarization: true,
       enable_translation: true,
     },
   },
@@ -78,6 +80,7 @@ const GENRE_PRESETS: GenrePresetDefinition[] = [
       onscreen_position: 'top_center',
       convert_to_metric: false,
       remove_sdh_speakers: true,
+      enable_diarization: false,
       enable_translation: true,
     },
   },
@@ -101,6 +104,7 @@ const GENRE_PRESETS: GenrePresetDefinition[] = [
       onscreen_position: 'top_center',
       convert_to_metric: false,
       remove_sdh_speakers: false,
+      enable_diarization: false,
       enable_translation: false,
     },
   },
@@ -110,7 +114,7 @@ const GENRE_PRESETS: GenrePresetDefinition[] = [
     titleKey: 'config.presetDocuTitle',
     descKey: 'config.presetDocuDesc',
     preferredWhisperModel: 'large-v3-turbo',
-    tags: ['OCR · 2', '+Whisper', 'Comms', 'Metric'],
+    tags: ['OCR · 2', '+Whisper', 'Voice ID', 'Metric'],
     config: {
       vad_filter: true,
       high_speech_sensitivity: false,
@@ -123,6 +127,7 @@ const GENRE_PRESETS: GenrePresetDefinition[] = [
       onscreen_position: 'top_center',
       convert_to_metric: true,
       remove_sdh_speakers: true,
+      enable_diarization: true,
       enable_translation: true,
     },
   },
@@ -132,7 +137,7 @@ const GENRE_PRESETS: GenrePresetDefinition[] = [
     titleKey: 'config.presetCinemaTitle',
     descKey: 'config.presetCinemaDesc',
     preferredWhisperModel: 'large-v3',
-    tags: ['High Sens', 'OCR · 2', 'Comms', '+Whisper'],
+    tags: ['High Sens', 'OCR · 2', 'Voice ID', '+Whisper'],
     config: {
       vad_filter: true,
       high_speech_sensitivity: true,
@@ -145,6 +150,7 @@ const GENRE_PRESETS: GenrePresetDefinition[] = [
       onscreen_position: 'top_center',
       convert_to_metric: true,
       remove_sdh_speakers: true,
+      enable_diarization: true,
       enable_translation: true,
     },
   },
@@ -172,6 +178,7 @@ function matchesPreset(current: JobConfig, preset: GenrePresetDefinition, availa
   if (c.detect_onscreen_text && (current.onscreen_sensitivity ?? 2) !== c.onscreen_sensitivity) return false;
   if (Boolean(current.convert_to_metric) !== Boolean(c.convert_to_metric)) return false;
   if (Boolean(current.remove_sdh_speakers) !== Boolean(c.remove_sdh_speakers)) return false;
+  if (Boolean(current.enable_diarization) !== Boolean(c.enable_diarization)) return false;
   return true;
 }
 

@@ -19,6 +19,7 @@ import type {
   ProblemFilter,
   EditHistory,
   HistoryRestoreResult,
+  SpeakerProfile,
 } from '../types';
 import { getItemWithLegacy } from '../utils/legacyStorage';
 import type { MessageKey } from '../i18n';
@@ -43,6 +44,7 @@ const DEFAULT_CONFIG: JobConfig = {
   convert_to_metric: false,
   remove_sdh_speakers: false,
   skip_end_credits: true,
+  enable_diarization: false,
   enable_translation: true,
   target_language: 'Hebrew',
   gemini_api_key_override: '',
@@ -129,6 +131,8 @@ interface JobState {
   selectedSegmentIndex: number | null;
   problemFilter: ProblemFilter;
   setProblemFilter: (filter: ProblemFilter) => void;
+  speakerFilter: string;
+  setSpeakerFilter: (speaker: string) => void;
   seekRequest: SeekRequest | null;
   subtitleOverlayMode: 'original' | 'translated' | 'dual';
   applyRtlExport: boolean;
@@ -212,6 +216,9 @@ interface JobState {
     options?: boolean | Partial<SearchOptions>
   ) => Promise<number>;
   saveGlossary: (glossary: Glossary, profile?: string) => Promise<boolean>;
+  saveSpeakers: (speakers: Record<string, SpeakerProfile>) => Promise<boolean>;
+  diarizeActiveJob: (opts?: { min_speakers?: number; max_speakers?: number; threshold?: number }) => Promise<boolean>;
+  bulkUpdateSpeaker: (segmentIds: number[], speaker: string | null) => Promise<void>;
   retimeActiveJob: () => Promise<void>;
   moveSegment: (segmentId: number, toPosition: number) => Promise<void>;
   setVideoCurrentTime: (time: number) => void;
@@ -407,6 +414,8 @@ export const useJobStore = create<JobState>((set, get) => {
     selectedSegmentIndex: null,
     problemFilter: 'NONE',
     setProblemFilter: (problemFilter) => set({ problemFilter }),
+    speakerFilter: 'ALL',
+    setSpeakerFilter: (speakerFilter) => set({ speakerFilter }),
     seekRequest: null,
     subtitleOverlayMode: 'dual',
     applyRtlExport: true,
@@ -650,6 +659,7 @@ export const useJobStore = create<JobState>((set, get) => {
           insertDraft: null,
           selectedSegmentIndex: null,
           problemFilter: 'NONE',
+          speakerFilter: 'ALL',
           videoCurrentTime: 0,
           seekRequest: null,
           stageMessage: null,
@@ -717,6 +727,7 @@ export const useJobStore = create<JobState>((set, get) => {
         syncLanguage: null,
         selectedSegmentIndex: null,
         problemFilter: 'NONE',
+        speakerFilter: 'ALL',
         seekRequest: null,
         stageMessage: null,
         savingCount: 0,
@@ -916,6 +927,68 @@ export const useJobStore = create<JobState>((set, get) => {
       } catch (e: any) {
         set({ error: e.message });
         return false;
+      }
+    },
+
+    saveSpeakers: async (speakers) => {
+      const { activeJob } = get();
+      if (!activeJob) return false;
+      try {
+        const updated = await api.updateSpeakers(activeJob.id, speakers);
+        patchActiveJob({ speakers: updated.speakers ?? speakers });
+        return true;
+      } catch (e: any) {
+        set({ error: e.message });
+        return false;
+      }
+    },
+
+    diarizeActiveJob: async (opts) => {
+      const { activeJob } = get();
+      if (!activeJob) return false;
+      const jobId = activeJob.id;
+      try {
+        const updated = await api.diarizeJob(jobId, opts);
+        if (get().activeJob?.id !== jobId) return false;
+        patchActiveJob({
+          speakers: updated.speakers,
+          segments: updated.segments,
+          enable_diarization: updated.enable_diarization,
+        });
+        scheduleHistoryRefresh();
+        return true;
+      } catch (e: any) {
+        set({ error: e.message });
+        return false;
+      }
+    },
+
+    bulkUpdateSpeaker: async (segmentIds, speaker) => {
+      const { activeJob } = get();
+      if (!activeJob || segmentIds.length === 0) return;
+      const jobId = activeJob.id;
+      const idSet = new Set(segmentIds);
+      patchActiveJob({
+        segments: activeJob.segments.map((s) => (s.id && idSet.has(s.id) ? { ...s, speaker } : s)),
+      });
+      set((s) => ({ savingCount: s.savingCount + 1 }));
+      try {
+        const saved = await api.updateSegments(
+          jobId,
+          segmentIds.map((id) => ({ id, speaker }))
+        );
+        const byId = new Map(saved.map((s) => [s.id, s]));
+        const cur = get().activeJob;
+        if (cur && cur.id === jobId) {
+          patchActiveJob({
+            segments: cur.segments.map((s) => (s.id && byId.has(s.id) ? { ...s, ...byId.get(s.id)! } : s)),
+          });
+        }
+        set((s) => ({ savingCount: Math.max(0, s.savingCount - 1), lastSavedAt: Date.now() }));
+        scheduleHistoryRefresh();
+      } catch (e: any) {
+        set((s) => ({ savingCount: Math.max(0, s.savingCount - 1), error: e.message }));
+        void get().refreshActiveJob();
       }
     },
 

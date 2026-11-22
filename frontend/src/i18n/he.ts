@@ -34,6 +34,7 @@ export const he: Messages = {
     translate_all: 'תרגום כל השורות',
     translate_failed: 'תרגום מחדש של שורות שנכשלו',
     translate_rows: 'תרגום מחדש של {count} שורות',
+    diarize: 'זיהוי דוברים (אודיו)',
     external: 'שינויים אחרים',
     unknown: 'שינוי',
   },
@@ -43,6 +44,7 @@ export const he: Messages = {
     PROBING: 'בודק קובץ',
     EXTRACTING_AUDIO: 'מחלץ אודיו',
     TRANSCRIBING: 'מתמלל',
+    DIARIZING: 'מזהה דוברים',
     SCANNING_ONSCREEN: 'סורק טקסט על המסך',
     REFINING: 'מעבד כתוביות',
     TRANSLATING: 'מתרגם',
@@ -222,6 +224,9 @@ export const he: Messages = {
     skipEndCreditsTitle: 'סינון חכם של כתוביות סיום (שמירת סצנות אחרי הכתוביות)',
     skipEndCreditsDescription:
       'מדלג על כתוביות הסיום, הקרדיטים ושירי הסיום בסוף הסרטון כדי לחסוך טוקנים וזמן, אבל שומר סצנות שמגיעות אחריהם.',
+    diarization: 'זיהוי דוברים אקוסטי (לפי חותמת קול)',
+    diarizationDesc:
+      'מזהה ומפריד דוברים מקומית לפי חותמת הקול (ללא טוקן חיצוני), כדי לשמור על מגדר עקבי בעברית גם בדיבור מחוץ לפריים.',
     highSpeechSensitivityTitle: 'רגישות דיבור גבוהה (תפיסת לחישות)',
     highSpeechSensitivityDesc:
       'מרכך את סינון השקט כדי לתפוס לחישות, דיבור חלש או משפטים שנבלעים במוזיקת רקע חזקה.',
@@ -269,6 +274,7 @@ export const he: Messages = {
     PROBING: 'בדיקת ערוצים',
     EXTRACTING_AUDIO: 'חילוץ אודיו',
     TRANSCRIBING: 'תמלול (Whisper)',
+    DIARIZING: 'זיהוי דוברים אקוסטי',
     SCANNING_ONSCREEN: 'טקסט על המסך',
     REFINING: 'עיבוד ותזמון',
     TRANSLATING: 'תרגום (AI)',
@@ -517,6 +523,10 @@ export const he: Messages = {
     title: '{cps} תווים לשנייה ({label})',
   },
   glossary: {
+    speakersSection: 'דוברים (חותמת קול אקוסטית)',
+    detectSpeakers: 'זיהוי דוברים מהאודיו',
+    detectingSpeakers: 'מנתח קולות…',
+    noSpeakersYet: 'טרם זוהו דוברים — לחצו על זיהוי דוברים לניתוח מקומי של ערוץ האודיו.',
     profile: 'פרופיל סדרה (משותף לכל הסרטונים בה)',
     profilePlaceholder: 'שם הסדרה (להשאיר ריק אם אין)',
     profileHelp: 'נשמר בשם הזה. סרטונים הבאים שישתמשו בו יתחילו מהרשימה הזאת, ובדיקת השמות שלהם תוסיף רק שמות ומונחים חדשים.',
@@ -545,7 +555,20 @@ export const he: Messages = {
     group: 'קבוצה מעורבת',
     empty: 'אין דמויות עדיין - הוסיפו את הראשיות.',
   },
+  speakers: {
+    genderLabel: 'מגדר',
+    unknown: 'לא ידוע',
+    male: 'זכר',
+    female: 'נקבה',
+    cues: '{count} שורות',
+    unassigned: 'ללא דובר',
+  },
+  selection: {
+    assignSpeaker: 'שייך לדובר…',
+  },
   toolbar: {
+    filterSpeaker: 'סינון לפי דובר',
+    allSpeakers: 'כל הדוברים',
     targetLanguage: 'שפת יעד',
     translate: 'תרגם',
     retranslateAll: 'תרגם הכול מחדש',
@@ -602,6 +625,7 @@ export const he: Messages = {
     bgNoneLabel: 'ללא רקע (קו מתאר)',
     livePreview: 'תצוגה מקדימה חיה על פריים',
     bilingual: 'צרוב שתי שפות יחד (דו-לשוני)',
+    colorSpeakers: 'צביעת דוברים לפי צבע',
     previewSample: 'דוגמה לתצוגת כתובית',
     whereSoft: 'קובץ חדש נשמר ליד הווידאו המקורי (Video.he.subs.mkv). המקור לא משתנה.',
     whereBurn: 'קובץ חדש נשמר ליד הווידאו המקורי (Video.he.burned.mp4). המקור לא משתנה.',

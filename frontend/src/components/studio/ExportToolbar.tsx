@@ -22,6 +22,8 @@ export const ExportToolbar: React.FC = () => {
   const systemInfo = useJobStore((s) => s.systemInfo);
   const keyOverride = useJobStore((s) => s.pipelineConfig.gemini_api_key_override);
   const saveGlossary = useJobStore((s) => s.saveGlossary);
+  const saveSpeakers = useJobStore((s) => s.saveSpeakers);
+  const diarizeActiveJob = useJobStore((s) => s.diarizeActiveJob);
   const problemFilter = useJobStore((s) => s.problemFilter);
   const setProblemFilter = useJobStore((s) => s.setProblemFilter);
   const setSelectedSegmentIndex = useJobStore((s) => s.setSelectedSegmentIndex);
@@ -66,6 +68,7 @@ export const ExportToolbar: React.FC = () => {
   const target = targetLanguage ?? activeJob.target_language;
   const isRtlSource = isRtlLanguage(activeJob.detected_language || activeJob.source_language);
   const isRtl = hasTranslation ? isRtlLanguage(target) : isRtlSource;
+  const hasSpeakers = Boolean(activeJob.speakers && Object.keys(activeJob.speakers).length > 0);
   const activeProvider =
     appSettings?.translation.provider || inferProviderFromModelId(activeJob.gemini_model || appSettings?.translation.model);
   const canTranslate =
@@ -200,6 +203,10 @@ export const ExportToolbar: React.FC = () => {
           glossary={activeJob.glossary}
           profile={activeJob.glossary_profile}
           canTranslate={canTranslate}
+          speakers={activeJob.speakers}
+          segments={activeJob.segments}
+          onSaveSpeakers={saveSpeakers}
+          onDiarize={diarizeActiveJob}
           onClose={() => setGlossaryOpen(false)}
           onSave={async (g, thenTranslate, profile) => {
             const ok = await saveGlossary(g, profile);
@@ -216,6 +223,7 @@ export const ExportToolbar: React.FC = () => {
           isUpload={!!activeJob.is_upload}
           hasTranslation={hasTranslation}
           applyRtl={applyRtlExport}
+          hasSpeakers={hasSpeakers}
           onClose={() => setEmbedOpen(false)}
           onDownload={downloadFile}
         />
@@ -365,6 +373,7 @@ export const ExportToolbar: React.FC = () => {
                       useTranslated: hasTranslation,
                       applyRtl: isRtl && applyRtlExport,
                       style: subtitleStyle,
+                      colorSpeakers: hasSpeakers,
                     })
                   );
                 }}

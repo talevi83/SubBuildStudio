@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useRef, useState } from 'react';
-import type { SegmentPatch, SubtitleSegment } from '../../types';
+import type { SegmentPatch, SpeakerProfile, SubtitleSegment } from '../../types';
 import { registerPendingFlush } from '../../store/useJobStore';
 import { CpsBadge } from './CpsBadge';
 import { formatTimecode, parseTimecode } from '../../utils/time';
@@ -16,6 +16,7 @@ interface SubtitleRowProps {
   isRtlSource?: boolean;
   translationEnabled: boolean;
   maxCps: number;
+  speakers?: Record<string, SpeakerProfile> | null;
   onSelect: (seg: SubtitleSegment) => void;
   onSave: (segmentId: number, patch: SegmentPatch) => void;
   rowRef?: React.Ref<HTMLTableRowElement>;
@@ -199,6 +200,7 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
   isRtlSource,
   translationEnabled,
   maxCps,
+  speakers,
   onSelect,
   onSave,
   rowRef,
@@ -428,6 +430,35 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
           >
             📻 {t('table.commsBadge')}
           </span>
+        )}
+        {((speakers && Object.keys(speakers).length > 0) || seg.speaker) && seg.segment_type !== 'ON_SCREEN' && (
+          <div className="mt-1 flex items-center justify-center gap-1" onClick={(e) => e.stopPropagation()}>
+            {seg.speaker && speakers?.[seg.speaker]?.color && (
+              <span
+                className="inline-block w-2 h-2 rounded-full flex-shrink-0"
+                style={{ backgroundColor: speakers[seg.speaker].color }}
+              />
+            )}
+            <select
+              value={seg.speaker || ''}
+              disabled={!editable}
+              onChange={(e) => seg.id && onSave(seg.id, { speaker: e.target.value || null })}
+              data-testid="segment-speaker-pill"
+              aria-label={t('table.speaker')}
+              className="max-w-[82px] truncate bg-zinc-800/80 border border-line rounded px-1 py-0.5 text-[9px] font-sans text-zinc-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+            >
+              <option value="">{t('speakers.unassigned')}</option>
+              {speakers &&
+                Object.entries(speakers).map(([id, sp]) => (
+                  <option key={id} value={id}>
+                    {sp.label || id}
+                  </option>
+                ))}
+              {seg.speaker && (!speakers || !speakers[seg.speaker]) && (
+                <option value={seg.speaker}>{seg.speaker}</option>
+              )}
+            </select>
+          </div>
         )}
       </td>
 

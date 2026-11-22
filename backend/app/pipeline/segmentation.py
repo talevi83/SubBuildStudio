@@ -49,6 +49,7 @@ class _Tok:
     end: float
     prob: float = 1.0
     seg_end: bool = False  # last word of a Whisper segment
+    speaker: Optional[str] = None
 
 
 @dataclass
@@ -294,9 +295,10 @@ def _tokens_from_raw(raw_segments: List[RawSegment]) -> List[_Tok]:
     for raw in raw_segments:
         words = [w for w in (raw.words or []) if w.word and w.word.strip()]
         seg_toks: List[_Tok] = []
+        raw_sp = getattr(raw, "speaker", None)
         if words:
             for w in words:
-                seg_toks.append(_Tok(w.word, float(w.start), float(w.end), float(w.probability)))
+                seg_toks.append(_Tok(w.word, float(w.start), float(w.end), float(w.probability), speaker=getattr(w, "speaker", None) or raw_sp))
         else:
             # No word timestamps: spread the segment's time over its words by length.
             parts = raw.text.split()
@@ -307,7 +309,7 @@ def _tokens_from_raw(raw_segments: List[RawSegment]) -> List[_Tok]:
             t = raw.start_time
             for p in parts:
                 d = span * (len(p) + 1) / total
-                seg_toks.append(_Tok(" " + p, t, t + d, raw.confidence))
+                seg_toks.append(_Tok(" " + p, t, t + d, raw.confidence, speaker=raw_sp))
                 t += d
 
         # Make sure words from consecutive Whisper segments don't get glued together
@@ -403,8 +405,10 @@ def _split_units(toks: List[_Tok]) -> List[List[_Tok]]:
             and gap < _SEGMENT_PAUSE
             and not tok.seg_end
         )
+        speaker_switch = bool(tok.speaker and nxt.speaker and tok.speaker != nxt.speaker)
         if (
-            gap >= _HARD_PAUSE
+            speaker_switch
+            or gap >= _HARD_PAUSE
             or (tok.seg_end and (ends_sentence(tok.text) or gap >= _SEGMENT_PAUSE))
             or (ends_sentence(tok.text) and not is_paired_exclamation)
         ):
@@ -635,6 +639,11 @@ def refine_raw_segments(
             for t in b.toks
             if t.text.strip()
         ]
+        dur_by_sp: Dict[str, float] = {}
+        for t in b.toks:
+            if t.speaker:
+                dur_by_sp[t.speaker] = dur_by_sp.get(t.speaker, 0.0) + max(0.05, t.end - t.start)
+        dominant_sp = max(dur_by_sp.items(), key=lambda kv: kv[1])[0] if dur_by_sp else None
         refined.append({
             "index": len(refined) + 1,
             "start_time": start,
@@ -646,6 +655,7 @@ def refine_raw_segments(
             "confidence": round(sum(t.prob for t in b.toks) / len(b.toks), 2),
             "cps": calculate_cps(text, max(0.1, end - start)),
             "words": words_payload or None,
+            "speaker": dominant_sp,
         })
     from app.utils.speaker_split import split_dual_speaker_segments
 

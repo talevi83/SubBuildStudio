@@ -74,6 +74,7 @@ class JobConfig(RequestModel):
     convert_to_metric: Optional[bool] = None
     remove_sdh_speakers: Optional[bool] = None
     skip_end_credits: Optional[bool] = None
+    enable_diarization: bool = False
     enable_translation: bool = False
     target_language: str = "Hebrew"
     # None = use the translation model chosen on the Settings screen
@@ -136,6 +137,7 @@ class GlossaryCharacterEdit(RequestModel):
     target_name: str = ""
     gender: str = "unknown"
     notes: str = ""
+    speaker_id: str = ""
 
 
 class GlossaryTermEdit(RequestModel):
@@ -166,6 +168,22 @@ class WordTimingSchema(BaseModel):
     e: float
 
 
+class SpeakerProfileSchema(BaseModel):
+    label: str
+    gender: Literal["male", "female", "unknown"] = "unknown"
+    color: str = "#38BDF8"
+
+
+class SpeakersUpdateRequest(RequestModel):
+    speakers: Dict[str, SpeakerProfileSchema]
+
+
+class DiarizeJobRequest(RequestModel):
+    min_speakers: Optional[int] = Field(default=None, ge=1, le=20)
+    max_speakers: Optional[int] = Field(default=None, ge=1, le=20)
+    threshold: Optional[float] = Field(default=None, ge=0.05, le=0.95)
+
+
 class SubtitleSegmentSchema(BaseModel):
     id: Optional[int] = None
     job_id: str
@@ -179,6 +197,7 @@ class SubtitleSegmentSchema(BaseModel):
     confidence: Optional[float] = 1.0
     cps: Optional[float] = 0.0
     words: Optional[List[WordTimingSchema]] = None
+    speaker: Optional[str] = None
 
 
 class SegmentUpdate(RequestModel):
@@ -186,6 +205,7 @@ class SegmentUpdate(RequestModel):
     end_time: Optional[float] = None
     original_text: Optional[str] = None
     translated_text: Optional[str] = None
+    speaker: Optional[str] = None
 
 
 class BulkSegmentUpdate(SegmentUpdate):
@@ -205,6 +225,7 @@ class SegmentCreate(RequestModel):
     original_text: str = ""
     translated_text: Optional[str] = None
     segment_type: str = "DIALOGUE"
+    speaker: Optional[str] = None
 
 
 class MoveSegmentRequest(RequestModel):
@@ -295,6 +316,8 @@ class JobResponse(BaseModel):
     convert_to_metric: bool = False
     remove_sdh_speakers: bool = False
     skip_end_credits: bool = True
+    enable_diarization: bool = False
+    speakers: Optional[Dict[str, SpeakerProfileSchema]] = None
     enable_translation: bool = False
     target_language: str = "Hebrew"
     gemini_model: str = "gemini-3.8-flash"

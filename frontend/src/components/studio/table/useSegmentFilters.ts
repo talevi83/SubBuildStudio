@@ -31,6 +31,7 @@ export interface SegmentFilterOptions {
   maxCps: number;
   problemFilter: ProblemFilter;
   tagFilter: string;
+  speakerFilter?: string;
   /** Already deferred by the caller (useDeferredValue) */
   searchTerm: string;
   useRegex: boolean;
@@ -48,6 +49,7 @@ export function useSegmentFilters({
   maxCps,
   problemFilter,
   tagFilter,
+  speakerFilter = 'ALL',
   searchTerm,
   useRegex,
   matchCase = false,
@@ -126,6 +128,12 @@ export function useSegmentFilters({
         list = list.filter((s) => s.segment_type === tagFilter);
       }
     }
+    if (speakerFilter && speakerFilter !== 'ALL') {
+      list =
+        speakerFilter === '__NONE__'
+          ? list.filter((s) => !s.speaker)
+          : list.filter((s) => s.speaker === speakerFilter);
+    }
     if (!searchTerm.trim()) return list;
     if (regexError || !searchRegex) return [];
     return list.filter((s) => hasMatch(searchRegex, s.original_text) || hasMatch(searchRegex, s.translated_text));
@@ -140,6 +148,7 @@ export function useSegmentFilters({
     hasLatinLeftover,
     isHighCps,
     tagFilter,
+    speakerFilter,
   ]);
 
   return { filteredSegments, problemStats, tagCounts, regexError };
