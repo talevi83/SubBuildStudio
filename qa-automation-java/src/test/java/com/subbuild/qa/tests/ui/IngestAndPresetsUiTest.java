@@ -43,7 +43,7 @@ class IngestAndPresetsUiTest extends BaseTest {
     }
 
     @ParameterizedTest(name = "Genre preset \"{0}\" activates preset badge")
-    @ValueSource(strings = {"drama", "docu", "action", "fast"})
+    @ValueSource(strings = {"youtube", "podcast", "reels", "hebrew", "docu", "cinema"})
     @Tag("regression")
     @Tag("ui")
     @DisplayName("Selecting a Genre Preset updates its active state and badge")

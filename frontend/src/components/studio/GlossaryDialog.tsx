@@ -582,6 +582,7 @@ export const GlossaryDialog: React.FC<Props> = ({
                 return (
                   <div key={i} className="grid grid-cols-[1fr_1fr_7rem_1.4fr_auto] gap-2 items-center">
                     <input
+                      data-testid="glossary-char-name"
                       value={c.name}
                       onChange={(e) => setChar(i, { name: e.target.value })}
                       placeholder={t('glossary.name')}
@@ -589,6 +590,7 @@ export const GlossaryDialog: React.FC<Props> = ({
                       dir="auto"
                     />
                     <input
+                      data-testid="glossary-char-target"
                       value={c.target_name ?? ''}
                       onChange={(e) => setChar(i, { target_name: e.target.value })}
                       placeholder={t('glossary.targetName')}
@@ -596,6 +598,7 @@ export const GlossaryDialog: React.FC<Props> = ({
                       dir="auto"
                     />
                     <select
+                      data-testid="glossary-char-gender"
                       value={c.gender || 'unknown'}
                       onChange={(e) => setChar(i, { gender: e.target.value })}
                       className={inputClass}
@@ -640,6 +643,7 @@ export const GlossaryDialog: React.FC<Props> = ({
               })}
               <button
                 type="button"
+                data-testid="glossary-add-character"
                 onClick={() =>
                   setCharacters((l) => [...l, { name: '', target_name: '', gender: 'unknown', notes: '' }])
                 }

@@ -302,6 +302,28 @@ public class SubBuildApiClient {
     }
 
     /**
+     * Polls GET /api/jobs/{jobId} until the JSON field at `jsonPath` equals `expected` (a change made in
+     * the UI is saved by a request of its own). Returns the last value seen, matching or not.
+     */
+    public String waitForJobField(String jobId, String jsonPath, String expected, Duration timeout) {
+        Instant deadline = Instant.now().plus(timeout);
+        String value = null;
+        while (true) {
+            Response response = getJob(jobId);
+            if (response.statusCode() == 200) {
+                value = response.jsonPath().getString(jsonPath);
+                if (expected.equals(value)) {
+                    return value;
+                }
+            }
+            if (!Instant.now().isBefore(deadline)) {
+                return value;
+            }
+            LockSupportWait.pauseMillis(200);
+        }
+    }
+
+    /**
      * Seeds a completed job with real subtitle segments using an MKV carrying an embedded SRT track.
      */
     public String seedCompletedEmbeddedJob(String videoPath) {
