@@ -103,7 +103,8 @@ pipeline {
                     sh '''#!/usr/bin/env bash
                     set -euo pipefail
                     npm ci --no-audit --no-fund
-                    if [ "${RUN_FRONTEND_CHECKS}" = "true" ]; then
+                    # The first build of a new job (every new PR) has no parameters as env vars yet
+                    if [ "${RUN_FRONTEND_CHECKS:-true}" = "true" ]; then
                         npm run lint
                         # Same as `npm run build`, but Vitest also writes a JUnit report for Jenkins/Allure
                         npx tsc -b
@@ -132,7 +133,7 @@ pipeline {
                         )
                     fi
 
-                    mvn -B clean test -P"${JAVA_PROFILE}" -Dsubbuild.headless=true -Dsubbuild.timeoutSeconds=30
+                    mvn -B clean test -P"${JAVA_PROFILE:-regression}" -Dsubbuild.headless=true -Dsubbuild.timeoutSeconds=30
                     '''
                 }
             }
