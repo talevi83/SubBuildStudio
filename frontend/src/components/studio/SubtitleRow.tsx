@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useRef, useState } from 'react';
-import type { Gender, SegmentPatch, SpeakerProfile, SubtitleSegment } from '../../types';
+import type { SegmentPatch, SpeakerProfile, SubtitleSegment } from '../../types';
 import { addresseeChoice, isUncertainAddressee } from './table/addressee';
 import { registerPendingFlush } from '../../store/useJobStore';
 import { CpsBadge } from './CpsBadge';
@@ -17,7 +17,7 @@ const ADDRESSEE_NAME_KEY = {
   unknown: 'table.addresseeUnknown',
 } as const;
 
-const ADDRESSEE_OPTION_CLASS = 'bg-zinc-900 text-zinc-200';
+const ADDRESSEE_ICON = { male: '♂', female: '♀', group: '👥', unknown: '?' } as const;
 
 interface SubtitleRowProps {
   seg: SubtitleSegment;
@@ -473,14 +473,13 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
           </div>
         )}
         {seg.addressee && seg.segment_type !== 'ON_SCREEN' && (
-          <div className="mt-1 flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
-            <select
-              value={addresseeChoice(seg.addressee)}
-              disabled={!editable}
-              onChange={(e) => seg.id && onSave(seg.id, { addressee_gender: (e.target.value as Gender) || null })}
+          <div className="mt-1 flex items-center justify-center">
+            <span
               data-testid="segment-addressee-pill"
+              data-choice={addresseeChoice(seg.addressee) || 'unknown'}
               data-uncertain={isUncertainAddressee(seg.addressee) ? 'true' : undefined}
-              aria-label={t('table.addressee')}
+              data-locked={seg.addressee.locked ? 'true' : undefined}
+              aria-label={`${t('table.addressee')}: ${t(ADDRESSEE_NAME_KEY[addresseeChoice(seg.addressee) || 'unknown'])}`}
               title={
                 seg.addressee.locked
                   ? t('table.addresseeTitleManual')
@@ -491,7 +490,7 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
                         percent: Math.round(seg.addressee.confidence * 100),
                       })
               }
-              className={`max-w-[82px] truncate rounded px-1 py-0.5 text-[9px] font-sans focus:outline-none focus:border-indigo-500 cursor-pointer border ${
+              className={`inline-flex max-w-[82px] items-center gap-0.5 truncate rounded px-1 py-0.5 text-[9px] font-sans border cursor-help select-none ${
                 seg.addressee.locked
                   ? 'bg-indigo-500/15 border-indigo-500/50 text-indigo-200'
                   : isUncertainAddressee(seg.addressee)
@@ -499,12 +498,10 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
                     : 'bg-zinc-800/80 border-line text-zinc-300'
               }`}
             >
-              {/* The pill's own colours are see-through; the open list needs solid ones of its own */}
-              <option value="" className={ADDRESSEE_OPTION_CLASS}>{t('table.addresseeUnknown')}</option>
-              <option value="male" className={ADDRESSEE_OPTION_CLASS}>♂ {t('table.genderMale')}</option>
-              <option value="female" className={ADDRESSEE_OPTION_CLASS}>♀ {t('table.genderFemale')}</option>
-              <option value="group" className={ADDRESSEE_OPTION_CLASS}>👥 {t('table.genderGroup')}</option>
-            </select>
+              {seg.addressee.locked && <span aria-hidden>🔒</span>}
+              <span aria-hidden>{ADDRESSEE_ICON[addresseeChoice(seg.addressee) || 'unknown']}</span>
+              <span className="truncate">{t(ADDRESSEE_NAME_KEY[addresseeChoice(seg.addressee) || 'unknown'])}</span>
+            </span>
           </div>
         )}
       </td>

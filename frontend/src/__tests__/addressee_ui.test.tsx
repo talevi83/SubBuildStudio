@@ -2,11 +2,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { SubtitleTable } from '../components/studio/SubtitleTable';
-import { addresseeChoice, isUncertainAddressee, manualAddressee } from '../components/studio/table/addressee';
+import { addresseeChoice, isUncertainAddressee } from '../components/studio/table/addressee';
 import { api } from '../services/api';
 import { mergeSegments, useJobStore } from '../store/useJobStore';
 import { useUiStore } from '../store/useUiStore';
-import type { AddresseeInfo, Job, SubtitleSegment } from '../types';
+import type { AddresseeInfo, Job, SubtitleSegment, SystemInfo } from '../types';
 
 const sure: AddresseeInfo = {
   gender: 'female',
@@ -16,6 +16,22 @@ const sure: AddresseeInfo = {
   confidence: 0.95,
   source: 'vocative',
   used: 'f',
+};
+const sysInfo: SystemInfo = {
+  is_gemini_configured: true,
+  is_ai_configured: true,
+  gemini_model: 'gemini-3-flash-preview',
+  gemini_models: ['gemini-3-flash-preview'],
+  whisper_models: ['medium'],
+  whisper_default_model: 'medium',
+  max_cps_warning: 20,
+  hardware: {
+    cuda_available: false,
+    device_count: 0,
+    cpu_count: 8,
+    recommended_device: 'cpu',
+    recommended_compute_type: 'int8',
+  },
 };
 const unresolved: AddresseeInfo = { gender: 'unknown', number: 'unknown', confidence: 0, source: 'unresolved' };
 
@@ -71,7 +87,7 @@ describe('Addressee tag on subtitle rows', () => {
     vi.restoreAllMocks();
     localStorage.clear();
     useUiStore.setState({ language: 'en', shortcutsOpen: false });
-    useJobStore.setState({ activeJob: null, speakerFilter: 'ALL', problemFilter: 'NONE' });
+    useJobStore.setState({ systemInfo: sysInfo, activeJob: null, speakerFilter: 'ALL', problemFilter: 'NONE' });
   });
 
   it('maps a record to the choice the user sees and knows which ones are unsettled', () => {
@@ -84,48 +100,48 @@ describe('Addressee tag on subtitle rows', () => {
     expect(isUncertainAddressee(unresolved)).toBe(true);
     expect(isUncertainAddressee({ ...unresolved, locked: true })).toBe(false);
     expect(isUncertainAddressee(undefined)).toBe(false);
-    expect(manualAddressee('group')).toEqual({
-      gender: 'mixed',
-      number: 'plural',
-      confidence: 1,
-      source: 'manual',
-      locked: true,
-    });
-    expect(manualAddressee(null)).toBeNull();
   });
 
-  it('shows the tag only on rows that have one, filters the unsettled ones, and saves a manual pick', async () => {
+  it('shows a read-only tag on rows that have one and filters the unsettled ones', () => {
     const job = makeJob();
+    job.segments[0].addressee = { ...sure, locked: true, source: 'manual', confidence: 1 };
     useJobStore.setState({ activeJob: job });
-    vi.spyOn(api, 'updateSegment').mockImplementation(async (_jobId, segId, patch) => {
-      const seg = job.segments.find((s) => s.id === segId)!;
-      return { ...seg, addressee: manualAddressee(patch.addressee_gender) };
-    });
+    const update = vi.spyOn(api, 'updateSegment');
 
     const { getAllByTestId, getByTestId } = render(<SubtitleTable />);
-    const pills = getAllByTestId('segment-addressee-pill') as HTMLSelectElement[];
-    expect(pills).toHaveLength(2); // the line with nothing gendered has no tag
-    expect(pills[0].value).toBe('female');
-    expect(pills[0].dataset.uncertain).toBeUndefined();
-    expect(pills[1].value).toBe('');
-    expect(pills[1].dataset.uncertain).toBe('true');
+    const tags = getAllByTestId('segment-addressee-pill');
+    expect(tags).toHaveLength(2); // the line with nothing gendered has no tag
+    expect(tags.every((tag) => tag.tagName === 'SPAN')).toBe(true); // nothing to pick from here
+    expect(tags[0].dataset.choice).toBe('female');
+    expect(tags[0].dataset.locked).toBe('true');
+    expect(tags[0].textContent).toContain('Woman');
+    expect(tags[1].dataset.choice).toBe('unknown');
+    expect(tags[1].dataset.uncertain).toBe('true');
+    expect(tags[1].textContent).toContain('Unclear');
+    expect(tags[1].getAttribute('title')).toContain('Speaking to a woman / man / group');
 
     // Only the unsettled listener is a "problem"; the filter is offered because one exists
     fireEvent.change(getByTestId('problem-filter-select'), { target: { value: 'UNCERTAIN_ADDRESSEE' } });
     expect(getAllByTestId('segment-addressee-pill')).toHaveLength(1);
-    fireEvent.change(getByTestId('problem-filter-select'), { target: { value: 'NONE' } });
+    fireEvent.click(getAllByTestId('segment-addressee-pill')[0]);
+    expect(update).not.toHaveBeenCalled();
+  });
 
-    // Picking the listener by hand saves it, and the row shows the locked tag
-    fireEvent.change(getAllByTestId('segment-addressee-pill')[1], { target: { value: 'male' } });
+  it('fixes the listener through the selected rows: re-translates them as spoken to a woman', async () => {
+    const job = makeJob();
+    useJobStore.setState({ activeJob: job });
+    const retranslate = vi.spyOn(api, 'retranslate').mockResolvedValue({ ...job, status: 'TRANSLATING' });
+
+    const { getByTestId } = render(<SubtitleTable />);
+    const checkboxes = document.querySelectorAll('tbody input[type="checkbox"]');
+    fireEvent.click(checkboxes[1]);
+    fireEvent.click(getByTestId('rows-to-woman'));
     await waitFor(() =>
-      expect(api.updateSegment).toHaveBeenCalledWith('job_addr_ui', 12, { addressee_gender: 'male' })
+      expect(retranslate).toHaveBeenCalledWith(
+        'job_addr_ui',
+        expect.objectContaining({ segment_ids: [12], addressee_gender: 'female' })
+      )
     );
-    await waitFor(() => {
-      const row = useJobStore.getState().activeJob!.segments.find((s) => s.id === 12)!;
-      expect(row.addressee).toEqual(manualAddressee('male'));
-      expect('addressee_gender' in row).toBe(false);
-    });
-    expect((getAllByTestId('segment-addressee-pill')[1] as HTMLSelectElement).value).toBe('male');
   });
 
   it('takes the listener of a translated batch from the server', () => {

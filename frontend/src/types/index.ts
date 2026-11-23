@@ -379,10 +379,7 @@ export type Gender = 'male' | 'female' | 'group';
 
 export type SegmentPatch = Partial<
   Pick<SubtitleSegment, 'start_time' | 'end_time' | 'original_text' | 'translated_text' | 'speaker'>
-> & {
-  /** Who the line is spoken to, picked by hand; null clears the tag */
-  addressee_gender?: Gender | null;
-};
+>;
 
 export type StorageCategoryId = 'temp' | 'cache' | 'logs' | 'exports' | 'uploads' | 'jobs';
 

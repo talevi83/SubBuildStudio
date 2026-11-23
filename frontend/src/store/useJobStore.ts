@@ -23,7 +23,6 @@ import type {
 } from '../types';
 import { getItemWithLegacy } from '../utils/legacyStorage';
 import { naturalSortBy } from '../utils/desktop';
-import { manualAddressee } from '../components/studio/table/addressee';
 import type { MessageKey } from '../i18n';
 import { buildSearchPattern, DEFAULT_SEARCH_OPTIONS, planReplacements, type SearchOptions } from '../utils/textSearch';
 
@@ -1054,12 +1053,9 @@ export const useJobStore = create<JobState>((set, get) => {
       };
 
       // Optimistic: show the change immediately, the server only confirms derived fields
-      const { addressee_gender: pickedListener, ...fields } = patch;
-      const shown: Partial<SubtitleSegment> =
-        pickedListener !== undefined ? { ...fields, addressee: manualAddressee(pickedListener) } : fields;
       patchActiveJob({
         segments: normalizeSegments(
-          activeJob.segments.map((s) => (s.id === segmentId ? { ...s, ...shown } : s))
+          activeJob.segments.map((s) => (s.id === segmentId ? { ...s, ...patch } : s))
         ),
       });
 
@@ -1089,7 +1085,6 @@ export const useJobStore = create<JobState>((set, get) => {
                       translation_failed: saved.translation_failed,
                       start_time: patch.start_time !== undefined ? saved.start_time : s.start_time,
                       end_time: patch.end_time !== undefined ? saved.end_time : s.end_time,
-                      addressee: pickedListener !== undefined ? saved.addressee : s.addressee,
                     }
                   : s
               )
