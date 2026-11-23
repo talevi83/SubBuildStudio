@@ -17,6 +17,8 @@ const ADDRESSEE_NAME_KEY = {
   unknown: 'table.addresseeUnknown',
 } as const;
 
+const ADDRESSEE_OPTION_CLASS = 'bg-zinc-900 text-zinc-200';
+
 interface SubtitleRowProps {
   seg: SubtitleSegment;
   isActive: boolean;
@@ -497,10 +499,11 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
                     : 'bg-zinc-800/80 border-line text-zinc-300'
               }`}
             >
-              <option value="">{t('table.addresseeUnknown')}</option>
-              <option value="male">♂ {t('table.genderMale')}</option>
-              <option value="female">♀ {t('table.genderFemale')}</option>
-              <option value="group">👥 {t('table.genderGroup')}</option>
+              {/* The pill's own colours are see-through; the open list needs solid ones of its own */}
+              <option value="" className={ADDRESSEE_OPTION_CLASS}>{t('table.addresseeUnknown')}</option>
+              <option value="male" className={ADDRESSEE_OPTION_CLASS}>♂ {t('table.genderMale')}</option>
+              <option value="female" className={ADDRESSEE_OPTION_CLASS}>♀ {t('table.genderFemale')}</option>
+              <option value="group" className={ADDRESSEE_OPTION_CLASS}>👥 {t('table.genderGroup')}</option>
             </select>
           </div>
         )}
