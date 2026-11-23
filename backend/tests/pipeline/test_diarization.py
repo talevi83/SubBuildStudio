@@ -314,3 +314,297 @@ def test_speakers_put_post_diarize_history_and_colored_exports(tmp_path, monkeyp
         with zipfile.ZipFile(io.BytesIO(r_docx.content), "r") as zf:
             doc_xml = zf.read("word/document.xml").decode("utf-8")
             assert "Host Dana:" in doc_xml
+
+
+def test_cluster_embeddings_vectorized_speed_progress_and_cancel():
+    import threading
+    import time
+    from app.pipeline.context import PipelineCancelled
+
+    rng = np.random.default_rng(42)
+    bases = np.eye(4, 16, dtype=np.float32)
+    rows = []
+    truth = []
+    for idx in range(600):
+        spk = idx % 4
+        rows.append(bases[spk] + rng.normal(0, 0.02, 16).astype(np.float32))
+        truth.append(spk)
+    emb = np.vstack(rows)
+
+    progress_events: list[float] = []
+    started = time.monotonic()
+    labels = diarization.cluster_embeddings(
+        emb,
+        threshold=0.45,
+        on_progress=progress_events.append,
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 3.0
+    assert len(labels) == 600
+    assert len(set(labels)) == 4
+    for spk in range(4):
+        group_labels = {labels[i] for i, t in enumerate(truth) if t == spk}
+        assert len(group_labels) == 1
+
+    assert progress_events
+    assert progress_events[-1] == 100.0
+    assert progress_events == sorted(progress_events)
+
+    cancel_flag = threading.Event()
+    cancel_flag.set()
+    with pytest.raises(PipelineCancelled):
+        diarization.cluster_embeddings(emb[:10], cancel_flag=cancel_flag)
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_progress_callback_tracks_stage_progress_percent(monkeypatch):
+    from app.pipeline.orchestrator import active_pipelines
+
+    job_id = "job_stage_pct_test"
+    orch = PipelineOrchestrator(job_id)
+    broadcasts = []
+    try:
+        monkeypatch.setattr(orch, "_update_job", lambda **kw: None)
+
+        async def _fake_broadcast(payload):
+            broadcasts.append(payload)
+
+        monkeypatch.setattr(orch, "_broadcast", _fake_broadcast)
+        cb = orch._progress_callback(JobStatus.DIARIZING, base_pct=63.0, share=0.10)
+        await cb(42.5, None, None, "Identifying voices across timeline...", None)
+
+        assert PipelineOrchestrator.get_stage_progress(job_id) == 42.5
+        assert len(broadcasts) == 1
+        assert broadcasts[0]["event"] == "STAGE_PROGRESS"
+        assert broadcasts[0]["stage"] == "DIARIZING"
+        assert broadcasts[0]["stage_progress_percent"] == 42.5
+        assert broadcasts[0]["progress_percent"] == round(63.0 + 42.5 * 0.10, 1)
+    finally:
+        active_pipelines.pop(job_id, None)
+        assert PipelineOrchestrator.get_stage_progress(job_id) is None
+
+
+def test_diarize_audio_spans_two_stage_clustering_and_prune_unused(tmp_path):
+    import wave
+
+    sr = 16000
+    dur = 60.0
+    wav_path = tmp_path / "episode.wav"
+    with wave.open(str(wav_path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(b"\x00\x00" * int(sr * dur))
+
+    # Build spans: 3 speakers across 15 long (>=1.3s) turns + 3 short (<0.8s) turns + 1 distant noise shard
+    spans = []
+    expected_vec_by_idx = {}
+    base_a = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    base_b = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
+    base_c = np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32)
+    noise = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+
+    t = 1.0
+    for i in range(15):
+        spans.append((t, t + 1.5))
+        expected_vec_by_idx[len(spans) - 1] = [base_a, base_b, base_c][i % 3]
+        t += 2.2
+    # Short utterances (<1.1s) should still project onto the 3 reliable speaker centroids
+    for v in (base_a, base_b, base_c):
+        spans.append((t, t + 0.5))
+        expected_vec_by_idx[len(spans) - 1] = v
+        t += 1.2
+    # Single distant noise shard (>=0.80 cosine distance from A/B/C) must not create a 4th speaker
+    spans.append((t, t + 0.6))
+    expected_vec_by_idx[len(spans) - 1] = noise
+
+    class FakeEmbedder:
+        def __init__(self):
+            self.call_idx = 0
+
+        def embed_samples(self, _chunk, sample_rate=16000):
+            v = expected_vec_by_idx[self.call_idx]
+            self.call_idx += 1
+            return v
+
+    timeline, speakers = diarization.diarize_audio_spans(
+        wav_path,
+        spans,
+        embedder=FakeEmbedder(),
+        threshold=0.66,
+    )
+    assert len(speakers) == 3
+    assert set(speakers.keys()) == {"SPEAKER_01", "SPEAKER_02", "SPEAKER_03"}
+    # Short utterances at the end got assigned cleanly to the 3 voices (no 4th noise speaker)
+    assert all(item["speaker"] in speakers for item in timeline)
+
+    # prune_unused_speakers removes 0-line speakers while adding defaults for uncatalogued IDs
+    pruned = diarization.prune_unused_speakers(
+        {
+            "SPEAKER_01": {"label": "Alex", "gender": "female", "color": "#111111"},
+            "SPEAKER_02": {"label": "Ghost", "gender": "unknown", "color": "#222222"},
+        },
+        [
+            {"speaker": "SPEAKER_01", "original_text": "Hi"},
+            {"speaker": "SPEAKER_99", "original_text": "Hey"},
+        ],
+    )
+    assert "SPEAKER_02" not in pruned
+    assert pruned["SPEAKER_01"]["label"] == "Alex"
+    assert "SPEAKER_99" in pruned
+
+
+@pytest.mark.asyncio
+async def test_deterministic_conversational_character_matching():
+    from app.pipeline.speaker_match import compute_conversational_clues, match_speakers_to_characters
+
+    glossary = {
+        "characters": [
+            {"name": "Alex Mack", "target_name": "אלכס מק", "gender": "female", "notes": "Lead", "speaker_id": ""},
+            {"name": "Annie Mack", "target_name": "אייני מק", "gender": "female", "notes": "Sister", "speaker_id": ""},
+            {"name": "Daniel Atron", "target_name": "דניאל אטרון", "gender": "male", "notes": "Exec", "speaker_id": ""},
+            {"name": "Vince", "target_name": "וינס", "gender": "male", "notes": "Security", "speaker_id": ""},
+        ]
+    }
+    speakers = {
+        "SPEAKER_01": {"label": "Speaker 1", "gender": "unknown", "color": "#38BDF8"},
+        "SPEAKER_02": {"label": "Speaker 2", "gender": "unknown", "color": "#F472B6"},
+        "SPEAKER_03": {"label": "Speaker 3", "gender": "unknown", "color": "#4ADE80"},
+        "SPEAKER_04": {"label": "Speaker 4", "gender": "unknown", "color": "#FBBF24"},
+    }
+    segments = [
+        {"index": 1, "start_time": 1.0, "end_time": 2.5, "original_text": "You sent for me, Daniel Atron?", "speaker": "SPEAKER_02"},
+        {"index": 2, "start_time": 2.8, "end_time": 4.5, "original_text": "Vince, I just got off the phone.", "speaker": "SPEAKER_03"},
+        {"index": 3, "start_time": 5.0, "end_time": 6.2, "original_text": "Thank you, Daniel Atron.", "speaker": "SPEAKER_02"},
+        {"index": 4, "start_time": 6.5, "end_time": 8.0, "original_text": "Good work, Vince.", "speaker": "SPEAKER_03"},
+        {"index": 5, "start_time": 10.0, "end_time": 11.5, "original_text": "I'm Annie, remember?", "speaker": "SPEAKER_01"},
+        {"index": 6, "start_time": 12.0, "end_time": 13.0, "original_text": "Alex?", "speaker": "SPEAKER_01"},
+        {"index": 7, "start_time": 13.3, "end_time": 14.2, "original_text": "Yes?", "speaker": "SPEAKER_04"},
+        {"index": 8, "start_time": 15.0, "end_time": 16.0, "original_text": "Hey Alex!", "speaker": "SPEAKER_01"},
+        {"index": 9, "start_time": 16.3, "end_time": 17.5, "original_text": "I am right here.", "speaker": "SPEAKER_04"},
+    ]
+    clues, det = compute_conversational_clues(segments, speakers, glossary["characters"])
+    assert clues["SPEAKER_01"]
+    assert len(det) >= 3
+
+    summary = await match_speakers_to_characters(segments, speakers, glossary, use_ai=False)
+    assert summary["method"] == "deterministic"
+    assert summary["matched"] == 4
+    assert speakers["SPEAKER_01"]["label"] == "אייני מק"
+    assert speakers["SPEAKER_01"]["gender"] == "female"
+    assert speakers["SPEAKER_02"]["label"] == "וינס"
+    assert speakers["SPEAKER_03"]["label"] == "דניאל אטרון"
+    assert speakers["SPEAKER_04"]["label"] == "אלכס מק"
+    by_name = {c["name"]: c for c in glossary["characters"]}
+    assert by_name["Alex Mack"]["speaker_id"] == "SPEAKER_04"
+    assert by_name["Annie Mack"]["speaker_id"] == "SPEAKER_01"
+
+
+def test_match_speakers_and_merge_endpoints_with_ai_and_auto_merge(tmp_path, monkeypatch):
+    from app.providers import llm as llm_mod
+    from app.providers.llm.client import LLMResponse, ProviderSpec
+
+    video = tmp_path / "Show.mp4"
+    video.write_bytes(b"video")
+    job_id = f"job_{uuid.uuid4().hex[:10]}"
+    monkeypatch.delenv("SUBBUILD_OFFLINE", raising=False)
+
+    monkeypatch.setattr(
+        llm_mod,
+        "resolve_provider_spec",
+        lambda provider, model, **kw: ProviderSpec(provider="google", model="gemini-3-flash-preview", api_key="fake-key"),
+    )
+
+    async def fake_call_text_json(*a, **kw):
+        payload = {
+            "matches": [
+                {
+                    "speaker_id": "SPEAKER_01",
+                    "character_name": "Alex Mack",
+                    "target_name": "אלכס מק",
+                    "gender": "female",
+                    "confidence": "high",
+                    "evidence": "Replied to 'Alex?' and narrated in 1st person",
+                    "merge_into_speaker_id": "",
+                },
+                {
+                    "speaker_id": "SPEAKER_02",
+                    "character_name": "Alex Mack",
+                    "target_name": "אלכס מק",
+                    "gender": "female",
+                    "confidence": "high",
+                    "evidence": "Same character voice split across scenes",
+                    "merge_into_speaker_id": "SPEAKER_01",
+                },
+                {
+                    "speaker_id": "SPEAKER_03",
+                    "character_name": "Annie Mack",
+                    "target_name": "אייני מק",
+                    "gender": "female",
+                    "confidence": "medium",
+                    "evidence": "Addressed as Annie before replying",
+                    "merge_into_speaker_id": "",
+                },
+            ]
+        }
+        return LLMResponse(text=json.dumps(payload), provider="google", model="gemini-3-flash-preview")
+
+    monkeypatch.setattr(llm_mod, "call_text_json", fake_call_text_json)
+
+    with TestClient(app) as client:
+        with Session(engine) as session:
+            session.add(
+                Job(
+                    id=job_id,
+                    video_path=str(video),
+                    file_name="Show.mp4",
+                    status=JobStatus.COMPLETED,
+                    source_language="en",
+                    target_language="Hebrew",
+                    enable_diarization=True,
+                    speakers_json=json.dumps({
+                        "SPEAKER_01": {"label": "Speaker 1", "gender": "unknown", "color": "#38BDF8"},
+                        "SPEAKER_02": {"label": "Speaker 2", "gender": "unknown", "color": "#F472B6"},
+                        "SPEAKER_03": {"label": "Speaker 3", "gender": "unknown", "color": "#4ADE80"},
+                    }),
+                    glossary_json=json.dumps({
+                        "summary": "Teen sci-fi show",
+                        "characters": [
+                            {"name": "Alex Mack", "target_name": "אלכס מק", "gender": "female", "notes": "", "speaker_id": ""},
+                            {"name": "Annie Mack", "target_name": "אייני מק", "gender": "female", "notes": "", "speaker_id": ""},
+                        ],
+                        "terms": [],
+                        "register_notes": "",
+                    }),
+                )
+            )
+            session.add(SubtitleSegmentRecord(job_id=job_id, index=1, start_time=1.0, end_time=2.5, original_text="I am fine.", speaker="SPEAKER_01"))
+            session.add(SubtitleSegmentRecord(job_id=job_id, index=2, start_time=3.0, end_time=4.5, original_text="Really fine.", speaker="SPEAKER_01"))
+            session.add(SubtitleSegmentRecord(job_id=job_id, index=3, start_time=5.0, end_time=6.5, original_text="Wait up!", speaker="SPEAKER_02"))
+            session.add(SubtitleSegmentRecord(job_id=job_id, index=4, start_time=7.0, end_time=8.5, original_text="Come on, Alex!", speaker="SPEAKER_03"))
+            session.commit()
+
+        r_match = client.post(f"/api/jobs/{job_id}/match-speakers", json={})
+        assert r_match.status_code == 200, r_match.text
+        body = r_match.json()
+        # SPEAKER_02 high-confidence duplicate auto-merged into SPEAKER_01
+        assert set(body["speakers"].keys()) == {"SPEAKER_01", "SPEAKER_03"}
+        assert body["speakers"]["SPEAKER_01"]["label"] == "אלכס מק"
+        assert body["speakers"]["SPEAKER_01"]["confidence"] == "high"
+        assert body["speakers"]["SPEAKER_03"]["confidence"] == "medium"
+        assert [s["speaker"] for s in body["segments"]] == ["SPEAKER_01", "SPEAKER_01", "SPEAKER_01", "SPEAKER_03"]
+        chars = {c["name"]: c for c in body["glossary"]["characters"]}
+        assert chars["Alex Mack"]["speaker_id"] == "SPEAKER_01"
+        assert chars["Annie Mack"]["speaker_id"] == "SPEAKER_03"
+
+        # Manual merge / unassign endpoint
+        r_merge = client.post(
+            f"/api/jobs/{job_id}/speakers/merge",
+            json={"source_speaker_ids": ["SPEAKER_03"], "target_speaker_id": None},
+        )
+        assert r_merge.status_code == 200, r_merge.text
+        merged_body = r_merge.json()
+        assert list(merged_body["speakers"].keys()) == ["SPEAKER_01"]
+        assert merged_body["segments"][3]["speaker"] is None
+        assert merged_body["glossary"]["characters"][1]["speaker_id"] == ""

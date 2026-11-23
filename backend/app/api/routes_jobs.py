@@ -30,6 +30,8 @@ from app.models.schemas import (
     DetectSpeakersRequest,
     DetectSpeakersResponse,
     DiarizeJobRequest,
+    MatchSpeakersRequest,
+    MergeSpeakersRequest,
     MoveSegmentRequest,
     QAIssueSchema,
     RetimeRequest,
@@ -208,6 +210,7 @@ def _job_to_response(
         status=job.status,
         current_stage=job.current_stage,
         progress_percent=job.progress_percent,
+        stage_progress_percent=PipelineOrchestrator.get_stage_progress(job.id),
         speed_factor=job.speed_factor,
         eta_seconds=job.eta_seconds,
         error_message=job.error_message,
@@ -654,6 +657,7 @@ async def diarize_job(
 ):
     """Run local ONNX acoustic speaker diarization retroactively on an existing job."""
     from app.pipeline import diarization, speech_regions
+    from app.pipeline.speaker_match import match_speakers_to_characters
 
     job = _get_job_or_404(session, job_id)
     _require_not_running(job, "detect speakers from audio")
@@ -671,9 +675,11 @@ async def diarize_job(
     stream, channels = _job_audio_params(job)
     wav_path = settings.storage_dir / "audio" / f"{job_id}_diarize.wav"
     wav_path.parent.mkdir(parents=True, exist_ok=True)
-    threshold = req.threshold if (req and req.threshold is not None) else 0.45
+    threshold = req.threshold if (req and req.threshold is not None) else 0.66
     min_sp = req.min_speakers if req else None
     max_sp = req.max_speakers if req else None
+    glossary = json.loads(job.glossary_json) if job.glossary_json else None
+    target_language = job.target_language
 
     def _run_diarization():
         speech_regions._extract(job.video_path, str(wav_path), stream, channels, job.comms_boost, 0.0, None)
@@ -693,21 +699,178 @@ async def diarize_job(
     finally:
         wav_path.unlink(missing_ok=True)
 
+    match_segs = [
+        {
+            "id": r.id,
+            "index": r.index,
+            "start_time": r.start_time,
+            "end_time": r.end_time,
+            "original_text": r.original_text,
+            "segment_type": r.segment_type,
+            "speaker": None,
+        }
+        for r in rows
+    ]
+    diarization.assign_speakers_to_segments(match_segs, timeline)
+    speakers = diarization.prune_unused_speakers(speakers, match_segs)
+    if req is None or req.auto_match:
+        try:
+            await match_speakers_to_characters(
+                match_segs,
+                speakers,
+                glossary,
+                target_language=target_language,
+                use_ai=True,
+                overwrite_manual=False,
+                auto_merge=True,
+            )
+            speakers = diarization.prune_unused_speakers(speakers, match_segs)
+        except Exception as exc:
+            logger.info(f"Auto-matching after diarization skipped for {job_id}: {exc}")
+
     with history.job_lock(job_id):
         session.expire_all()
         job = _get_job_or_404(session, job_id)
         _require_not_running(job, "detect speakers from audio")
         rows = _ordered_rows(session, job_id)
         recording = _history_begin(session, job)
-        diarization.assign_speakers_to_segments(rows, timeline)
+        by_id = {s["id"]: s["speaker"] for s in match_segs if s.get("id") is not None}
+        by_idx = {s["index"]: s["speaker"] for s in match_segs}
         for r in rows:
+            r.speaker = by_id[r.id] if r.id in by_id else by_idx.get(r.index)
             session.add(r)
+        speakers = diarization.prune_unused_speakers(speakers, rows)
         job.speakers_json = json.dumps(speakers, ensure_ascii=False)
+        if glossary is not None:
+            job.glossary_json = json.dumps(glossary, ensure_ascii=False)
         job.enable_diarization = True
         job.updated_at = _now()
         session.add(job)
         session.commit()
         _history_record(session, job, recording, "diarize", {"count": len(speakers)})
+        session.refresh(job)
+        return _job_to_response(job)
+
+
+@router.post("/{job_id}/match-speakers", response_model=JobResponse)
+async def match_speakers_endpoint(
+    job_id: str,
+    req: Optional[MatchSpeakersRequest] = None,
+    session: Session = Depends(get_session),
+):
+    """Cross-reference acoustic speakers against dialogue cues and glossary characters."""
+    from app.pipeline import diarization
+    from app.pipeline.speaker_match import match_speakers_to_characters
+
+    job = _get_job_or_404(session, job_id)
+    _require_not_running(job, "match speakers to characters")
+    rows = _ordered_rows(session, job_id)
+    speakers = json.loads(job.speakers_json or "{}")
+    if not speakers or not rows:
+        return _job_to_response(job)
+    glossary = json.loads(job.glossary_json) if job.glossary_json else None
+
+    match_segs = [
+        {
+            "id": r.id,
+            "index": r.index,
+            "start_time": r.start_time,
+            "end_time": r.end_time,
+            "original_text": r.original_text,
+            "segment_type": r.segment_type,
+            "speaker": r.speaker,
+        }
+        for r in rows
+    ]
+    await match_speakers_to_characters(
+        match_segs,
+        speakers,
+        glossary,
+        target_language=job.target_language,
+        use_ai=True,
+        overwrite_manual=bool(req.overwrite_manual) if req else False,
+        auto_merge=bool(req.auto_merge) if req else True,
+    )
+
+    with history.job_lock(job_id):
+        session.expire_all()
+        job = _get_job_or_404(session, job_id)
+        _require_not_running(job, "match speakers to characters")
+        rows = _ordered_rows(session, job_id)
+        by_id = {s["id"]: s["speaker"] for s in match_segs if s.get("id") is not None}
+        changed_rows = any(r.id in by_id and r.speaker != by_id[r.id] for r in rows)
+        recording = _history_begin(session, job) if changed_rows else None
+        if changed_rows:
+            for r in rows:
+                if r.id in by_id and r.speaker != by_id[r.id]:
+                    r.speaker = by_id[r.id]
+                    session.add(r)
+        speakers = diarization.prune_unused_speakers(speakers, rows)
+        job.speakers_json = json.dumps(speakers, ensure_ascii=False)
+        if glossary is not None:
+            job.glossary_json = json.dumps(glossary, ensure_ascii=False)
+        job.updated_at = _now()
+        session.add(job)
+        session.commit()
+        if recording is not None:
+            _history_record(session, job, recording, "diarize", {"count": len(speakers)})
+        session.refresh(job)
+        return _job_to_response(job)
+
+
+@router.post("/{job_id}/speakers/merge", response_model=JobResponse)
+def merge_speakers_endpoint(
+    job_id: str,
+    body: MergeSpeakersRequest,
+    session: Session = Depends(get_session),
+):
+    """Merge or unassign acoustic speaker clusters and clean up glossary references."""
+    from app.pipeline import diarization
+
+    source_set = {s.strip() for s in body.source_speaker_ids if s and s.strip()}
+    target_id = (body.target_speaker_id or "").strip() or None
+    if target_id and target_id in source_set:
+        source_set.discard(target_id)
+    if not source_set:
+        raise HTTPException(status_code=400, detail="No source speakers selected")
+
+    with history.job_lock(job_id):
+        job = _get_job_or_404(session, job_id)
+        _require_not_running(job, "merge speakers")
+        rows = _ordered_rows(session, job_id)
+        speakers = json.loads(job.speakers_json or "{}")
+        glossary = json.loads(job.glossary_json) if job.glossary_json else None
+
+        changed_rows = any((r.speaker or "") in source_set for r in rows)
+        recording = _history_begin(session, job) if changed_rows else None
+        for r in rows:
+            if (r.speaker or "") in source_set:
+                r.speaker = target_id
+                session.add(r)
+
+        if target_id and changed_rows and target_id not in speakers:
+            idx = len(speakers)
+            speakers[target_id] = {
+                "label": target_id,
+                "gender": "unknown",
+                "color": diarization.SPEAKER_PALETTE[idx % len(diarization.SPEAKER_PALETTE)],
+            }
+        for src in source_set:
+            speakers.pop(src, None)
+
+        if glossary and isinstance(glossary.get("characters"), list):
+            for ch in glossary["characters"]:
+                if isinstance(ch, dict) and str(ch.get("speaker_id") or "").strip() in source_set:
+                    ch["speaker_id"] = target_id or ""
+
+        job.speakers_json = json.dumps(speakers, ensure_ascii=False)
+        if glossary is not None:
+            job.glossary_json = json.dumps(glossary, ensure_ascii=False)
+        job.updated_at = _now()
+        session.add(job)
+        session.commit()
+        if recording is not None:
+            _history_record(session, job, recording, "diarize", {"merged": len(source_set), "target": target_id})
         session.refresh(job)
         return _job_to_response(job)
 

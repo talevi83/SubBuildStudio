@@ -213,9 +213,13 @@ def cluster_embeddings(
     threshold: float = 0.45,
     min_speakers: Optional[int] = None,
     max_speakers: Optional[int] = None,
+    *,
+    cancel_flag: Optional[threading.Event] = None,
+    on_progress: Optional[Callable[[float], None]] = None,
 ) -> List[str]:
     """
-    Pure-NumPy agglomerative average-linkage cosine clustering with singleton noise absorption.
+    Pure-NumPy vectorized Lance-Williams average-linkage (UPGMA) cosine clustering
+    with singleton noise absorption.
 
     Returns chronological labels ('SPEAKER_01', 'SPEAKER_02', ...).
     """
@@ -224,62 +228,129 @@ def cluster_embeddings(
     if n == 0:
         return []
     if n == 1:
+        if on_progress:
+            on_progress(100.0)
         return ["SPEAKER_01"]
 
     norms = np.maximum(np.linalg.norm(arr, axis=1, keepdims=True), 1e-12)
     normed = arr / norms
     dist = np.clip(1.0 - (normed @ normed.T), 0.0, 2.0)
 
-    clusters: List[List[int]] = [[i] for i in range(n)]
     floor_k = max(1, int(min_speakers)) if min_speakers is not None else 1
     ceil_k = max(floor_k, int(max_speakers)) if max_speakers is not None else None
 
-    def _pair_dist(ca: List[int], cb: List[int]) -> float:
-        return float(dist[np.ix_(ca, cb)].mean())
+    work = dist.astype(np.float64, copy=True)
+    np.fill_diagonal(work, np.inf)
 
-    while len(clusters) > floor_k:
-        best_i, best_j, best_d = -1, -1, float("inf")
-        k = len(clusters)
-        for i in range(k):
-            for j in range(i + 1, k):
-                d = _pair_dist(clusters[i], clusters[j])
-                if d < best_d:
-                    best_i, best_j, best_d = i, j, d
-        need_forced_merge = ceil_k is not None and len(clusters) > ceil_k
-        if best_d < threshold or need_forced_merge:
-            clusters[best_i] = clusters[best_i] + clusters[best_j]
-            clusters.pop(best_j)
-        else:
+    clusters: List[Optional[List[int]]] = [[i] for i in range(n)]
+    sizes = np.ones(n, dtype=np.float64)
+    active = np.ones(n, dtype=bool)
+    active_count = n
+
+    row_min_idx = np.argmin(work, axis=1)
+    row_min_val = work[np.arange(n), row_min_idx]
+    max_merges = max(1, n - floor_k)
+    merges_done = 0
+
+    while active_count > floor_k:
+        if cancel_flag is not None and cancel_flag.is_set():
+            raise PipelineCancelled()
+        best_i = int(np.argmin(row_min_val))
+        best_d = float(row_min_val[best_i])
+        best_j = int(row_min_idx[best_i])
+        if not np.isfinite(best_d) or best_i == best_j:
             break
+        if best_i > best_j:
+            best_i, best_j = best_j, best_i
+
+        need_forced_merge = ceil_k is not None and active_count > ceil_k
+        if not (best_d < threshold or need_forced_merge):
+            break
+
+        sa = sizes[best_i]
+        sb = sizes[best_j]
+        sab = sa + sb
+        new_d = (sa * work[best_i] + sb * work[best_j]) / sab
+
+        active[best_j] = False
+        new_d[~active] = np.inf
+        new_d[best_i] = np.inf
+        new_d[best_j] = np.inf
+
+        work[best_i] = new_d
+        work[:, best_i] = new_d
+        work[best_j] = np.inf
+        work[:, best_j] = np.inf
+
+        row_min_val[best_j] = np.inf
+        sizes[best_i] = sab
+        sizes[best_j] = 0.0
+        merged_members = clusters[best_j]
+        if clusters[best_i] is not None and merged_members is not None:
+            clusters[best_i].extend(merged_members)
+        clusters[best_j] = None
+        active_count -= 1
+        merges_done += 1
+
+        idx_i = int(np.argmin(work[best_i]))
+        row_min_idx[best_i] = idx_i
+        row_min_val[best_i] = work[best_i, idx_i]
+
+        stale_mask = active & ((row_min_idx == best_i) | (row_min_idx == best_j))
+        stale_mask[best_i] = False
+        if stale_mask.any():
+            stale_rows = np.flatnonzero(stale_mask)
+            new_min_cols = np.argmin(work[stale_rows], axis=1)
+            row_min_idx[stale_rows] = new_min_cols
+            row_min_val[stale_rows] = work[stale_rows, new_min_cols]
+
+        better_mask = active & (new_d < row_min_val)
+        better_mask[best_i] = False
+        if better_mask.any():
+            row_min_val[better_mask] = new_d[better_mask]
+            row_min_idx[better_mask] = best_i
+
+        if on_progress and (merges_done == 1 or merges_done % 10 == 0 or active_count <= floor_k):
+            on_progress(min(90.0, (merges_done / max_merges) * 90.0))
+
+    active_clusters: List[List[int]] = [c for c in clusters if c is not None]
 
     # Absorb isolated single-window outliers when multi-window clusters exist
     absorb_limit = min(threshold + 0.15, 0.72)
     changed = True
-    while changed and len(clusters) > floor_k:
+    while changed and len(active_clusters) > floor_k:
+        if cancel_flag is not None and cancel_flag.is_set():
+            raise PipelineCancelled()
         changed = False
-        multi = [idx for idx, c in enumerate(clusters) if len(c) >= 2]
+        multi = [idx for idx, c in enumerate(active_clusters) if len(c) >= 2]
         if not multi:
             break
-        for idx, c in enumerate(list(clusters)):
+        for idx, c in enumerate(active_clusters):
             if len(c) != 1:
                 continue
+            if cancel_flag is not None and cancel_flag.is_set():
+                raise PipelineCancelled()
             best_target, best_d = -1, float("inf")
-            for target_idx in range(len(clusters)):
-                if target_idx == idx or len(clusters[target_idx]) < 2:
+            s_idx = c[0]
+            for target_idx in multi:
+                if target_idx == idx:
                     continue
-                d = _pair_dist(c, clusters[target_idx])
+                d = float(dist[s_idx, active_clusters[target_idx]].mean())
                 if d < best_d:
                     best_target, best_d = target_idx, d
             if best_target >= 0 and best_d < absorb_limit:
-                clusters[best_target] = clusters[best_target] + c
-                clusters.pop(idx)
+                active_clusters[best_target] = active_clusters[best_target] + c
+                active_clusters.pop(idx)
                 changed = True
                 break
 
+    if on_progress:
+        on_progress(100.0)
+
     # Chronological relabeling by earliest embedding index in each cluster
-    clusters.sort(key=min)
+    active_clusters.sort(key=min)
     labels = [""] * n
-    for sp_num, members in enumerate(clusters, start=1):
+    for sp_num, members in enumerate(active_clusters, start=1):
         label = f"SPEAKER_{sp_num:02d}"
         for m in members:
             labels[m] = label
@@ -305,19 +376,19 @@ def diarize_audio_spans(
     spans: Sequence[Tuple[float, float]],
     *,
     embedder: Optional[OnnxSpeakerEmbedder] = None,
-    threshold: float = 0.45,
+    threshold: float = 0.66,
     min_speakers: Optional[int] = None,
     max_speakers: Optional[int] = None,
     cancel_flag: Optional[threading.Event] = None,
     on_progress: Optional[Callable[[float], None]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
-    """Extract voice windows over `spans`, cluster embeddings, and return (timeline, speakers)."""
+    """Extract utterance-aware voice windows over `spans`, cluster reliable anchors, and return (timeline, speakers)."""
     samples, sr = _read_wav_float32(Path(wav_path))
     if samples.size == 0 or not spans:
         return [], {}
 
     total_dur = samples.size / sr
-    # Merge adjacent speech spans separated by < 0.15s
+    # Merge adjacent speech spans separated by <= 0.15s
     clean_spans: List[List[float]] = []
     for s, e in sorted((max(0.0, float(a)), min(total_dur, float(b))) for a, b in spans):
         if e - s < 0.15:
@@ -329,17 +400,18 @@ def diarize_audio_spans(
     if not clean_spans:
         return [], {}
 
-    win_sec, hop_sec, min_win = 1.6, 0.8, 0.35
+    # Utterance-aware windowing: keep 0.30s..3.2s utterances intact; split longer spans cleanly
+    win_sec, hop_sec, min_win = 2.2, 1.4, 0.8
     windows: List[Tuple[float, float]] = []
     for s, e in clean_spans:
         dur = e - s
-        if dur < min_win:
+        if dur < 0.30:
             continue
-        if dur <= win_sec:
+        if dur <= 3.2:
             windows.append((s, e))
         else:
             t = s
-            while t + min_win < e:
+            while t + min_win <= e + 1e-6:
                 w_end = min(e, t + win_sec)
                 if w_end - t >= min_win:
                     windows.append((t, w_end))
@@ -363,18 +435,72 @@ def diarize_audio_spans(
         chunk = samples[i0:i1]
         embeddings.append(active_embedder.embed_samples(chunk, sample_rate=sr))
         if on_progress:
-            on_progress(((idx + 1) / total_w) * 100.0)
+            on_progress(((idx + 1) / total_w) * 85.0)
 
     emb_mat = np.vstack(embeddings)
-    win_labels = cluster_embeddings(
-        emb_mat,
+
+    # Two-stage reliable-anchor clustering: cluster longer (>= 1.1s) utterances first,
+    # prune singleton noise shards, merge close centroids, then project all windows.
+    reliable_indices = [i for i, (ws, we) in enumerate(windows) if (we - ws) >= 1.1]
+    if len(reliable_indices) < 4:
+        reliable_indices = list(range(len(windows)))
+
+    M_reliable = emb_mat[reliable_indices]
+    rel_labels = cluster_embeddings(
+        M_reliable,
         threshold=threshold,
         min_speakers=min_speakers,
         max_speakers=max_speakers,
+        cancel_flag=cancel_flag,
+        on_progress=(lambda cp: on_progress(85.0 + cp * 0.12)) if on_progress else None,
     )
 
+    by_lbl: Dict[str, List[np.ndarray]] = {}
+    for pos, lbl in enumerate(rel_labels):
+        by_lbl.setdefault(lbl, []).append(M_reliable[pos])
+
+    min_support = 3 if len(reliable_indices) >= 40 else (2 if len(reliable_indices) >= 15 else 1)
+    major_clusters = [(lbl, vecs) for lbl, vecs in by_lbl.items() if len(vecs) >= min_support]
+    if not major_clusters:
+        major_clusters = list(by_lbl.items())
+    if max_speakers is None and len(major_clusters) > 16:
+        major_clusters = sorted(major_clusters, key=lambda kv: len(kv[1]), reverse=True)[:16]
+
+    centroids: List[List[Any]] = []
+    for lbl, vecs in major_clusters:
+        c = np.mean(vecs, axis=0).astype(np.float32)
+        c /= max(float(np.linalg.norm(c)), 1e-12)
+        centroids.append([lbl, c, len(vecs)])
+
+    floor_k = max(1, int(min_speakers)) if min_speakers is not None else 1
+    while len(centroids) > floor_k:
+        best_i, best_j, best_d = -1, -1, threshold
+        for i in range(len(centroids)):
+            for j in range(i + 1, len(centroids)):
+                d = 1.0 - float(centroids[i][1] @ centroids[j][1])
+                if d < best_d:
+                    best_i, best_j, best_d = i, j, d
+        if best_i < 0:
+            break
+        na, nb = centroids[best_i][2], centroids[best_j][2]
+        merged_c = (na * centroids[best_i][1] + nb * centroids[best_j][1]) / float(na + nb)
+        merged_c /= max(float(np.linalg.norm(merged_c)), 1e-12)
+        centroids[best_i][1] = merged_c
+        centroids[best_i][2] = na + nb
+        centroids.pop(best_j)
+
+    assign_limit = min(threshold + 0.12, 0.80)
+    centroid_mat = np.vstack([c[1] for c in centroids])
+    centroid_labels = [c[0] for c in centroids]
+    dists = np.clip(1.0 - (emb_mat @ centroid_mat.T), 0.0, 2.0)
+
     timeline: List[Dict[str, Any]] = []
-    for (ws, we), sp in zip(windows, win_labels):
+    for win_idx, (ws, we) in enumerate(windows):
+        best_col = int(np.argmin(dists[win_idx]))
+        best_dist = float(dists[win_idx, best_col])
+        if best_dist >= assign_limit:
+            continue
+        sp = centroid_labels[best_col]
         if timeline and timeline[-1]["speaker"] == sp and ws - timeline[-1]["end"] <= 1.2:
             timeline[-1]["end"] = max(timeline[-1]["end"], round(we, 3))
         else:
@@ -386,19 +512,23 @@ def diarize_audio_spans(
                 eff_start = mid
             timeline.append({"start": eff_start, "end": round(we, 3), "speaker": sp})
 
-    ordered_speakers: List[str] = []
+    # Renumber sequentially in chronological first-appearance order (SPEAKER_01, SPEAKER_02, ...)
+    remap: Dict[str, str] = {}
     for item in timeline:
-        sp = item["speaker"]
-        if sp not in ordered_speakers:
-            ordered_speakers.append(sp)
+        raw_sp = item["speaker"]
+        if raw_sp not in remap:
+            remap[raw_sp] = f"SPEAKER_{len(remap) + 1:02d}"
+        item["speaker"] = remap[raw_sp]
 
     speakers: Dict[str, Dict[str, Any]] = {}
-    for idx, sp_id in enumerate(ordered_speakers):
+    for idx, sp_id in enumerate(remap.values()):
         speakers[sp_id] = {
             "label": f"Speaker {idx + 1}",
             "gender": "unknown",
             "color": SPEAKER_PALETTE[idx % len(SPEAKER_PALETTE)],
         }
+    if on_progress:
+        on_progress(100.0)
     return timeline, speakers
 
 
@@ -545,3 +675,35 @@ def assign_speakers_to_segments(segments: Sequence[Any], timeline: Sequence[Dict
             seg["speaker"] = sp
         else:
             seg.speaker = sp
+
+
+def prune_unused_speakers(
+    speakers: Optional[Dict[str, Dict[str, Any]]],
+    segments: Sequence[Any],
+) -> Dict[str, Dict[str, Any]]:
+    """Keep only speakers appearing on >= 1 segment, preserving order and adding missing defaults."""
+    used: List[str] = []
+    seen = set()
+    for seg in segments or ():
+        sp = seg.get("speaker") if isinstance(seg, dict) else getattr(seg, "speaker", None)
+        if isinstance(sp, str):
+            sp = sp.strip()
+        if sp and sp not in seen:
+            seen.add(sp)
+            used.append(sp)
+    if not used:
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    src = speakers or {}
+    for sid, profile in src.items():
+        if sid in seen and isinstance(profile, dict):
+            out[sid] = dict(profile)
+    for sid in used:
+        if sid not in out:
+            idx = len(out)
+            out[sid] = {
+                "label": f"Speaker {idx + 1}" if sid.startswith("SPEAKER_") else sid,
+                "gender": "unknown",
+                "color": SPEAKER_PALETTE[idx % len(SPEAKER_PALETTE)],
+            }
+    return out

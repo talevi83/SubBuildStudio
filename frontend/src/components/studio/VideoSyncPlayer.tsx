@@ -588,9 +588,10 @@ export const VideoSyncPlayer: React.FC = () => {
           value={Math.min(currentTime, duration || 0)}
           onChange={(e) => {
             const v = videoRef.current;
-            if (!v) return;
-            v.currentTime = Number(e.target.value);
-            setCurrentTime(v.currentTime);
+            const nextTime = Number(e.target.value);
+            if (v) v.currentTime = nextTime;
+            setCurrentTime(nextTime);
+            setVideoCurrentTime(nextTime);
           }}
           className="flex-1 accent-indigo-500 cursor-pointer"
           aria-label={t('player.seek')}

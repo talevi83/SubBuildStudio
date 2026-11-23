@@ -241,6 +241,31 @@ class TranslateStage(PipelineStage):
                 ctx.glossary = known
 
             _sync_glossary_to_speakers(ctx.glossary, getattr(ctx, "speakers", None))
+            if getattr(ctx, "speakers", None) and ctx.refined_segments:
+                try:
+                    from app.pipeline.diarization import prune_unused_speakers
+                    from app.pipeline.speaker_match import match_speakers_to_characters
+
+                    await match_speakers_to_characters(
+                        ctx.refined_segments,
+                        ctx.speakers,
+                        ctx.glossary,
+                        target_language=target_lang,
+                        use_ai=(self._translator is None),
+                        overwrite_manual=False,
+                        auto_merge=True,
+                        api_key_override=ctx.gemini_api_key_override,
+                        usage=ctx.usage,
+                        flex_state=ctx.flex_state,
+                    )
+                    ctx.speakers = prune_unused_speakers(ctx.speakers, ctx.refined_segments)
+                    by_seg_idx = {int(s["index"]): s.get("speaker") for s in ctx.refined_segments if "index" in s}
+                    for seg_obj in all_segments:
+                        if seg_obj.index in by_seg_idx:
+                            seg_obj.speaker = by_seg_idx[seg_obj.index]
+                except Exception as exc:
+                    logger.debug(f"Speaker-character matching skipped: {exc}")
+
             for seg_obj in all_segments:
                 seg_obj.speaker_info = _format_speaker_info(seg_obj.speaker, getattr(ctx, "speakers", None))
 

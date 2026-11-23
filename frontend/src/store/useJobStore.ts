@@ -226,7 +226,9 @@ interface JobState {
   ) => Promise<number>;
   saveGlossary: (glossary: Glossary, profile?: string) => Promise<boolean>;
   saveSpeakers: (speakers: Record<string, SpeakerProfile>) => Promise<boolean>;
-  diarizeActiveJob: (opts?: { min_speakers?: number; max_speakers?: number; threshold?: number }) => Promise<boolean>;
+  diarizeActiveJob: (opts?: { min_speakers?: number; max_speakers?: number; threshold?: number; auto_match?: boolean }) => Promise<boolean>;
+  matchSpeakersActiveJob: (opts?: { overwrite_manual?: boolean; auto_merge?: boolean }) => Promise<boolean>;
+  mergeSpeakersActiveJob: (sourceSpeakerIds: string[], targetSpeakerId: string | null) => Promise<boolean>;
   bulkUpdateSpeaker: (segmentIds: number[], speaker: string | null) => Promise<void>;
   retimeActiveJob: () => Promise<void>;
   moveSegment: (segmentId: number, toPosition: number) => Promise<void>;
@@ -351,14 +353,29 @@ export const useJobStore = create<JobState>((set, get) => {
 
     switch (data.event) {
       case 'STAGE_PROGRESS': {
+        const nextStatus = (data.stage as JobStatus) || activeJob.status;
+        const stageChanged = nextStatus !== activeJob.status;
+        const nextStagePct =
+          nextStatus === 'QUEUED' || nextStatus === 'IDLE'
+            ? null
+            : typeof data.stage_progress_percent === 'number'
+              ? data.stage_progress_percent
+              : stageChanged
+                ? 0
+                : activeJob.stage_progress_percent;
         patchActiveJob({
-          status: (data.stage as JobStatus) || activeJob.status,
+          status: nextStatus,
           progress_percent: data.progress_percent ?? activeJob.progress_percent,
+          stage_progress_percent: nextStagePct,
           speed_factor: data.speed_factor ?? activeJob.speed_factor,
           eta_seconds: data.eta_seconds ?? activeJob.eta_seconds,
           ...(data.usage ? { usage: data.usage } : {}),
         });
-        if (data.message) set({ stageMessage: data.message });
+        if (data.message) {
+          set({ stageMessage: data.message });
+        } else if (stageChanged) {
+          set({ stageMessage: null });
+        }
         break;
       }
       case 'SEGMENT_CREATED': {
@@ -371,6 +388,10 @@ export const useJobStore = create<JobState>((set, get) => {
         patchActiveJob({
           status: 'TRANSCRIBING',
           progress_percent: data.progress_percent || activeJob.progress_percent,
+          stage_progress_percent:
+            typeof data.stage_progress_percent === 'number'
+              ? data.stage_progress_percent
+              : activeJob.stage_progress_percent,
           speed_factor: data.speed_factor ?? activeJob.speed_factor,
           eta_seconds: data.eta_seconds ?? activeJob.eta_seconds,
           segments,
@@ -398,9 +419,10 @@ export const useJobStore = create<JobState>((set, get) => {
       case 'JOB_COMPLETED':
       case 'JOB_FAILED':
       case 'JOB_CANCELLED': {
-        if (data.usage) {
-          patchActiveJob({ usage: data.usage });
-        }
+        patchActiveJob({
+          stage_progress_percent: null,
+          ...(data.usage ? { usage: data.usage } : {}),
+        });
         set({ stageMessage: null });
         get().refreshActiveJob();
         get().fetchJobs();
@@ -710,8 +732,18 @@ export const useJobStore = create<JobState>((set, get) => {
         const hasTranslation = nextSegments.some((s) => Boolean(s.translated_text));
         const isRtlSource = isRtlLanguage(fresh.detected_language || fresh.source_language);
         const untranslatedRtl = !isActiveStatus(fresh.status) && nextSegments.length > 0 && !hasTranslation && isRtlSource;
+        const stage_progress_percent =
+          typeof fresh.stage_progress_percent === 'number'
+            ? fresh.stage_progress_percent
+            : current.status === fresh.status &&
+                isActiveStatus(fresh.status) &&
+                fresh.status !== 'QUEUED' &&
+                fresh.status !== 'IDLE' &&
+                typeof current.stage_progress_percent === 'number'
+              ? current.stage_progress_percent
+              : null;
         set({
-          activeJob: { ...fresh, segments: nextSegments },
+          activeJob: { ...fresh, stage_progress_percent, segments: nextSegments },
           ...(untranslatedRtl
             ? {
                 applyRtlExport: true,
@@ -1104,7 +1136,48 @@ export const useJobStore = create<JobState>((set, get) => {
         patchActiveJob({
           speakers: updated.speakers,
           segments: updated.segments,
+          glossary: updated.glossary,
           enable_diarization: updated.enable_diarization,
+        });
+        scheduleHistoryRefresh();
+        return true;
+      } catch (e: any) {
+        set({ error: e.message });
+        return false;
+      }
+    },
+
+    matchSpeakersActiveJob: async (opts) => {
+      const { activeJob } = get();
+      if (!activeJob) return false;
+      const jobId = activeJob.id;
+      try {
+        const updated = await api.matchSpeakers(jobId, opts);
+        if (get().activeJob?.id !== jobId) return false;
+        patchActiveJob({
+          speakers: updated.speakers,
+          segments: updated.segments,
+          glossary: updated.glossary,
+        });
+        scheduleHistoryRefresh();
+        return true;
+      } catch (e: any) {
+        set({ error: e.message });
+        return false;
+      }
+    },
+
+    mergeSpeakersActiveJob: async (sourceSpeakerIds, targetSpeakerId) => {
+      const { activeJob } = get();
+      if (!activeJob || sourceSpeakerIds.length === 0) return false;
+      const jobId = activeJob.id;
+      try {
+        const updated = await api.mergeSpeakers(jobId, sourceSpeakerIds, targetSpeakerId);
+        if (get().activeJob?.id !== jobId) return false;
+        patchActiveJob({
+          speakers: updated.speakers,
+          segments: updated.segments,
+          glossary: updated.glossary,
         });
         scheduleHistoryRefresh();
         return true;

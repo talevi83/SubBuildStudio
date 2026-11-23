@@ -308,3 +308,10 @@ def test_window_opens_with_the_session_token_and_launcher_calls_send_it(launcher
     finally:
         os.environ.pop("SUBBUILD_TOKEN", None)
         os.environ["SUBBUILD_TOKEN"] = "test-session-token"
+
+
+def test_launcher_active_statuses_match_orchestrator(launcher):
+    from app.pipeline.orchestrator import ACTIVE_STATUSES as ORCHESTRATOR_ACTIVE_STATUSES
+
+    assert launcher.ACTIVE_STATUSES == {s.value for s in ORCHESTRATOR_ACTIVE_STATUSES} - {"IDLE"}
+

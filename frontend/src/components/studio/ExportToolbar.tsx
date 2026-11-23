@@ -24,6 +24,9 @@ export const ExportToolbar: React.FC = () => {
   const saveGlossary = useJobStore((s) => s.saveGlossary);
   const saveSpeakers = useJobStore((s) => s.saveSpeakers);
   const diarizeActiveJob = useJobStore((s) => s.diarizeActiveJob);
+  const matchSpeakersActiveJob = useJobStore((s) => s.matchSpeakersActiveJob);
+  const mergeSpeakersActiveJob = useJobStore((s) => s.mergeSpeakersActiveJob);
+  const seekTo = useJobStore((s) => s.seekTo);
   const problemFilter = useJobStore((s) => s.problemFilter);
   const setProblemFilter = useJobStore((s) => s.setProblemFilter);
   const setSelectedSegmentIndex = useJobStore((s) => s.setSelectedSegmentIndex);
@@ -207,6 +210,9 @@ export const ExportToolbar: React.FC = () => {
           segments={activeJob.segments}
           onSaveSpeakers={saveSpeakers}
           onDiarize={diarizeActiveJob}
+          onMatchSpeakers={matchSpeakersActiveJob}
+          onMergeSpeakers={mergeSpeakersActiveJob}
+          onPreviewTime={(timeSeconds) => seekTo(timeSeconds, true)}
           onClose={() => setGlossaryOpen(false)}
           onSave={async (g, thenTranslate, profile) => {
             const ok = await saveGlossary(g, profile);

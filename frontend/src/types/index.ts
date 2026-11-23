@@ -83,6 +83,9 @@ export interface SpeakerProfile {
   label: string;
   gender: 'male' | 'female' | 'unknown';
   color: string;
+  character_name?: string | null;
+  confidence?: 'high' | 'medium' | 'low' | null;
+  evidence?: string | null;
 }
 
 export interface SubtitleSegment {
@@ -125,6 +128,7 @@ export interface Job {
   status: JobStatus;
   current_stage?: string | null;
   progress_percent: number;
+  stage_progress_percent?: number | null;
   speed_factor?: number | null;
   eta_seconds?: number | null;
   error_message?: string | null;
@@ -181,6 +185,7 @@ export interface WebSocketEventPayload {
   job_id: string;
   stage?: string;
   progress_percent: number;
+  stage_progress_percent?: number | null;
   speed_factor?: number | null;
   eta_seconds?: number | null;
   segment?: SubtitleSegment | null;

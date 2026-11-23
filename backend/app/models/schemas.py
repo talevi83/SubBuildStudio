@@ -173,6 +173,9 @@ class SpeakerProfileSchema(BaseModel):
     label: str
     gender: Literal["male", "female", "unknown"] = "unknown"
     color: str = "#38BDF8"
+    character_name: Optional[str] = None
+    confidence: Optional[Literal["high", "medium", "low"]] = None
+    evidence: Optional[str] = None
 
 
 class SpeakersUpdateRequest(RequestModel):
@@ -183,6 +186,17 @@ class DiarizeJobRequest(RequestModel):
     min_speakers: Optional[int] = Field(default=None, ge=1, le=20)
     max_speakers: Optional[int] = Field(default=None, ge=1, le=20)
     threshold: Optional[float] = Field(default=None, ge=0.05, le=0.95)
+    auto_match: bool = True
+
+
+class MatchSpeakersRequest(RequestModel):
+    overwrite_manual: bool = False
+    auto_merge: bool = True
+
+
+class MergeSpeakersRequest(RequestModel):
+    source_speaker_ids: List[str] = Field(min_length=1)
+    target_speaker_id: Optional[str] = None
 
 
 class SubtitleSegmentSchema(BaseModel):
@@ -294,6 +308,7 @@ class JobResponse(BaseModel):
     status: JobStatus
     current_stage: Optional[str] = None
     progress_percent: float = 0.0
+    stage_progress_percent: Optional[float] = None
     speed_factor: Optional[float] = None
     eta_seconds: Optional[float] = None
     error_message: Optional[str] = None
@@ -344,6 +359,7 @@ class WebSocketEventPayload(BaseModel):
     job_id: str
     stage: Optional[str] = None
     progress_percent: float = 0.0
+    stage_progress_percent: Optional[float] = None
     speed_factor: Optional[float] = None
     eta_seconds: Optional[float] = None
     segment: Optional[SubtitleSegmentSchema] = None

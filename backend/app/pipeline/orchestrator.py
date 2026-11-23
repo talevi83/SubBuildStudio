@@ -228,6 +228,7 @@ class PipelineOrchestrator:
         self._history_recorded = False
         self._prior_usage_dict: Optional[Dict[str, Any]] = None
         self._ctx: Optional[PipelineContext] = None
+        self._stage_progress_percent: Optional[float] = None
         # segment id -> (original_text, translated_text) as this run last saw them in the database.
         # Text can be edited while a translation runs; a row whose text no longer matches was changed
         # by the user and must not be overwritten by a translation of the old text.
@@ -252,6 +253,12 @@ class PipelineOrchestrator:
     @classmethod
     def is_running(cls, job_id: str) -> bool:
         return job_id in active_pipelines
+
+    @classmethod
+    def get_stage_progress(cls, job_id: str) -> Optional[float]:
+        """Return the active stage's own 0..100 progress for a running job, if any."""
+        pipeline = active_pipelines.get(job_id)
+        return pipeline._stage_progress_percent if pipeline is not None else None
 
     @classmethod
     def get_live_segments(cls, job_id: str) -> List[Dict[str, Any]]:
@@ -485,11 +492,13 @@ class PipelineOrchestrator:
     async def _acquire_gpu(self, overall_pct: float) -> None:
         sem = _get_gpu_semaphore()
         if sem.locked():
+            self._stage_progress_percent = None
             self._update_job(status=JobStatus.QUEUED, current_stage="QUEUED", progress_percent=overall_pct)
             await self._broadcast({
                 "event": "STAGE_PROGRESS",
                 "stage": JobStatus.QUEUED.value,
                 "progress_percent": overall_pct,
+                "stage_progress_percent": None,
                 "message": "Waiting for another job to finish transcribing...",
             })
         acquire = asyncio.ensure_future(sem.acquire())
@@ -513,11 +522,13 @@ class PipelineOrchestrator:
             return
         sem = _get_pipeline_semaphore()
         if sem.locked():
+            self._stage_progress_percent = None
             self._update_job(status=JobStatus.QUEUED, current_stage="QUEUED", progress_percent=0.0)
             await self._broadcast({
                 "event": "STAGE_PROGRESS",
                 "stage": JobStatus.QUEUED.value,
                 "progress_percent": 0.0,
+                "stage_progress_percent": None,
                 "message": "Waiting in queue for earlier episode to finish...",
             })
         acquire = asyncio.ensure_future(sem.acquire())
@@ -744,6 +755,7 @@ class PipelineOrchestrator:
                     if not ctx.embedded_dialogue_segments:
                         await self._acquire_gpu(round(base_pct, 1))
 
+                self._stage_progress_percent = 0.0
                 self._update_job(
                     status=stage_status,
                     current_stage=stage.name,
@@ -755,6 +767,7 @@ class PipelineOrchestrator:
                     "event": "STAGE_PROGRESS",
                     "stage": stage_status.value,
                     "progress_percent": round(base_pct, 1),
+                    "stage_progress_percent": 0.0,
                 })
 
                 logger.info(f"Stage {stage_status.value} started")
@@ -855,6 +868,7 @@ class PipelineOrchestrator:
             # Before the final status: from that moment the job may be started again, and the
             # history step (a thread hop) must not leave a window where it still counts as running
             await self._record_history()
+            self._stage_progress_percent = None
             self._update_job(
                 status=JobStatus.COMPLETED,
                 current_stage="COMPLETED",
@@ -924,11 +938,14 @@ class PipelineOrchestrator:
         ) -> None:
             if self.cancel_flag.is_set():
                 return
-            overall_pct = round(base_pct + pct * share, 1)
+            stage_pct = round(max(0.0, min(100.0, float(pct))), 1)
+            self._stage_progress_percent = stage_pct
+            overall_pct = round(base_pct + stage_pct * share, 1)
             payload: Dict[str, Any] = {
                 "event": "STAGE_PROGRESS",
                 "stage": stage_status.value,
                 "progress_percent": overall_pct,
+                "stage_progress_percent": stage_pct,
                 "speed_factor": speed,
                 "eta_seconds": eta,
                 "message": msg,
@@ -957,6 +974,7 @@ class PipelineOrchestrator:
         return _on_stage_progress
 
     async def _handle_cancellation(self) -> None:
+        self._stage_progress_percent = None
         if self.mode == "translate":
             # The transcription is intact; only the retranslation was stopped.
             self._update_job(
@@ -977,6 +995,7 @@ class PipelineOrchestrator:
         })
 
     async def _handle_failure(self, error_message: str) -> None:
+        self._stage_progress_percent = None
         self._update_job(status=JobStatus.FAILED, error_message=error_message, speed_factor=None, eta_seconds=None)
         await self._broadcast({
             "event": "JOB_FAILED",

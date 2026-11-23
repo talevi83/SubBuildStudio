@@ -5,10 +5,12 @@ import { PipelineConfig } from '../components/ingest/PipelineConfig';
 import { SubtitleTable } from '../components/studio/SubtitleTable';
 import { GlossaryDialog } from '../components/studio/GlossaryDialog';
 import { EmbedVideoDialog } from '../components/studio/EmbedVideoDialog';
+import { LivePipelineBar } from '../components/monitor/LivePipelineBar';
 import { api } from '../services/api';
 import { useJobStore } from '../store/useJobStore';
 import { useUiStore } from '../store/useUiStore';
-import type { Job, ProbeResponse, SystemInfo } from '../types';
+import { ACTIVE_STATUSES } from '../types';
+import type { Job, JobStatus, ProbeResponse, SystemInfo } from '../types';
 
 function makeDiarizedJob(): Job {
   return {
@@ -217,5 +219,229 @@ describe('Speaker Diarization Studio UI', () => {
     fireEvent.click(getByTestId('embed-mode-burn'));
     const checkbox = getByTestId('embed-color-speakers') as HTMLInputElement;
     expect(checkbox.checked).toBe(true);
+  });
+
+  it('tracks DIARIZING stage in LivePipelineBar without turning stages gray', () => {
+    const runningJob = (overrides: Partial<Job>): Job => ({
+      ...makeDiarizedJob(),
+      status: 'DIARIZING',
+      current_stage: 'DIARIZING',
+      progress_percent: 65,
+      detect_onscreen_text: true,
+      enable_translation: true,
+      enable_diarization: true,
+      segments: [],
+      ...overrides,
+    });
+
+    useJobStore.setState({ activeJob: runningJob({ status: 'DIARIZING' }) });
+    const { getByTestId, queryByTestId, rerender } = render(<LivePipelineBar />);
+
+    for (const doneKey of ['PROBING', 'EXTRACTING_AUDIO', 'TRANSCRIBING']) {
+      expect(getByTestId(`pipeline-stage-${doneKey}`).getAttribute('data-stage-state')).toBe('done');
+    }
+    expect(getByTestId('pipeline-stage-DIARIZING').getAttribute('data-stage-state')).toBe('active');
+    for (const idleKey of ['SCANNING_ONSCREEN', 'REFINING', 'TRANSLATING']) {
+      expect(getByTestId(`pipeline-stage-${idleKey}`).getAttribute('data-stage-state')).toBe('idle');
+    }
+
+    // Hidden when diarization is disabled during earlier stages, but still active if status is DIARIZING
+    useJobStore.setState({
+      activeJob: runningJob({ status: 'TRANSCRIBING', enable_diarization: false }),
+    });
+    rerender(<LivePipelineBar />);
+    expect(queryByTestId('pipeline-stage-DIARIZING')).toBeNull();
+
+    useJobStore.setState({
+      activeJob: runningJob({ status: 'DIARIZING', enable_diarization: false }),
+    });
+    rerender(<LivePipelineBar />);
+    expect(getByTestId('pipeline-stage-TRANSCRIBING').getAttribute('data-stage-state')).toBe('done');
+    expect(getByTestId('pipeline-stage-DIARIZING').getAttribute('data-stage-state')).toBe('active');
+
+    // Sync jobs never show DIARIZING
+    useJobStore.setState({
+      activeJob: runningJob({ status: 'SYNCING', job_kind: 'sync', enable_diarization: true }),
+    });
+    rerender(<LivePipelineBar />);
+    expect(queryByTestId('pipeline-stage-DIARIZING')).toBeNull();
+    expect(getByTestId('pipeline-stage-SYNCING').getAttribute('data-stage-state')).toBe('active');
+
+    // Every runnable status in ACTIVE_STATUSES has an active pill in LivePipelineBar
+    const runnableStatuses: JobStatus[] = ACTIVE_STATUSES.filter((s) => s !== 'IDLE' && s !== 'QUEUED');
+    for (const st of runnableStatuses) {
+      useJobStore.setState({
+        activeJob: runningJob({
+          status: st,
+          current_stage: st,
+          job_kind: st === 'SYNCING' ? 'sync' : 'transcribe',
+        }),
+      });
+      rerender(<LivePipelineBar />);
+      expect(getByTestId(`pipeline-stage-${st}`).getAttribute('data-stage-state')).toBe('active');
+    }
+  });
+
+  it('displays live stage_progress_percent inside the active stage pill and clears on completion', () => {
+    const runningDiarizing = (overrides: Partial<Job>): Job => ({
+      ...makeDiarizedJob(),
+      status: 'DIARIZING',
+      current_stage: 'DIARIZING',
+      progress_percent: 67.2,
+      stage_progress_percent: 42.5,
+      detect_onscreen_text: true,
+      enable_translation: true,
+      enable_diarization: true,
+      segments: [],
+      ...overrides,
+    });
+
+    useJobStore.setState({ activeJob: runningDiarizing({}) });
+    const { getByTestId, queryAllByTestId, queryByTestId, rerender } = render(<LivePipelineBar />);
+
+    const diarizingPill = getByTestId('pipeline-stage-DIARIZING');
+    const badge = getByTestId('active-stage-percent');
+    expect(diarizingPill.contains(badge)).toBe(true);
+    expect(badge.textContent).toBe('43%');
+    expect(queryAllByTestId('active-stage-percent')).toHaveLength(1);
+
+    useJobStore.setState({ activeJob: runningDiarizing({ stage_progress_percent: 87 }) });
+    rerender(<LivePipelineBar />);
+    expect(getByTestId('active-stage-percent').textContent).toBe('87%');
+
+    useJobStore.setState({
+      activeJob: runningDiarizing({ status: 'COMPLETED', current_stage: 'COMPLETED', progress_percent: 100, stage_progress_percent: null }),
+    });
+    rerender(<LivePipelineBar />);
+    expect(queryByTestId('active-stage-percent')).toBeNull();
+  });
+
+  it('redesigns GlossaryDialog with tabbed cast UX, hides 0-line ghosts, collapses minor voices, previews quotes, links & merges speakers', async () => {
+    const speakers: NonNullable<Job['speakers']> = {
+      SPEAKER_01: { label: 'Speaker 1', gender: 'unknown', color: '#38BDF8', confidence: 'high', evidence: 'Replied to Alex?' },
+      SPEAKER_02: { label: 'Speaker 2', gender: 'unknown', color: '#F472B6' },
+      SPEAKER_03: { label: 'Speaker 3', gender: 'unknown', color: '#4ADE80' },
+      SPEAKER_04: { label: 'Speaker 4', gender: 'unknown', color: '#FBBF24' },
+      SPEAKER_05: { label: 'Minor 5', gender: 'unknown', color: '#C084FC' },
+      SPEAKER_06: { label: 'Minor 6', gender: 'unknown', color: '#FB923C' },
+      SPEAKER_07: { label: 'Minor 7', gender: 'unknown', color: '#2DD4BF' },
+      SPEAKER_08: { label: 'Minor 8', gender: 'unknown', color: '#F87171' },
+      SPEAKER_09: { label: 'Ghost 9', gender: 'unknown', color: '#38BDF8' },
+      SPEAKER_10: { label: 'Ghost 10', gender: 'unknown', color: '#F472B6' },
+    };
+
+    const mkSeg = (index: number, speaker: string, start: number, text: string): Job['segments'][number] => ({
+      id: index,
+      job_id: 'job_ux',
+      index,
+      start_time: start,
+      end_time: start + 2,
+      original_text: text,
+      translated_text: `תרגום ${index}`,
+      segment_type: 'DIALOGUE',
+      speaker,
+      cps: 8,
+    });
+
+    const segments: Job['segments'] = [
+      // SPEAKER_02 has most lines (5), SPEAKER_01 has 4, SPEAKER_03 & 04 have 3 each; 05..08 have 1 line each; 09..10 have 0
+      mkSeg(1, 'SPEAKER_01', 12, 'I am late for junior high school today.'),
+      mkSeg(2, 'SPEAKER_01', 15, 'Wait for me outside.'),
+      mkSeg(3, 'SPEAKER_01', 18, 'That chemical spilled everywhere!'),
+      mkSeg(4, 'SPEAKER_01', 21, 'Okay.'),
+      mkSeg(5, 'SPEAKER_02', 30, 'Are you planning to get up today?'),
+      mkSeg(6, 'SPEAKER_02', 33, 'Mom will not let you sleep in.'),
+      mkSeg(7, 'SPEAKER_02', 36, 'Hurry downstairs.'),
+      mkSeg(8, 'SPEAKER_02', 39, 'Grab your backpack.'),
+      mkSeg(9, 'SPEAKER_02', 42, 'Let us go.'),
+      mkSeg(10, 'SPEAKER_03', 50, 'You sent for me, Miss Atron?'),
+      mkSeg(11, 'SPEAKER_03', 53, 'The shipment leaves now.'),
+      mkSeg(12, 'SPEAKER_03', 56, 'Understood.'),
+      mkSeg(13, 'SPEAKER_04', 60, 'Make sure it goes smoothly.'),
+      mkSeg(14, 'SPEAKER_04', 63, 'Nobody can know about GC-161.'),
+      mkSeg(15, 'SPEAKER_04', 66, 'Call security.'),
+      mkSeg(16, 'SPEAKER_05', 70, 'Single line five.'),
+      mkSeg(17, 'SPEAKER_06', 74, 'Single line six.'),
+      mkSeg(18, 'SPEAKER_07', 78, 'Single line seven.'),
+      mkSeg(19, 'SPEAKER_08', 82, 'Single line eight.'),
+    ];
+
+    const glossary: NonNullable<Job['glossary']> = {
+      summary: 'Teen sci-fi',
+      characters: [{ name: 'Alex Mack', target_name: 'אלכס מק', gender: 'female', notes: 'Lead', speaker_id: '' }],
+      terms: [{ source: 'GC-161', translation: 'GC-161' }],
+      register_notes: 'Casual',
+    };
+
+    const onMatchSpeakers = vi.fn().mockResolvedValue(true);
+    const onMergeSpeakers = vi.fn().mockResolvedValue(true);
+    const onPreviewTime = vi.fn();
+    const onSaveSpeakers = vi.fn().mockResolvedValue(true);
+    const onSave = vi.fn().mockResolvedValue(undefined);
+
+    const { getByTestId, queryByTestId, container } = render(
+      <GlossaryDialog
+        glossary={glossary}
+        profile=""
+        canTranslate={true}
+        speakers={speakers}
+        segments={segments}
+        onDiarize={vi.fn().mockResolvedValue(true)}
+        onMatchSpeakers={onMatchSpeakers}
+        onMergeSpeakers={onMergeSpeakers}
+        onPreviewTime={onPreviewTime}
+        onSaveSpeakers={onSaveSpeakers}
+        onSave={onSave}
+        onClose={() => undefined}
+      />
+    );
+
+    // 0-line ghosts are hidden from the speaker list and flagged in the cleanup banner
+    expect(queryByTestId('speaker-card-SPEAKER_09')).toBeNull();
+    expect(queryByTestId('speaker-card-SPEAKER_10')).toBeNull();
+    expect(getByTestId('legacy-speakers-banner')).toBeTruthy();
+
+    // Main speakers are sorted descending by line count (SPEAKER_02 first, then SPEAKER_01, 03, 04)
+    const renderedIds = Array.from(container.querySelectorAll('[data-testid^="speaker-card-"]')).map((el) =>
+      el.getAttribute('data-testid')?.replace('speaker-card-', '')
+    );
+    expect(renderedIds).toEqual(['SPEAKER_02', 'SPEAKER_01', 'SPEAKER_03', 'SPEAKER_04']);
+
+    // Minor 1-line speakers are collapsed behind the accordion until toggled
+    expect(queryByTestId('speaker-card-SPEAKER_05')).toBeNull();
+    fireEvent.click(getByTestId('minor-speakers-toggle'));
+    expect(getByTestId('speaker-card-SPEAKER_05')).toBeTruthy();
+
+    // Clicking clean-empty-speakers-btn invokes onMergeSpeakers with the 0-line speaker IDs
+    fireEvent.click(getByTestId('clean-empty-speakers-btn'));
+    await waitFor(() => expect(onMergeSpeakers).toHaveBeenCalledWith(['SPEAKER_09', 'SPEAKER_10'], null));
+
+    // Sample quote preview button seeks video preview
+    const previewBtns = container.querySelectorAll('[data-testid="speaker-preview-SPEAKER_01"]');
+    expect(previewBtns.length).toBeGreaterThan(0);
+    fireEvent.click(previewBtns[0]);
+    expect(onPreviewTime).toHaveBeenCalledWith(12);
+
+    // Auto-match button calls onMatchSpeakers
+    fireEvent.click(getByTestId('match-speakers-btn'));
+    await waitFor(() => expect(onMatchSpeakers).toHaveBeenCalledTimes(1));
+
+    // Merge dropdown merges SPEAKER_03 into SPEAKER_02
+    fireEvent.change(getByTestId('speaker-merge-SPEAKER_03'), { target: { value: 'SPEAKER_02' } });
+    await waitFor(() => expect(onMergeSpeakers).toHaveBeenCalledWith(['SPEAKER_03'], 'SPEAKER_02'));
+
+    // Linking a character updates speaker label & gender
+    fireEvent.change(getByTestId('speaker-link-SPEAKER_01'), { target: { value: '0' } });
+    expect((getByTestId('speaker-label-SPEAKER_01') as HTMLInputElement).value).toBe('אלכס מק');
+    expect((getByTestId('speaker-gender-SPEAKER_01') as HTMLSelectElement).value).toBe('female');
+
+    // Tab switching reveals Characters & Terms sections cleanly
+    fireEvent.click(getByTestId('tab-characters'));
+    expect(getByTestId('characters-section')).toBeTruthy();
+    fireEvent.click(getByTestId('tab-terms'));
+    expect(getByTestId('terms-section')).toBeTruthy();
+
+    fireEvent.click(getByTestId('glossary-save'));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
   });
 });

@@ -229,12 +229,35 @@ export const api = {
 
   diarizeJob(
     jobId: string,
-    opts?: { min_speakers?: number; max_speakers?: number; threshold?: number }
+    opts?: { min_speakers?: number; max_speakers?: number; threshold?: number; auto_match?: boolean }
   ): Promise<Job> {
     return request(
       `${API_BASE}/jobs/${jobId}/diarize`,
       json('POST', opts || {}),
       'Could not detect speakers from audio'
+    );
+  },
+
+  matchSpeakers(
+    jobId: string,
+    opts?: { overwrite_manual?: boolean; auto_merge?: boolean }
+  ): Promise<Job> {
+    return request(
+      `${API_BASE}/jobs/${jobId}/match-speakers`,
+      json('POST', opts || {}),
+      'Could not match speakers to characters'
+    );
+  },
+
+  mergeSpeakers(
+    jobId: string,
+    sourceSpeakerIds: string[],
+    targetSpeakerId: string | null
+  ): Promise<Job> {
+    return request(
+      `${API_BASE}/jobs/${jobId}/speakers/merge`,
+      json('POST', { source_speaker_ids: sourceSpeakerIds, target_speaker_id: targetSpeakerId }),
+      'Could not merge speaker profiles'
     );
   },
 

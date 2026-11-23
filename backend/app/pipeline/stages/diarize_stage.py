@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.core.config import settings
+from app.pipeline import diarization
 from app.pipeline.context import PipelineCancelled, PipelineContext
 from app.pipeline.diarization import (
     OnnxSpeakerEmbedder,
@@ -54,33 +55,56 @@ class DiarizeStage(PipelineStage):
             return
 
         loop = asyncio.get_running_loop()
+        last_emitted: list[object] = [-10.0, ""]
 
         def _emit(pct: float, message: str) -> None:
             if on_progress and not ctx.cancel_flag.is_set():
-                asyncio.run_coroutine_threadsafe(
-                    on_progress(round(pct, 1), None, None, message, None),
-                    loop,
-                )
+                clamped = round(max(0.0, min(100.0, float(pct))), 1)
+                if (
+                    message != last_emitted[1]
+                    or abs(clamped - float(last_emitted[0])) >= 1.0
+                    or clamped >= 100.0
+                ):
+                    last_emitted[0] = clamped
+                    last_emitted[1] = message
+                    asyncio.run_coroutine_threadsafe(
+                        on_progress(clamped, None, None, message, None),
+                        loop,
+                    )
 
         try:
+            cached = diarization.model_path()
+            needs_download = not (cached.is_file() and cached.stat().st_size > 1_000_000)
             if on_progress:
-                await on_progress(5.0, None, None, "Preparing local speaker diarization model...", None)
+                init_pct = 0.0 if needs_download else 2.0
+                init_msg = (
+                    "Downloading local speaker model..."
+                    if needs_download
+                    else "Preparing local speaker diarization model..."
+                )
+                last_emitted[0] = init_pct
+                last_emitted[1] = init_msg
+                await on_progress(init_pct, None, None, init_msg, None)
 
             onnx_path = await asyncio.to_thread(
                 ensure_diarization_model,
                 ctx.cancel_flag,
-                lambda p: _emit(5.0 + p * 0.2, "Downloading local speaker model..."),
+                (lambda p: _emit(p * 0.20, "Downloading local speaker model...")) if needs_download else None,
             )
             ctx.raise_if_cancelled()
 
             embedder = OnnxSpeakerEmbedder(onnx_path=onnx_path)
+            base_pct, span_pct = (20.0, 0.78) if needs_download else (2.0, 0.96)
             timeline, speakers = await asyncio.to_thread(
                 diarize_audio_spans,
                 wav_path,
                 spans,
                 embedder=embedder,
                 cancel_flag=ctx.cancel_flag,
-                on_progress=lambda p: _emit(25.0 + p * 0.7, "Identifying voices across timeline..."),
+                on_progress=lambda p: _emit(
+                    base_pct + p * span_pct,
+                    "Clustering speaker voices..." if p >= 90.0 else "Identifying voices across timeline...",
+                ),
             )
             ctx.raise_if_cancelled()
 

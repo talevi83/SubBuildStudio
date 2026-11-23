@@ -115,6 +115,11 @@ class RefineStage(PipelineStage):
                 visual_credit_spans=visual_spans,
             )
 
+        if getattr(ctx, "speakers", None):
+            from app.pipeline.diarization import prune_unused_speakers
+
+            ctx.speakers = prune_unused_speakers(ctx.speakers, ctx.refined_segments)
+
         if on_progress:
             extras = []
             if comms:
