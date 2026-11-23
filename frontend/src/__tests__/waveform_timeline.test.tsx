@@ -176,12 +176,18 @@ describe('Interactive Dual-Lane WaveformTimeline', () => {
     fireEvent.pointerMove(canvas, { button: 0, pointerId: 2, clientX: 140, clientY: 70 });
     fireEvent.pointerMove(canvas, { button: 0, pointerId: 2, clientX: 160, clientY: 70 });
 
-    // During drag (before pointerup): local preview updated in store, ZERO API calls sent!
+    // During drag (before pointerup): local preview updated in store, drag overlay visible, ZERO API calls sent!
     expect(useJobStore.getState().activeJob?.segments[0].end_time).toBeCloseTo(4.0, 2);
     expect(updateSpy).not.toHaveBeenCalled();
+    const segOverlay = view.getByTestId('waveform-drag-overlay');
+    expect(segOverlay.textContent).toContain('#1');
+    expect(segOverlay.textContent).toContain('0:01.0');
+    expect(segOverlay.textContent).toContain('0:04.0');
+    expect(segOverlay.textContent).toContain('+1.0s');
 
-    // Release mouse -> single PATCH sent for clean Undo/Redo history step
+    // Release mouse -> single PATCH sent for clean Undo/Redo history step and overlay clears
     fireEvent.pointerUp(canvas, { button: 0, pointerId: 2, clientX: 160, clientY: 70 });
+    expect(view.queryByTestId('waveform-drag-overlay')).toBeNull();
     await waitFor(() => {
       expect(updateSpy).toHaveBeenCalledTimes(1);
     });
@@ -191,5 +197,65 @@ describe('Interactive Dual-Lane WaveformTimeline', () => {
     fireEvent.click(view.getByTestId('waveform-toggle'));
     expect(view.queryByTestId('waveform-canvas')).toBeNull();
     expect(localStorage.getItem('subbuild.waveformVisible')).toBe('false');
+  });
+
+  it('shows live seek drag overlay with target time and signed delta while dragging horizontally, and clears on release/cancel', async () => {
+    vi.spyOn(api, 'getWaveform').mockResolvedValue({
+      job_id: 'job_wf_1',
+      peaks_per_second: 50,
+      duration: 20,
+      peaks: Array.from({ length: 1000 }, () => 0.4),
+    });
+
+    const onSeek = vi.fn();
+    // currentTime = 4.0s, windowSec = 15 -> viewStart = 0, viewEnd = 15
+    const view = render(<WaveformTimeline jobId="job_wf_1" currentTime={4.0} duration={20} onSeek={onSeek} />);
+
+    await waitFor(() => {
+      expect(api.getWaveform).toHaveBeenCalledWith('job_wf_1');
+    });
+
+    const canvas = view.getByTestId('waveform-canvas') as HTMLCanvasElement;
+    // 600px wide -> 40 px/sec
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 600,
+      height: 108,
+      right: 600,
+      bottom: 108,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    // Empty area at x=360 (t=9.0s, y=70): pointerDown should NOT show overlay yet
+    fireEvent.pointerDown(canvas, { button: 0, pointerId: 3, clientX: 360, clientY: 70 });
+    expect(view.queryByTestId('waveform-drag-overlay')).toBeNull();
+
+    // Drag right to x=440 (t=11.0s, delta from currentTime=4.0s is +7.0s)
+    fireEvent.pointerMove(canvas, { button: 0, pointerId: 3, clientX: 440, clientY: 70 });
+    const forwardOverlay = view.getByTestId('waveform-drag-overlay');
+    expect(forwardOverlay.textContent).toContain('0:11.0');
+    expect(forwardOverlay.textContent).toContain('+7.0s');
+
+    // Drag left to x=60 (t=1.5s, delta from currentTime=4.0s is -2.5s)
+    fireEvent.pointerMove(canvas, { button: 0, pointerId: 3, clientX: 60, clientY: 70 });
+    const backwardOverlay = view.getByTestId('waveform-drag-overlay');
+    expect(backwardOverlay.textContent).toContain('0:01.5');
+    expect(backwardOverlay.textContent).toContain('-2.5s');
+
+    // Release -> seeks to 1.5s and hides overlay
+    fireEvent.pointerUp(canvas, { button: 0, pointerId: 3, clientX: 60, clientY: 70 });
+    expect(onSeek).toHaveBeenCalledWith(1.5);
+    expect(view.queryByTestId('waveform-drag-overlay')).toBeNull();
+
+    // Drag again and cancel -> hides overlay without calling onSeek again
+    fireEvent.pointerDown(canvas, { button: 0, pointerId: 4, clientX: 360, clientY: 70 });
+    fireEvent.pointerMove(canvas, { button: 0, pointerId: 4, clientX: 420, clientY: 70 });
+    expect(view.getByTestId('waveform-drag-overlay').textContent).toContain('0:10.5');
+    fireEvent.pointerCancel(canvas, { pointerId: 4 });
+    expect(view.queryByTestId('waveform-drag-overlay')).toBeNull();
+    expect(onSeek).toHaveBeenCalledTimes(1);
   });
 });

@@ -26,12 +26,39 @@ function formatRulerTime(sec: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+function formatPreciseTime(sec: number): string {
+  const safe = Math.max(0, sec);
+  const totalHundredths = Math.round(safe * 100);
+  const totalSeconds = Math.floor(totalHundredths / 100);
+  const hundredths = totalHundredths % 100;
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  const frac = hundredths % 10 === 0 ? String(hundredths / 10) : String(hundredths).padStart(2, '0');
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${frac}`;
+  }
+  return `${m}:${String(s).padStart(2, '0')}.${frac}`;
+}
+
+function formatSignedDelta(deltaSec: number): string {
+  const absVal = Math.abs(deltaSec);
+  if (absVal < 0.005) return '+0.0s';
+  const sign = deltaSec >= 0 ? '+' : '-';
+  const isExactTenth = Math.abs(Math.round(absVal * 10) / 10 - absVal) < 0.005;
+  const roundedHundredths = Math.round(absVal * 100) / 100;
+  const formatted = isExactTenth ? absVal.toFixed(1) : roundedHundredths.toFixed(2);
+  return `${sign}${formatted}s`;
+}
+
 interface DragState {
   kind: 'segment' | 'seek';
   segId?: number;
   segIndex?: number;
   mode?: DragMode;
   startClientX: number;
+  startX: number;
+  currentX: number;
   origStart: number;
   origEnd: number;
   previewStart: number;
@@ -42,6 +69,19 @@ interface DragState {
   viewEnd: number;
   width: number;
   moved: boolean;
+}
+
+interface DragOverlayInfo {
+  kind: 'seek' | 'segment';
+  mode?: DragMode;
+  segIndex?: number;
+  x: number;
+  startX: number;
+  width: number;
+  targetTime?: number;
+  deltaSec: number;
+  startTime?: number;
+  endTime?: number;
 }
 
 interface WaveformTimelineProps {
@@ -80,6 +120,7 @@ export const WaveformTimeline: React.FC<WaveformTimelineProps> = ({ jobId, curre
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const [canvasWidth, setCanvasWidth] = useState<number>(640);
+  const [dragOverlay, setDragOverlay] = useState<DragOverlayInfo | null>(null);
 
   const jobStatus = activeJob?.status;
   const isRunning = isActiveStatus(jobStatus);
@@ -352,6 +393,36 @@ export const WaveformTimeline: React.FC<WaveformTimelineProps> = ({ jobId, curre
       }
     }
 
+    // Seek drag range band and preview line
+    if (dragOverlay?.kind === 'seek' && dragOverlay.targetTime != null) {
+      const originX = clampTime(toX(currentTime), 0, w);
+      const targetX = clampTime(toX(dragOverlay.targetTime), 0, w);
+      const bandLeft = Math.min(originX, targetX);
+      const bandWidth = Math.abs(targetX - originX);
+      if (bandWidth >= 1) {
+        ctx.fillStyle = 'rgba(99, 102, 241, 0.18)';
+        ctx.fillRect(bandLeft, layout.rulerHeight, bandWidth, h - layout.rulerHeight);
+      }
+
+      ctx.save();
+      ctx.strokeStyle = '#818cf8';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(targetX, 0);
+      ctx.lineTo(targetX, h);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.fillStyle = '#818cf8';
+      ctx.beginPath();
+      ctx.moveTo(targetX - 4, 0);
+      ctx.lineTo(targetX + 4, 0);
+      ctx.lineTo(targetX, 6);
+      ctx.closePath();
+      ctx.fill();
+    }
+
     // Playhead cursor
     if (currentTime >= viewStart && currentTime <= viewEnd) {
       const px = toX(currentTime);
@@ -385,6 +456,7 @@ export const WaveformTimeline: React.FC<WaveformTimelineProps> = ({ jobId, curre
     currentTime,
     selectedSegmentIndex,
     subtitleOverlayMode,
+    dragOverlay,
   ]);
 
   const getCanvasCoords = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -420,6 +492,8 @@ export const WaveformTimeline: React.FC<WaveformTimelineProps> = ({ jobId, curre
         segIndex: hit.segment.index,
         mode: hit.mode,
         startClientX: e.clientX,
+        startX: x,
+        currentX: x,
         origStart: hit.segment.start_time,
         origEnd: hit.segment.end_time,
         previewStart: hit.segment.start_time,
@@ -434,13 +508,20 @@ export const WaveformTimeline: React.FC<WaveformTimelineProps> = ({ jobId, curre
       return;
     }
 
+    const initialSeekTime = clampTime(
+      viewStart + (x / Math.max(1, width)) * (viewEnd - viewStart),
+      0,
+      effectiveDuration
+    );
     dragRef.current = {
       kind: 'seek',
       startClientX: e.clientX,
-      origStart: 0,
-      origEnd: 0,
-      previewStart: 0,
-      previewEnd: 0,
+      startX: x,
+      currentX: x,
+      origStart: initialSeekTime,
+      origEnd: initialSeekTime,
+      previewStart: initialSeekTime,
+      previewEnd: initialSeekTime,
       minBound: 0,
       maxBound: effectiveDuration,
       viewStart,
@@ -463,10 +544,36 @@ export const WaveformTimeline: React.FC<WaveformTimelineProps> = ({ jobId, curre
       return;
     }
 
-    if (drag.kind !== 'segment' || drag.segId == null || !drag.mode) return;
     const dx = e.clientX - drag.startClientX;
     if (!drag.moved && Math.abs(dx) < 3) return;
     drag.moved = true;
+
+    const { x } = getCanvasCoords(e);
+    const clampedX = clampTime(x, 0, drag.width);
+    drag.currentX = clampedX;
+
+    if (drag.kind === 'seek') {
+      const targetTime = roundMs(
+        clampTime(
+          drag.viewStart + (clampedX / Math.max(1, drag.width)) * (drag.viewEnd - drag.viewStart),
+          0,
+          effectiveDuration
+        )
+      );
+      drag.previewStart = targetTime;
+      const deltaSec = roundMs(targetTime - currentTime);
+      setDragOverlay({
+        kind: 'seek',
+        x: clampedX,
+        startX: clampTime(drag.startX, 0, drag.width),
+        width: drag.width,
+        targetTime,
+        deltaSec,
+      });
+      return;
+    }
+
+    if (drag.kind !== 'segment' || drag.segId == null || !drag.mode) return;
 
     const deltaSec = (dx / Math.max(1, drag.width)) * (drag.viewEnd - drag.viewStart);
     const next = applySegmentDrag(
@@ -481,11 +588,28 @@ export const WaveformTimeline: React.FC<WaveformTimelineProps> = ({ jobId, curre
     drag.previewEnd = next.end_time;
     // Live visual preview only during pointermove; persisted as a single Undo/Redo step on pointerup
     previewSegmentTiming(drag.segId, next);
+
+    const appliedDeltaSec =
+      drag.mode === 'resize-end'
+        ? roundMs(next.end_time - drag.origEnd)
+        : roundMs(next.start_time - drag.origStart);
+    setDragOverlay({
+      kind: 'segment',
+      mode: drag.mode,
+      segIndex: drag.segIndex,
+      x: clampedX,
+      startX: clampTime(drag.startX, 0, drag.width),
+      width: drag.width,
+      deltaSec: appliedDeltaSec,
+      startTime: next.start_time,
+      endTime: next.end_time,
+    });
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
     dragRef.current = null;
+    setDragOverlay(null);
     try {
       if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
         e.currentTarget.releasePointerCapture?.(e.pointerId);
@@ -533,6 +657,7 @@ export const WaveformTimeline: React.FC<WaveformTimelineProps> = ({ jobId, curre
   const handlePointerCancel = () => {
     const drag = dragRef.current;
     dragRef.current = null;
+    setDragOverlay(null);
     if (drag?.kind === 'segment' && drag.moved && drag.segId != null) {
       previewSegmentTiming(drag.segId, { start_time: drag.origStart, end_time: drag.origEnd });
     }
@@ -621,6 +746,41 @@ export const WaveformTimeline: React.FC<WaveformTimelineProps> = ({ jobId, curre
             onPointerCancel={handlePointerCancel}
             style={{ width: '100%', height: `${canvasHeight}px`, cursor: cursorStyle, display: 'block', touchAction: 'none' }}
           />
+          {dragOverlay && (() => {
+            const containerW = Math.max(200, dragOverlay.width || canvasWidth);
+            const halfPad = dragOverlay.kind === 'segment' ? Math.min(96, containerW / 2) : Math.min(64, containerW / 2);
+            const leftPx = clampTime(dragOverlay.x, halfPad, Math.max(halfPad, containerW - halfPad));
+            return (
+              <div
+                data-testid="waveform-drag-overlay"
+                className="pointer-events-none absolute top-5 -translate-x-1/2 z-20 px-2 py-0.5 rounded-md bg-zinc-900/95 border border-indigo-400/60 text-[11px] font-mono text-zinc-100 shadow-lg whitespace-nowrap flex items-center gap-1.5"
+                style={{ left: `${leftPx}px` }}
+              >
+                {dragOverlay.kind === 'seek' ? (
+                  <>
+                    <span>{formatPreciseTime(dragOverlay.targetTime ?? 0)}</span>
+                    {' '}
+                    <span className="text-indigo-300 font-semibold">
+                      ({formatSignedDelta(dragOverlay.deltaSec)})
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    {dragOverlay.segIndex != null && (
+                      <span className="text-zinc-400">#{dragOverlay.segIndex} · </span>
+                    )}
+                    <span>
+                      {formatPreciseTime(dragOverlay.startTime ?? 0)} – {formatPreciseTime(dragOverlay.endTime ?? 0)}
+                    </span>
+                    {' '}
+                    <span className="text-indigo-300 font-semibold">
+                      ({formatSignedDelta(dragOverlay.deltaSec)})
+                    </span>
+                  </>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>

@@ -15,6 +15,7 @@ class TranslatableSegment:
     segment_type: str = "DIALOGUE"  # DIALOGUE | COMMS | ON_SCREEN
     speaker: Optional[str] = None
     speaker_info: Optional[str] = None
+    addressee_info: Optional[str] = None
 
     @property
     def duration(self) -> float:

@@ -62,20 +62,48 @@ def pick_ollama_model(models_payload: Sequence[Dict[str, Any]]) -> Optional[str]
 def find_ambiguous_segments(
     segments: Sequence[Any],
     speakers: Optional[Dict[str, Any]] = None,
+    addressees: Optional[Dict[int, str]] = None,
 ) -> List[Dict[str, Any]]:
     """Return segments whose text contains ambiguous English 1st/2nd-person forms."""
+    def _sp_desc(sp_id: Optional[str]) -> Optional[str]:
+        if not sp_id:
+            return None
+        sp_info = (speakers or {}).get(sp_id) if isinstance(speakers, dict) else None
+        sp_gender = sp_info.get("gender") if isinstance(sp_info, dict) else None
+        sp_label = sp_info.get("label") if isinstance(sp_info, dict) else None
+        if sp_gender in ("male", "female"):
+            return f"{sp_label or sp_id} ({sp_gender})"
+        return sp_label or str(sp_id)
+
+    seg_list = list(segments)
     ambiguous: List[Dict[str, Any]] = []
-    for seg in segments:
-        idx = seg["index"] if isinstance(seg, dict) else getattr(seg, "index", 0)
+    for pos, seg in enumerate(seg_list):
+        idx = int(seg["index"] if isinstance(seg, dict) else getattr(seg, "index", 0))
         text = seg["original_text"] if isinstance(seg, dict) else getattr(seg, "original_text", "")
         if text and AMBIGUOUS_PRONOUN_RE.search(text):
-            item: Dict[str, Any] = {"index": int(idx), "text": str(text)}
+            item: Dict[str, Any] = {"index": idx, "text": str(text)}
             sp_id = seg.get("speaker") if isinstance(seg, dict) else getattr(seg, "speaker", None)
-            if sp_id:
-                sp_info = (speakers or {}).get(sp_id) if isinstance(speakers, dict) else None
-                sp_gender = sp_info.get("gender") if isinstance(sp_info, dict) else None
-                sp_label = sp_info.get("label") if isinstance(sp_info, dict) else None
-                item["speaker"] = f"{sp_label or sp_id} ({sp_gender})" if sp_gender in ("male", "female") else (sp_label or str(sp_id))
+            sp_desc = _sp_desc(sp_id)
+            if sp_desc:
+                item["speaker"] = sp_desc
+            addr = (addressees or {}).get(idx) or (
+                seg.get("addressee_info") if isinstance(seg, dict) else getattr(seg, "addressee_info", None)
+            )
+            if addr:
+                item["addressee"] = str(addr)
+            else:
+                if pos > 0:
+                    prev_sp = seg_list[pos - 1].get("speaker") if isinstance(seg_list[pos - 1], dict) else getattr(seg_list[pos - 1], "speaker", None)
+                    if prev_sp and prev_sp != sp_id:
+                        p_desc = _sp_desc(prev_sp)
+                        if p_desc:
+                            item["prev_speaker"] = p_desc
+                if pos + 1 < len(seg_list):
+                    nxt_sp = seg_list[pos + 1].get("speaker") if isinstance(seg_list[pos + 1], dict) else getattr(seg_list[pos + 1], "speaker", None)
+                    if nxt_sp and nxt_sp != sp_id:
+                        n_desc = _sp_desc(nxt_sp)
+                        if n_desc:
+                            item["next_speaker"] = n_desc
             ambiguous.append(item)
     return ambiguous
 
@@ -88,6 +116,8 @@ def _normalize_gender_code(val: Any) -> Optional[str]:
         return "M"
     if s in ("F", "FEMALE", "WOMAN"):
         return "F"
+    if s in ("G", "GROUP", "PLURAL", "BOTH", "ALL", "MIXED", "MIXED GROUP"):
+        return "G"
     return None
 
 
@@ -97,6 +127,16 @@ def format_gender_tag(speaker: Any, addressee: Any) -> Optional[str]:
     if sp == "?" and to == "?":
         return None
     return f"[Speaker: {sp}, To: {to}]"
+
+
+def parse_gender_tag(tag: str) -> tuple[Optional[str], Optional[str]]:
+    """Parse `[Speaker: M/F/?, To: M/F/G/?]` into `(speaker_gender, addressee_label)`."""
+    m = re.search(r"Speaker:\s*([MFG?])\s*,\s*To:\s*([MFG?])", tag or "", re.IGNORECASE)
+    if not m:
+        return None, None
+    sp_map = {"M": "male", "F": "female"}
+    to_map = {"M": "male", "F": "female", "G": "group (plural)"}
+    return sp_map.get(m.group(1).upper()), to_map.get(m.group(2).upper())
 
 
 async def detect_ollama_model(timeout: float = 2.0) -> Optional[str]:
@@ -123,15 +163,16 @@ async def pretag_gender_hints(
     cloud_model: Optional[str] = None,
     on_batch: Optional[Any] = None,
     speakers: Optional[Dict[str, Any]] = None,
+    addressees: Optional[Dict[int, str]] = None,
 ) -> Dict[int, str]:
     """
-    Query local Ollama for ambiguous lines and return `{segment_index: "[Speaker: M/F, To: M/F]"}`.
+    Query local Ollama for ambiguous lines and return `{segment_index: "[Speaker: M/F, To: M/F/G]"}`.
     Silently returns `{}` if Ollama is not running, has no models, or if any network error occurs.
     """
     if not is_gendered_target_language(target_lang) or not segments:
         return {}
 
-    ambiguous = find_ambiguous_segments(segments, speakers=speakers)
+    ambiguous = find_ambiguous_segments(segments, speakers=speakers, addressees=addressees)
     if not ambiguous:
         return {}
 
@@ -144,6 +185,17 @@ async def pretag_gender_hints(
                 code = _normalize_gender_code(speakers[sp_id].get("gender"))
                 if code:
                     known_gender_by_index[idx] = code
+
+    known_to_by_index: Dict[int, str] = {}
+    if isinstance(addressees, dict) and addressees:
+        for seg_idx, addr_val in addressees.items():
+            low = str(addr_val or "").lower()
+            if "group" in low or "plural" in low:
+                known_to_by_index[int(seg_idx)] = "G"
+            elif "(female)" in low or low.strip() == "female":
+                known_to_by_index[int(seg_idx)] = "F"
+            elif "(male)" in low or low.strip() == "male":
+                known_to_by_index[int(seg_idx)] = "M"
 
     model = await detect_ollama_model(timeout=2.0)
     if not model:
@@ -166,10 +218,10 @@ async def pretag_gender_hints(
             for batch_idx, batch in enumerate(batches):
                 is_last = batch_idx == len(batches) - 1
                 prompt = (
-                    "Infer the speaker gender and the listener/addressee ('to') gender (M, F, or ?) for each subtitle line.\n"
-                    "Note: if a line addresses a name directly (e.g. 'Sarah, are you ready?'), that name is the listener ('to'), not the speaker.\n"
+                    "Infer the speaker gender (M, F, or ?) and the listener/addressee ('to') gender/number (M, F, G for plural group, or ?) for each subtitle line.\n"
+                    "Note: speaker gender is ONLY who is speaking; addressee ('to') is who they are talking TO (e.g. 'Sarah, are you ready?' -> to=F; 'You guys' -> to=G; check prev_speaker/next_speaker too).\n"
                     f"Known characters: {cast_summary}\n"
-                    'Return JSON: {"items": [{"index": <int>, "speaker": "M"|"F"|"?", "to": "M"|"F"|"?"}]}\n'
+                    'Return JSON: {"items": [{"index": <int>, "speaker": "M"|"F"|"?", "to": "M"|"F"|"G"|"?"}]}\n'
                     f"Lines: {json.dumps(batch, ensure_ascii=False)}"
                 )
                 body: Dict[str, Any] = {
@@ -200,10 +252,12 @@ async def pretag_gender_hints(
                         sp_raw = item.get("speaker") or item.get("speaker_gender")
                         if seg_idx in known_gender_by_index:
                             sp_raw = known_gender_by_index[seg_idx]
-                        tag = format_gender_tag(
-                            sp_raw,
-                            item.get("to") or item.get("addressee") or item.get("addressee_gender"),
-                        )
+                        to_raw = item.get("to") or item.get("addressee") or item.get("addressee_gender")
+                        if seg_idx in known_to_by_index and not _normalize_gender_code(to_raw):
+                            to_raw = known_to_by_index[seg_idx]
+                        elif seg_idx in known_to_by_index:
+                            to_raw = known_to_by_index[seg_idx]
+                        tag = format_gender_tag(sp_raw, to_raw)
                         if tag:
                             hints[seg_idx] = tag
                             batch_tagged += 1

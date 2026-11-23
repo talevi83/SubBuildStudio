@@ -608,3 +608,158 @@ def test_match_speakers_and_merge_endpoints_with_ai_and_auto_merge(tmp_path, mon
         assert list(merged_body["speakers"].keys()) == ["SPEAKER_01"]
         assert merged_body["segments"][3]["speaker"] is None
         assert merged_body["glossary"]["characters"][1]["speaker_id"] == ""
+
+
+def test_infer_segment_addressees_covers_dyadic_vocative_honorific_and_group():
+    from app.pipeline.speaker_match import infer_segment_addressees
+
+    speakers = {
+        "SPEAKER_01": {"label": "דנה", "gender": "female", "color": "#F472B6"},
+        "SPEAKER_02": {"label": "אבי", "gender": "male", "color": "#38BDF8"},
+        "SPEAKER_03": {"label": "שרה", "gender": "female", "color": "#4ADE80"},
+    }
+    characters = [
+        {"name": "Dana", "target_name": "דנה", "gender": "female", "speaker_id": "SPEAKER_01"},
+        {"name": "Avi", "target_name": "אבי", "gender": "male", "speaker_id": "SPEAKER_02"},
+        {"name": "Sarah", "target_name": "שרה", "gender": "female", "speaker_id": "SPEAKER_03"},
+    ]
+    segments = [
+        # Dyadic A (female) <-> B (male) exchange
+        {"index": 1, "start_time": 1.0, "end_time": 2.5, "original_text": "Are you coming with me?", "speaker": "SPEAKER_01"},
+        {"index": 2, "start_time": 3.0, "end_time": 4.2, "original_text": "Yes, wait a second.", "speaker": "SPEAKER_02"},
+        # Plural group address overrides next single speaker
+        {"index": 3, "start_time": 4.5, "end_time": 6.0, "original_text": "You guys need to see this.", "speaker": "SPEAKER_01"},
+        {"index": 4, "start_time": 6.3, "end_time": 7.5, "original_text": "Listen up, everyone!", "speaker": "SPEAKER_02"},
+        # Named vocative overrides adjacent speaker
+        {"index": 5, "start_time": 8.0, "end_time": 9.5, "original_text": "Sarah, are you ready?", "speaker": "SPEAKER_01"},
+        {"index": 6, "start_time": 10.0, "end_time": 11.2, "original_text": "I'm ready.", "speaker": "SPEAKER_03"},
+        # Honorifics without explicit speaker tags
+        {"index": 7, "start_time": 20.0, "end_time": 21.0, "original_text": "Yes, sir.", "speaker": None},
+        {"index": 8, "start_time": 25.0, "end_time": 26.0, "original_text": "Thank you, ma'am.", "speaker": None},
+    ]
+
+    addressees = infer_segment_addressees(segments, speakers, characters)
+    assert addressees[1] == "SPEAKER_02 (אבי, male)"
+    assert addressees[2] == "SPEAKER_01 (דנה, female)"
+    assert addressees[3] == "group (plural)"
+    assert addressees[4] == "group (plural)"
+    assert addressees[5] == "SPEAKER_03 (שרה, female)"
+    assert addressees[6] == "SPEAKER_01 (דנה, female)"
+    assert addressees[7] == "male"
+    assert addressees[8] == "female"
+
+
+@pytest.mark.asyncio
+async def test_translate_stage_passes_speaker_and_addressee_to_translator_and_lookahead(monkeypatch):
+    from app.providers.translation.glossary_pruner import prune_glossary_for_batch
+
+    seen_instructions = []
+    seen_payloads = []
+
+    def fake_generate(model, contents, config):
+        seen_instructions.append(config.system_instruction)
+        payload = json.loads(contents)
+        seen_payloads.append(payload)
+        return types.SimpleNamespace(
+            text=json.dumps({
+                "translations": [
+                    {"index": item["index"], "translated_text": f"תרגום מלא {item['index']}"}
+                    for item in payload["target_batch"]
+                ]
+            })
+        )
+
+    monkeypatch.setattr(gp.asyncio, "sleep", lambda _: None)
+    monkeypatch.setattr(settings, "gemini_glossary_pass", False)
+
+    translator = gp.GeminiTranslator(api_key="test-key", batch_size=1, prev_context_size=1, lookahead_size=1)
+    translator.client = types.SimpleNamespace(models=types.SimpleNamespace(generate_content=fake_generate))
+
+    glossary = {
+        "summary": "Drama",
+        "characters": [
+            {"name": f"Extra{i}", "target_name": f"ניצב{i}", "gender": "male", "notes": ""}
+            for i in range(1, 8)
+        ] + [
+            {"name": "Sarah", "target_name": "שרה", "gender": "female", "notes": "Lead", "speaker_id": "SPEAKER_01"},
+            {"name": "David", "target_name": "דוד", "gender": "male", "notes": "Partner", "speaker_id": "SPEAKER_02"},
+        ],
+        "terms": [],
+        "register_notes": "",
+    }
+    speakers = {
+        "SPEAKER_01": {"label": "שרה", "gender": "female", "color": "#F472B6", "character_name": "Sarah"},
+        "SPEAKER_02": {"label": "דוד", "gender": "male", "color": "#38BDF8", "character_name": "David"},
+    }
+    ctx = PipelineContext(
+        job_id="job_addr_test",
+        video_path="clip.mp4",
+        file_name="clip.mp4",
+        enable_translation=True,
+        target_language="Hebrew",
+        source_language="en",
+        glossary=glossary,
+        speakers=speakers,
+        refined_segments=[
+            {
+                "index": 1,
+                "start_time": 0.0,
+                "end_time": 2.0,
+                "original_text": "Are you coming with me?",
+                "translated_text": None,
+                "translation_failed": False,
+                "segment_type": "DIALOGUE",
+                "speaker": "SPEAKER_01",
+            },
+            {
+                "index": 2,
+                "start_time": 2.5,
+                "end_time": 4.0,
+                "original_text": "Yes, I am ready.",
+                "translated_text": None,
+                "translation_failed": False,
+                "segment_type": "DIALOGUE",
+                "speaker": "SPEAKER_02",
+            },
+        ],
+    )
+
+    await TranslateStage(translator=translator).execute(ctx)
+
+    assert len(seen_payloads) == 2
+    # Batch 1: female speaker talking to male addressee, with lookahead showing male responder
+    batch1 = seen_payloads[0]
+    assert batch1["target_batch"][0]["speaker"] == "SPEAKER_01 (שרה, female)"
+    assert batch1["target_batch"][0]["addressee"] == "SPEAKER_02 (דוד, male)"
+    assert batch1["lookahead_context"][0]["speaker"] == "SPEAKER_02 (דוד, male)"
+    assert batch1["lookahead_context"][0]["addressee"] == "SPEAKER_01 (שרה, female)"
+
+    # Batch 2: previous_context preserves both speaker and addressee
+    batch2 = seen_payloads[1]
+    assert batch2["previous_context"][0]["speaker"] == "SPEAKER_01 (שרה, female)"
+    assert batch2["previous_context"][0]["addressee"] == "SPEAKER_02 (דוד, male)"
+    assert batch2["target_batch"][0]["speaker"] == "SPEAKER_02 (דוד, male)"
+    assert batch2["target_batch"][0]["addressee"] == "SPEAKER_01 (שרה, female)"
+
+    # System prompt clearly distinguishes speaker (1st person) vs addressee (2nd person)
+    assert "ONLY for 1st-person" in seen_instructions[0]
+    assert "addressee" in seen_instructions[0]
+    assert "group (plural)" in seen_instructions[0]
+
+    # Non-core characters active as speaker/addressee are kept by glossary_pruner even when their name isn't spoken
+    pruned = prune_glossary_for_batch(
+        glossary,
+        batch_texts=[
+            TranslatableSegment(
+                index=1,
+                start_time=0.0,
+                end_time=2.0,
+                original_text="Are you coming with me?",
+                speaker="SPEAKER_01",
+                speaker_info="SPEAKER_01 (שרה, female)",
+                addressee_info="SPEAKER_02 (דוד, male)",
+            )
+        ],
+    )
+    kept_names = {c["name"] for c in pruned["characters"]}
+    assert "Sarah" in kept_names and "David" in kept_names

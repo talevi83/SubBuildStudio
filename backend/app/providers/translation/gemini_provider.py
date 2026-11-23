@@ -169,9 +169,9 @@ Polish the `target_batch` {target_lang} ASR transcript into clean, broadcast-rea
 3. **Split Sentences & Continuity (No Orphan Words):**
    - Inspect `previous_context`, adjacent items in `target_batch`, and `lookahead_context` so sentences spanning boundaries are punctuated coherently and 1–2 orphan words are not left on the wrong side of a boundary.
 
-4. **Dialogue & Dual Speakers:**
+4. **Dialogue, Dual Speakers & Speaker vs. Addressee:**
    - If a segment contains two different speakers, place each turn on its own line starting with `- ` (`- ...\\n- ...`).
-   - If a segment includes a `speaker` field (with optional character name/gender), keep grammatical gender consistent for that speaker across every line including off-screen dialogue.
+   - **`speaker` vs. `addressee` (CRITICAL DISTINCTION):** `speaker` is who is speaking — use `speaker`'s gender **ONLY for 1st-person self-reference** ("I", "I'm", self-referential verbs/adjectives). **NEVER** conjugate 2nd-person forms ("you") from `speaker`'s gender! Use `addressee` (or the conversational listener in `previous_context`/`target_batch`/`lookahead_context`) for **all 2nd-person forms** (masculine `אתה`, feminine `את`, or plural `אתם/אתן` when `addressee` is `group (plural)`).
 
 5. **Segment Types (`segment_type`):**
    - Preserve `ON_SCREEN` square brackets `[...]`; keep `COMMS` terse; polish `DIALOGUE` and `FOREIGN` naturally.
@@ -187,7 +187,7 @@ Polish the `target_batch` {target_lang} ASR transcript into clean, broadcast-rea
         hebrew_rules = f"""
 6. **Natural Spoken Hebrew & Linguistic Guidelines:**
    - **Avoid "Translationese" (תרגומית):** Do not translate word-for-word. Translate the intent, subtext, and natural Hebrew conversational flow (e.g., translate "Are you kidding me?" as "אתה צוחק עליי?" or "את עובדת עליי?", never literally).
-   - **Gender & Plurality Resolution:** English "you" or gender-neutral verbs must be conjugated accurately into masculine/feminine and singular/plural based on speaker/listener clues, the glossary and the show notes.
+   - **Gender & Plurality Resolution (`speaker` vs. `addressee`):** English "you" or gender-neutral verbs must match the **addressee (listener)**, NOT the speaker! Use `speaker`'s gender **ONLY** for 1st-person self-reference ("אני חושב/חושבת", "אני מוכן/מוכנה"). Use `addressee`'s gender and number (or infer the listener from vocatives and adjacent lines in `previous_context`/`target_batch`/`lookahead_context`) for **all 2nd-person forms** ("אתה / את / אתם", imperatives, adjectives — e.g. a female speaker talking to a man uses feminine 1st-person "אני הולכת" and masculine 2nd-person "אתה בא?"; addressing multiple people or `group (plural)` uses "אתם/אתן").
    - **Slang, Humor & Profanity:** Preserve the exact register, tone, and intensity of the original dialogue. Do not censor profanity; use authentic Hebrew equivalents that match the character's voice.
    - **Proper Nouns & Technical Terms:** Transliterate character names consistently across batches (use the glossary spellings).
    - **On-screen titles & speaker chyrons (`segment_type` = "ON_SCREEN", or any line wrapped in `[...]`):** translate concisely as an official Hebrew broadcast screen title and keep the square brackets, e.g. `[One week later...]` → `[שבוע לאחר מכן...]`, `[Damascus, Syria]` → `[דמשק, סוריה]`, `[DR. JAN FRANCKE — INTERNATIONAL GPR EXPERT]` → `[ד״ר יאן פרנקה — מומחה בינלאומי ל-GPR]`. Write dates/times the way Israeli broadcasters do.{chyron_sdh_note}
@@ -239,9 +239,12 @@ Translate the `target_batch` subtitle segments into natural, idiomatic, spoken {
    - Inspect `previous_context`, adjacent items in `target_batch`, and `lookahead_context` to understand the full sentence before translating.
    - **CRITICAL — Never strand 1–2 orphan words across a boundary:** Automatic speech recognition (ASR) sometimes cuts a segment 1–2 words too early or too late (especially in unpunctuated segments). NEVER end a segment with a complete sentence followed by 1–2 dangling words that actually start the next segment's sentence, and NEVER start a segment with the final 1–2 words of the previous segment's sentence followed by a period and a new sentence (e.g. avoid ending segment N with "...אני לא בטוח מה" and starting segment N+1 with "זה. מה לעזאזל זה?"). Keep each complete sentence whole inside the segment where it belongs so the previous sentence ends with its final word and period in segment N, and segment N+1 begins cleanly with its own sentence.
 
-4. **Dialogue & Dual Speakers:**
+4. **Dialogue, Dual Speakers & Speaker vs. Addressee:**
    - If a single segment contains two different speakers (whether indicated by leading hyphens, e.g., `- Hello.\\n- Hi.`, or an unpunctuated ASR run-on containing a question/statement and another person's reply), format each speaker's turn on its own line starting with `- ` (`- ...\\n- ...`) so downstream processing can split them into separate single-speaker subtitles.
-   - If a segment includes a `speaker` field (with optional character name/gender), keep grammatical gender 100% consistent for that speaker across every line including off-screen dialogue.
+   - **`speaker` vs. `addressee` (CRITICAL DISTINCTION):**
+     - `speaker` is the person talking. Use `speaker`'s gender **ONLY for 1st-person self-reference** ("I", "I'm", present-tense self verbs/adjectives like "אני חושב/חושבת", "אני מוכן/מוכנה"). **NEVER** conjugate 2nd-person verbs/pronouns ("you", "your", imperatives) according to `speaker`'s gender!
+     - `addressee` (when present) is the person or group being spoken TO. Use the **addressee's** gender and number for **all 2nd-person forms** ("you", "your", imperatives, 2nd-person verbs/adjectives: masculine singular, feminine singular, or plural when `addressee` is `group (plural)` or multiple people).
+     - When `addressee` is not explicitly tagged on a line, infer who the speaker is talking to from vocative names/titles in the line, who spoke immediately before (`previous_context` / earlier in `target_batch`), and who replies immediately after (`target_batch` / `lookahead_context`).
 
 5. **Segment Types (`segment_type`):**
    - "DIALOGUE": normal speech.
@@ -543,9 +546,9 @@ class GeminiTranslator(BaseTranslator):
 
             batch_glossary = prune_glossary_for_batch(
                 glossary=glossary,
-                batch_texts=[s.original_text for s in current_batch],
-                previous_context=[s.original_text for s in prev_context],
-                lookahead_context=[s.original_text for s in lookahead_context],
+                batch_texts=current_batch,
+                previous_context=prev_context,
+                lookahead_context=lookahead_context,
             )
             if glossary and batch_glossary and self.usage is not None and hasattr(self.usage, "record_local_savings"):
                 from app.core.model_catalog import request_cost
@@ -601,39 +604,32 @@ class GeminiTranslator(BaseTranslator):
         for seg in pending:
             seg.translation_failed = False
 
+        def _ctx_item(
+            seg: TranslatableSegment,
+            *,
+            with_translated: bool = False,
+            with_meta: bool = False,
+        ) -> Dict[str, Any]:
+            item: Dict[str, Any] = {"index": seg.index}
+            if with_meta:
+                item["segment_type"] = seg.segment_type
+                item["duration_sec"] = seg.duration
+            item["original_text"] = seg.original_text
+            if with_translated:
+                item["translated_text"] = strip_directional_marks(seg.translated_text or "")
+            sp = getattr(seg, "speaker_info", None) or getattr(seg, "speaker", None)
+            if sp:
+                item["speaker"] = sp
+            addr = getattr(seg, "addressee_info", None)
+            if addr:
+                item["addressee"] = addr
+            return item
+
         for attempt in range(1, self.max_retries + 1):
             payload = {
-                "previous_context": [
-                    {
-                        "index": seg.index,
-                        "original_text": seg.original_text,
-                        "translated_text": strip_directional_marks(seg.translated_text or ""),
-                        **(
-                            {"speaker": seg.speaker_info or seg.speaker}
-                            if getattr(seg, "speaker_info", None) or getattr(seg, "speaker", None)
-                            else {}
-                        ),
-                    }
-                    for seg in prev_context
-                ],
-                "target_batch": [
-                    {
-                        "index": seg.index,
-                        "segment_type": seg.segment_type,
-                        "duration_sec": seg.duration,
-                        "original_text": seg.original_text,
-                        **(
-                            {"speaker": seg.speaker_info or seg.speaker}
-                            if getattr(seg, "speaker_info", None) or getattr(seg, "speaker", None)
-                            else {}
-                        ),
-                    }
-                    for seg in pending
-                ],
-                "lookahead_context": [
-                    {"index": seg.index, "original_text": seg.original_text}
-                    for seg in lookahead_context
-                ],
+                "previous_context": [_ctx_item(seg, with_translated=True) for seg in prev_context],
+                "target_batch": [_ctx_item(seg, with_meta=True) for seg in pending],
+                "lookahead_context": [_ctx_item(seg) for seg in lookahead_context],
             }
             try:
                 response = await self._generate(

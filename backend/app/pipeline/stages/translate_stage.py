@@ -32,19 +32,9 @@ _DEFAULT_SPEAKER_LABEL_RE = re.compile(r"^Speaker \d+$", re.IGNORECASE)
 
 
 def _format_speaker_info(speaker_id: Optional[str], speakers: Optional[Dict[str, Any]]) -> Optional[str]:
-    if not speaker_id:
-        return None
-    info = (speakers or {}).get(speaker_id)
-    if not isinstance(info, dict):
-        return speaker_id
-    label = str(info.get("label") or "").strip()
-    gender = str(info.get("gender") or "").strip().lower()
-    parts: List[str] = []
-    if label and not _DEFAULT_SPEAKER_LABEL_RE.match(label):
-        parts.append(label)
-    if gender in ("male", "female"):
-        parts.append(gender)
-    return f"{speaker_id} ({', '.join(parts)})" if parts else speaker_id
+    from app.pipeline.speaker_match import format_speaker_identity
+
+    return format_speaker_identity(speaker_id, speakers)
 
 
 def _sync_glossary_to_speakers(glossary: Optional[Dict[str, Any]], speakers: Optional[Dict[str, Any]]) -> None:
@@ -266,8 +256,21 @@ class TranslateStage(PipelineStage):
                 except Exception as exc:
                     logger.debug(f"Speaker-character matching skipped: {exc}")
 
+            addressees_by_index: Dict[int, str] = {}
+            try:
+                from app.pipeline.speaker_match import infer_segment_addressees
+
+                addressees_by_index = infer_segment_addressees(
+                    ctx.refined_segments,
+                    getattr(ctx, "speakers", None),
+                    (ctx.glossary or {}).get("characters"),
+                )
+            except Exception as exc:
+                logger.debug(f"Addressee inference skipped: {exc}")
+
             for seg_obj in all_segments:
                 seg_obj.speaker_info = _format_speaker_info(seg_obj.speaker, getattr(ctx, "speakers", None))
+                seg_obj.addressee_info = addressees_by_index.get(seg_obj.index)
 
             effective_notes = _notes_with_hint(ctx.context_notes, ctx.translation_hint, to_translate)
             try:
@@ -277,6 +280,7 @@ class TranslateStage(PipelineStage):
                     from app.pipeline.gender_pretag import (
                         format_hints_for_context_notes,
                         is_gendered_target_language,
+                        parse_gender_tag,
                         pretag_gender_hints,
                     )
 
@@ -293,8 +297,19 @@ class TranslateStage(PipelineStage):
                             cloud_model=getattr(translator, "model_name", None),
                             on_batch=_on_local_batch,
                             speakers=getattr(ctx, "speakers", None),
+                            addressees=addressees_by_index,
                         )
                         if local_hints:
+                            by_seg_obj = {seg_obj.index: seg_obj for seg_obj in all_segments}
+                            for seg_idx, tag in local_hints.items():
+                                seg_obj = by_seg_obj.get(seg_idx)
+                                if seg_obj is None:
+                                    continue
+                                sp_g, to_g = parse_gender_tag(tag)
+                                if to_g and not seg_obj.addressee_info:
+                                    seg_obj.addressee_info = to_g
+                                if sp_g and not seg_obj.speaker_info:
+                                    seg_obj.speaker_info = sp_g
                             hint_block = format_hints_for_context_notes(local_hints)
                             effective_notes = f"{effective_notes}\n\n{hint_block}".strip() if effective_notes else hint_block
             except Exception as e:
