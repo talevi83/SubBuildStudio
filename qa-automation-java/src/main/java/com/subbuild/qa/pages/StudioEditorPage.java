@@ -45,6 +45,7 @@ public class StudioEditorPage extends BasePage {
     private static final By GLOSSARY_PROFILE_INPUT = By.cssSelector("[data-testid='glossary-profile']");
     private static final By GLOSSARY_SAVE_BTN = By.cssSelector("[data-testid='glossary-save']");
     private static final By GLOSSARY_CHARACTERS_TAB = By.cssSelector("[data-testid='tab-characters']");
+    private static final By GLOSSARY_TERMS_TAB = By.cssSelector("[data-testid='tab-terms']");
     private static final By GLOSSARY_ADD_CHAR_BTN = By.cssSelector("[data-testid='glossary-add-character']");
     private static final By GLOSSARY_CHAR_NAMES = By.cssSelector("[data-testid='glossary-char-name']");
     private static final By GLOSSARY_CHAR_TARGETS = By.cssSelector("[data-testid='glossary-char-target']");
@@ -248,6 +249,8 @@ public class StudioEditorPage extends BasePage {
         targets.get(targets.size() - 1).sendKeys(targetName);
         List<WebElement> genders = waitAllVisible(GLOSSARY_CHAR_GENDERS);
         new org.openqa.selenium.support.ui.Select(genders.get(genders.size() - 1)).selectByValue(gender);
+        // The series profile field lives on the "Terms & Style" tab, not on the Characters tab
+        click(GLOSSARY_TERMS_TAB);
         clearAndType(GLOSSARY_PROFILE_INPUT, profileName);
         click(GLOSSARY_SAVE_BTN);
         waitInvisible(GLOSSARY_SAVE_BTN);
