@@ -21,6 +21,8 @@ MODEL_URL = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
     "speaker-recongition-models/wespeaker_en_voxceleb_CAM++.onnx"
 )
+# Below this many voice windows, a lone window is a speaker, not noise (see cluster_embeddings)
+MIN_WINDOWS_FOR_NOISE_ABSORPTION = 8
 SPEAKER_PALETTE = (
     "#38BDF8",
     "#F472B6",
@@ -315,9 +317,11 @@ def cluster_embeddings(
 
     active_clusters: List[List[int]] = [c for c in clusters if c is not None]
 
-    # Absorb isolated single-window outliers when multi-window clusters exist
+    # Absorb isolated single-window outliers when multi-window clusters exist. A short clip has
+    # no noise to spare: there a single window is usually a real speaker with one line (a
+    # two-line conversation has exactly that), so it keeps its own cluster.
     absorb_limit = min(threshold + 0.15, 0.72)
-    changed = True
+    changed = n >= MIN_WINDOWS_FOR_NOISE_ABSORPTION
     while changed and len(active_clusters) > floor_k:
         if cancel_flag is not None and cancel_flag.is_set():
             raise PipelineCancelled()

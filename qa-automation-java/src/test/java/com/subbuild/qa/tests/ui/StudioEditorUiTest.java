@@ -55,8 +55,9 @@ class StudioEditorUiTest extends BaseTest {
 
         toolbar.setOnscreenPosition("middle_right");
 
-        // Verify live PATCH persisted in backend DB via RestAssured
-        String persisted = api.getJob(seededJobId).jsonPath().getString("onscreen_position");
+        // Verify live PATCH persisted in backend DB via RestAssured (the save is its own request)
+        String persisted = api.waitForJobField(seededJobId, "onscreen_position", "middle_right",
+                java.time.Duration.ofSeconds(10));
         assertEquals("middle_right", persisted);
     }
 
@@ -75,13 +76,13 @@ class StudioEditorUiTest extends BaseTest {
 
         // Search & Replace across original column
         studio.replaceAllInOriginal("Fourth QA line.", "Replaced QA line.");
-        assertEquals("Replaced QA line.", studio.getOriginalTextAtRow(3));
+        assertEquals("Replaced QA line.", studio.waitForOriginalTextAtRow(3, "Replaced QA line."));
 
         // Undo reverts Replace All; Redo restores Replace All
         studio.undo();
         assertTrue(studio.isRedoEnabled());
         studio.redo();
-        assertEquals("Replaced QA line.", studio.getOriginalTextAtRow(3));
+        assertEquals("Replaced QA line.", studio.waitForOriginalTextAtRow(3, "Replaced QA line."));
 
         // History panel lists recorded steps
         int historyCount = studio.openHistoryAndCountEntries();

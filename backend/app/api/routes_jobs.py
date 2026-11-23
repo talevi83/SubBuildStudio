@@ -714,7 +714,7 @@ async def diarize_job(
         speech_regions._extract(job.video_path, str(wav_path), stream, channels, job.comms_boost, 0.0, None)
         onnx_path = diarization.ensure_diarization_model()
         embedder = diarization.OnnxSpeakerEmbedder(onnx_path=onnx_path)
-        return diarization.diarize_audio_spans(
+        timeline, speakers = diarization.diarize_audio_spans(
             wav_path,
             spans,
             embedder=embedder,
@@ -722,6 +722,14 @@ async def diarize_job(
             min_speakers=min_sp,
             max_speakers=max_sp,
         )
+        if timeline and speakers:
+            from app.pipeline.voice_gender import label_speakers_by_voice
+
+            try:
+                label_speakers_by_voice(wav_path, timeline, speakers)
+            except Exception as exc:  # a gender guess is a bonus, never a reason to fail
+                logger.info(f"Voice gender estimate skipped for {job_id}: {exc}")
+        return timeline, speakers
 
     try:
         timeline, speakers = await asyncio.to_thread(_run_diarization)

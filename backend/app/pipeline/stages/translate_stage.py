@@ -59,8 +59,10 @@ def _sync_glossary_to_speakers(glossary: Optional[Dict[str, Any]], speakers: Opt
             speakers[sid]["label"] = new_label
         ch_gender = str(ch.get("gender") or "").strip().lower()
         cur_gender = str(speakers[sid].get("gender") or "unknown").strip().lower()
-        if ch_gender in ("male", "female") and cur_gender in ("", "unknown"):
+        from_voice = speakers[sid].get("gender_source") == "voice"
+        if ch_gender in ("male", "female") and (cur_gender in ("", "unknown") or from_voice):
             speakers[sid]["gender"] = ch_gender
+            speakers[sid].pop("gender_source", None)  # the transcript names the character now
 
 
 class TranslateStage(PipelineStage):

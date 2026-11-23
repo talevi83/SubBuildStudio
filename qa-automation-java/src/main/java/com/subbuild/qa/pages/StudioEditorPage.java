@@ -44,7 +44,11 @@ public class StudioEditorPage extends BasePage {
     private static final By OPEN_GLOSSARY_BTN = By.cssSelector("[data-testid='open-glossary']");
     private static final By GLOSSARY_PROFILE_INPUT = By.cssSelector("[data-testid='glossary-profile']");
     private static final By GLOSSARY_SAVE_BTN = By.cssSelector("[data-testid='glossary-save']");
-    private static final By GLOSSARY_ADD_CHAR_BTN = By.xpath("//*[@data-testid='glossary-profile']/ancestor::div[contains(@class,'max-w-2xl')]//section[1]/button");
+    private static final By GLOSSARY_CHARACTERS_TAB = By.cssSelector("[data-testid='tab-characters']");
+    private static final By GLOSSARY_ADD_CHAR_BTN = By.cssSelector("[data-testid='glossary-add-character']");
+    private static final By GLOSSARY_CHAR_NAMES = By.cssSelector("[data-testid='glossary-char-name']");
+    private static final By GLOSSARY_CHAR_TARGETS = By.cssSelector("[data-testid='glossary-char-target']");
+    private static final By GLOSSARY_CHAR_GENDERS = By.cssSelector("[data-testid='glossary-char-gender']");
 
     private static final By SEARCH_INPUT = By.cssSelector("input[placeholder*='Search'], input[placeholder*='חיפוש']");
     private static final By REPLACE_INPUT = By.cssSelector("input[placeholder*='Replace'], input[placeholder*='החלפה']");
@@ -93,6 +97,25 @@ public class StudioEditorPage extends BasePage {
                     WebElement firstTextarea = rows.get(zeroBasedIndex).findElements(By.tagName("textarea")).get(0);
                     return firstTextarea.getAttribute("value");
                 });
+    }
+
+    /** Waits until row `zeroBasedIndex` shows `expected` (the UI updates after the server answers). */
+    public String waitForOriginalTextAtRow(int zeroBasedIndex, String expected) {
+        try {
+            wait.ignoring(org.openqa.selenium.StaleElementReferenceException.class, IndexOutOfBoundsException.class)
+                    .until(d -> expected.equals(getOriginalTextNow(d, zeroBasedIndex)));
+        } catch (org.openqa.selenium.TimeoutException e) {
+            // Fall through: the caller's assertion reports the text the row really shows
+        }
+        return getOriginalTextAtRow(zeroBasedIndex);
+    }
+
+    private String getOriginalTextNow(WebDriver d, int zeroBasedIndex) {
+        List<WebElement> rows = d.findElements(SUBTITLE_ROWS);
+        if (rows.size() <= zeroBasedIndex) {
+            return null;
+        }
+        return rows.get(zeroBasedIndex).findElements(By.tagName("textarea")).get(0).getAttribute("value");
     }
 
     public StudioEditorPage insertSegment(String startTimecode, String endTimecode, String originalText) {
@@ -213,16 +236,18 @@ public class StudioEditorPage extends BasePage {
             String charName, String targetName, String gender, String profileName) {
         click(OPEN_GLOSSARY_BTN);
         waitVisible(GLOSSARY_SAVE_BTN);
+        // The dialog may open on the Speakers tab; the character list lives on its own tab
+        click(GLOSSARY_CHARACTERS_TAB);
+        int before = driver.findElements(GLOSSARY_CHAR_NAMES).size();
         click(GLOSSARY_ADD_CHAR_BTN);
-        List<WebElement> inputs = waitAllVisible(
-                By.xpath("//*[@data-testid='glossary-profile']/ancestor::div[contains(@class,'max-w-2xl')]//section[1]//input"));
-        // New row added at the end (3 inputs per character row: name, target_name, notes)
-        int base = inputs.size() - 3;
-        inputs.get(base).sendKeys(charName);
-        inputs.get(base + 1).sendKeys(targetName);
-        List<WebElement> selects = waitAllVisible(
-                By.xpath("//*[@data-testid='glossary-profile']/ancestor::div[contains(@class,'max-w-2xl')]//section[1]//select"));
-        new org.openqa.selenium.support.ui.Select(selects.get(selects.size() - 1)).selectByValue(gender);
+        wait.until(d -> d.findElements(GLOSSARY_CHAR_NAMES).size() == before + 1);
+        // The new row is the last one
+        List<WebElement> names = waitAllVisible(GLOSSARY_CHAR_NAMES);
+        names.get(names.size() - 1).sendKeys(charName);
+        List<WebElement> targets = waitAllVisible(GLOSSARY_CHAR_TARGETS);
+        targets.get(targets.size() - 1).sendKeys(targetName);
+        List<WebElement> genders = waitAllVisible(GLOSSARY_CHAR_GENDERS);
+        new org.openqa.selenium.support.ui.Select(genders.get(genders.size() - 1)).selectByValue(gender);
         clearAndType(GLOSSARY_PROFILE_INPUT, profileName);
         click(GLOSSARY_SAVE_BTN);
         waitInvisible(GLOSSARY_SAVE_BTN);

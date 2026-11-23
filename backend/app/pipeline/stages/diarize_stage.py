@@ -110,6 +110,15 @@ class DiarizeStage(PipelineStage):
 
             ctx.diarization_timeline = timeline
             if speakers:
+                if timeline:
+                    # Gendered target languages need each speaker's gender; the voice is often the
+                    # only clue (a line with no name or pronoun). A guess, never a reason to fail.
+                    try:
+                        from app.pipeline.voice_gender import label_speakers_by_voice
+
+                        await asyncio.to_thread(label_speakers_by_voice, wav_path, timeline, speakers)
+                    except Exception as exc:
+                        logger.info(f"Voice gender estimate skipped for {ctx.job_id}: {exc}")
                 ctx.speakers = speakers
             if ctx.raw_segments and timeline:
                 ctx.raw_segments = split_raw_segments_by_speaker(ctx.raw_segments, timeline)

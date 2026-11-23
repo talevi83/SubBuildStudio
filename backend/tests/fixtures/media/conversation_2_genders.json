@@ -1,0 +1,26 @@
+{
+  "video": "conversation_2_genders.mp4",
+  "description": "QA scene: a modern, bright office kitchenette. Two characters, no names and no gendered pronouns in the dialogue: only the voices (and the picture) tell who is a man and who is a woman, and so who is spoken to.",
+  "source_language": "en",
+  "speakers": {
+    "A": {"voice": "low baritone", "gender": "male"},
+    "B": {"voice": "high female voice", "gender": "female"}
+  },
+  "lines": [
+    {
+      "speaker": "A",
+      "start": 1.38,
+      "end": 4.08,
+      "text": "Hey, did you grab my coffee from the counter?",
+      "addressee": "B"
+    },
+    {
+      "speaker": "B",
+      "start": 4.56,
+      "end": 8.28,
+      "text": "Yeah, I left it right next to your notebook.",
+      "addressee": "A"
+    }
+  ],
+  "notes": "Line times are the speech spans of the audio (silence at 0-1.38s and 8.28-10.03s). Measured median voice pitch: A about 123 Hz, B about 239 Hz."
+}
