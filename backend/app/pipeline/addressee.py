@@ -50,6 +50,9 @@ CONF_ONE_NEIGHBOUR = 0.55
 CONF_NEAREST = 0.45
 CONF_LOCAL_AI = 0.65
 CONF_CAP = 0.97
+# A listener whose gender is known only from the pitch of their voice
+VOICE_FACTOR = {"high": 0.95, "medium": 0.8}
+VOICE_FACTOR_DEFAULT = 0.8
 
 # Carrying evidence along a speaker's own lines
 CARRY_FORWARD = 0.9
@@ -392,6 +395,8 @@ def _from_speaker(
     info = (speakers or {}).get(speaker_id) or {}
     gender = str(info.get("gender") or "").strip().lower()
     label = str(info.get("label") or "").strip()
+    if gender in ("male", "female") and info.get("gender_source") == "voice":
+        confidence *= VOICE_FACTOR.get(str(info.get("voice_confidence") or ""), VOICE_FACTOR_DEFAULT)
     return AddresseeRecord(
         gender=gender if gender in ("male", "female") else "unknown",
         number="singular",

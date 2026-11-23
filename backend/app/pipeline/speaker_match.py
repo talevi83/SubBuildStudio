@@ -585,8 +585,10 @@ async def match_speakers_to_characters(
         if overwrite_manual or is_default:
             profile["label"] = tname
         cur_gender = str(profile.get("gender") or "unknown").strip().lower()
-        if m.gender in ("male", "female") and (overwrite_manual or cur_gender in ("", "unknown")):
+        from_voice = profile.get("gender_source") == "voice"
+        if m.gender in ("male", "female") and (overwrite_manual or from_voice or cur_gender in ("", "unknown")):
             profile["gender"] = m.gender
+            profile.pop("gender_source", None)  # matched to a character: the transcript's gender wins
         profile["character_name"] = cname
         profile["confidence"] = m.confidence
         if m.evidence:

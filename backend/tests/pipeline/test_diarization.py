@@ -70,6 +70,23 @@ def test_cluster_embeddings_separates_speakers_and_absorbs_singletons():
     assert len(set(diarization.cluster_embeddings(np.vstack([base_a, base_a * 0.99]), threshold=0.95, min_speakers=2))) == 2
 
 
+def test_a_lone_window_is_a_speaker_in_a_short_clip_and_noise_in_a_long_one():
+    a = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    b = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
+    # 0.70 from the others: beyond the 0.66 clustering threshold, within the 0.72 noise limit
+    lone = np.array([0.3, 0.3, 0.9055, 0.0], dtype=np.float32)
+    assert 0.66 < 1 - float(lone @ b / np.linalg.norm(lone)) < 0.72
+
+    # A two-line conversation: one window for one voice, three for the other
+    short = np.vstack([lone, b, b * 0.99, b * 1.01]).astype(np.float32)
+    assert diarization.cluster_embeddings(short, threshold=0.66) == [
+        "SPEAKER_01", "SPEAKER_02", "SPEAKER_02", "SPEAKER_02",
+    ]
+    # A long recording: the same lone window is absorbed as noise
+    long = np.vstack([np.tile(a, (5, 1)), np.tile(b, (5, 1)), lone]).astype(np.float32)
+    assert len(set(diarization.cluster_embeddings(long, threshold=0.66))) == 2
+
+
 def test_split_raw_segments_by_speaker_and_assign_skips_onscreen():
     timeline = [
         {"start": 0.0, "end": 1.2, "speaker": "SPEAKER_01"},
