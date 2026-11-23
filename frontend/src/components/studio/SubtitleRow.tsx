@@ -1,5 +1,6 @@
 import React, { memo, useEffect, useRef, useState } from 'react';
-import type { SegmentPatch, SpeakerProfile, SubtitleSegment } from '../../types';
+import type { Gender, SegmentPatch, SpeakerProfile, SubtitleSegment } from '../../types';
+import { addresseeChoice, isUncertainAddressee } from './table/addressee';
 import { registerPendingFlush } from '../../store/useJobStore';
 import { CpsBadge } from './CpsBadge';
 import { virtualRowKey } from './table/useVirtualRows';
@@ -8,6 +9,13 @@ import { useT } from '../../i18n';
 import { AlertTriangle, ChevronsDown, GripVertical, Minus, Plus, Scissors, Trash2 } from 'lucide-react';
 
 const SAVE_DELAY_MS = 600;
+
+const ADDRESSEE_NAME_KEY = {
+  male: 'table.genderMale',
+  female: 'table.genderFemale',
+  group: 'table.genderGroup',
+  unknown: 'table.addresseeUnknown',
+} as const;
 
 interface SubtitleRowProps {
   seg: SubtitleSegment;
@@ -459,6 +467,40 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
               {seg.speaker && (!speakers || !speakers[seg.speaker]) && (
                 <option value={seg.speaker}>{seg.speaker}</option>
               )}
+            </select>
+          </div>
+        )}
+        {seg.addressee && seg.segment_type !== 'ON_SCREEN' && (
+          <div className="mt-1 flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+            <select
+              value={addresseeChoice(seg.addressee)}
+              disabled={!editable}
+              onChange={(e) => seg.id && onSave(seg.id, { addressee_gender: (e.target.value as Gender) || null })}
+              data-testid="segment-addressee-pill"
+              data-uncertain={isUncertainAddressee(seg.addressee) ? 'true' : undefined}
+              aria-label={t('table.addressee')}
+              title={
+                seg.addressee.locked
+                  ? t('table.addresseeTitleManual')
+                  : isUncertainAddressee(seg.addressee)
+                    ? t('table.addresseeTitleUnsure')
+                    : t('table.addresseeTitleSure', {
+                        who: seg.addressee.label || t(ADDRESSEE_NAME_KEY[addresseeChoice(seg.addressee) || 'unknown']),
+                        percent: Math.round(seg.addressee.confidence * 100),
+                      })
+              }
+              className={`max-w-[82px] truncate rounded px-1 py-0.5 text-[9px] font-sans focus:outline-none focus:border-indigo-500 cursor-pointer border ${
+                seg.addressee.locked
+                  ? 'bg-indigo-500/15 border-indigo-500/50 text-indigo-200'
+                  : isUncertainAddressee(seg.addressee)
+                    ? 'bg-amber-500/10 border-dashed border-amber-500/60 text-amber-200'
+                    : 'bg-zinc-800/80 border-line text-zinc-300'
+              }`}
+            >
+              <option value="">{t('table.addresseeUnknown')}</option>
+              <option value="male">♂ {t('table.genderMale')}</option>
+              <option value="female">♀ {t('table.genderFemale')}</option>
+              <option value="group">👥 {t('table.genderGroup')}</option>
             </select>
           </div>
         )}

@@ -45,6 +45,9 @@ class SubtitleSegmentRecord(SQLModel, table=True):
     cps: Optional[float] = 0.0
     words_json: Optional[str] = None
     speaker: Optional[str] = Field(default=None, index=True)
+    # Who the line is spoken to: JSON {"gender", "number", "target", "label", "confidence", "source",
+    # "locked", "used"} (see app/pipeline/addressee.py); None when nothing is known or needed
+    addressee_json: Optional[str] = None
 
     job: Optional["Job"] = Relationship(back_populates="segments")
 

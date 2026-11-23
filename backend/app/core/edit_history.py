@@ -32,8 +32,11 @@ COALESCE_SECONDS = 90.0
 
 SNAPSHOT_FIELDS = (
     "id", "index", "start_time", "end_time", "original_text", "translated_text",
-    "translation_failed", "segment_type", "confidence", "cps", "words_json", "speaker",
+    "translation_failed", "segment_type", "confidence", "cps", "words_json", "speaker", "addressee_json",
 )
+# Added after snapshots already existed: left out of a snapshot while empty, so a job without
+# listener tags still hashes to what its stored snapshots say and gains no phantom history step
+_OPTIONAL_FIELDS = ("addressee_json",)
 
 # job id -> [lock, number of holders + waiters]; an entry is dropped when nobody uses it, so ids of
 # deleted (or never existing) jobs don't pile up for the life of the process
@@ -80,7 +83,10 @@ def _rows(session: Session, job_id: str) -> List[SubtitleSegmentRecord]:
 
 
 def _encode(rows: List[SubtitleSegmentRecord]) -> Tuple[bytes, str, int]:
-    data = [{f: getattr(r, f) for f in SNAPSHOT_FIELDS} for r in rows]
+    data = [
+        {f: getattr(r, f) for f in SNAPSHOT_FIELDS if not (f in _OPTIONAL_FIELDS and getattr(r, f, None) is None)}
+        for r in rows
+    ]
     raw = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return zlib.compress(raw, 6), hashlib.sha1(raw).hexdigest(), len(data)
 

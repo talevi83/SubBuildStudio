@@ -174,6 +174,20 @@ def _parse_words(raw: Optional[str]) -> Optional[List[Dict[str, Any]]]:
         return None
 
 
+def _parse_addressee(raw: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _dump_addressee(record: Any) -> Optional[str]:
+    return json.dumps(record, ensure_ascii=False) if isinstance(record, dict) and record else None
+
+
 def _segment_payload(job_id: str, seg: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": seg.get("id"),
@@ -189,6 +203,7 @@ def _segment_payload(job_id: str, seg: Dict[str, Any]) -> Dict[str, Any]:
         "cps": seg.get("cps", 0.0),
         "words": seg.get("words"),
         "speaker": seg.get("speaker"),
+        "addressee": seg.get("addressee"),
     }
 
 
@@ -383,6 +398,7 @@ class PipelineOrchestrator:
                         "cps": s.cps,
                         "words": _parse_words(getattr(s, "words_json", None)),
                         "speaker": getattr(s, "speaker", None),
+                        "addressee": _parse_addressee(getattr(s, "addressee_json", None)),
                     }
                     for s in job.segments
                 ]
@@ -588,6 +604,7 @@ class PipelineOrchestrator:
                     cps=s.get("cps", 0.0),
                     words_json=json.dumps(s["words"], ensure_ascii=False) if s.get("words") else None,
                     speaker=s.get("speaker"),
+                    addressee_json=_dump_addressee(s.get("addressee")),
                 )
                 session.add(rec)
                 records.append(rec)
@@ -628,6 +645,9 @@ class PipelineOrchestrator:
                     SubtitleSegmentRecord.job_id == self.job_id, SubtitleSegmentRecord.id.in_(ids)
                 )
             ).all():
+                tagged = _parse_addressee(getattr(row, "addressee_json", None))
+                if tagged and tagged.get("locked") and not (by_id[row.id].get("addressee") or {}).get("locked"):
+                    by_id[row.id]["addressee"] = tagged  # a listener the user set by hand during the run
                 if self._edited_by_user(row):
                     seg = by_id[row.id]
                     seg["original_text"] = row.original_text
@@ -698,12 +718,22 @@ class PipelineOrchestrator:
                     row.translated_text = b.translated_text
                     row.translation_failed = b.translation_failed
                     row.cps = calculate_cps(b.translated_text or row.original_text, max(0.1, row.end_time - row.start_time))
+                    tagged = _parse_addressee(getattr(row, "addressee_json", None))
+                    incoming = getattr(b, "addressee", None)
+                    if tagged and tagged.get("locked") and not (incoming or {}).get("locked"):
+                        # Set by hand while this batch was out: the user's listener stands
+                        seg = seg_by_id.get(row.id)
+                        if seg is not None:
+                            seg["addressee"] = tagged
+                    else:
+                        row.addressee_json = _dump_addressee(incoming)
                     session.add(row)
                 stored[idx] = {
                     "id": row.id,
                     "original_text": row.original_text,
                     "translated_text": row.translated_text,
                     "translation_failed": bool(row.translation_failed),
+                    "addressee": _parse_addressee(getattr(row, "addressee_json", None)),
                 }
             session.commit()
             for value in stored.values():
@@ -722,6 +752,7 @@ class PipelineOrchestrator:
                     "translation_failed": stored.get(b.index, {}).get("translation_failed", b.translation_failed),
                     "segment_type": b.segment_type,
                     "speaker": b.speaker,
+                    "addressee": stored.get(b.index, {}).get("addressee", getattr(b, "addressee", None)),
                 }
                 for b in batch
             ],

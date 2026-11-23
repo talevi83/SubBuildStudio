@@ -52,6 +52,26 @@ class TranslationBatchResponseSchema(BaseModel):
     )
 
 
+class TranslatedItemWithFormSchema(TranslatedItemSchema):
+    addressee_form: str = Field(
+        default="",
+        description=(
+            "The 2nd-person form actually written in translated_text: 'm' (masculine singular), "
+            "'f' (feminine singular), 'pl' (plural), or '' when it has no gender/number-marked 2nd-person form."
+        ),
+    )
+
+
+class TranslationBatchWithFormResponseSchema(BaseModel):
+    """Used for target languages whose 2nd person is gendered, so the result can be checked."""
+    translations: List[TranslatedItemWithFormSchema] = Field(
+        description="List of translated subtitle segments matching the exact input indices."
+    )
+
+
+_ADDRESSEE_FORMS = ("m", "f", "pl")
+
+
 class GlossaryCharacter(BaseModel):
     name: str = Field(description="Character name as spoken in the source")
     target_name: str = Field(description="How the name should be written in the target language")
@@ -119,6 +139,7 @@ def build_subtitle_system_prompt(
     glossary: Optional[Dict[str, Any]] = None,
     convert_to_metric: bool = False,
     remove_sdh_speakers: bool = False,
+    report_addressee_form: bool = False,
 ) -> str:
     """Construct the system prompt engineered for cinema/broadcast subtitle translation or same-language polish."""
     extra_context = (
@@ -215,6 +236,14 @@ Polish the `target_batch` {target_lang} ASR transcript into clean, broadcast-rea
    - Keep square brackets ONLY for genuine on-screen text, dates, and locations (e.g. `[One week later...]` → `[שבוע לאחר מכן...]`, `[Damascus, Syria]` → `[דמשק, סוריה]`).
 """
 
+    addressee_form_rule = ""
+    if report_addressee_form:
+        addressee_form_rule = (
+            "     - **`addressee_form` (in every output item):** report the 2nd-person form you actually wrote in "
+            "`translated_text` — `m` (masculine singular), `f` (feminine singular), `pl` (plural) — or an empty "
+            "string when the translation has no gender/number-marked 2nd-person form.\n"
+        )
+
     return f"""You are an elite, broadcast-grade audiovisual subtitle translator specializing in translating movies and TV series from {source_lang} to {target_lang}.
 
 ### CORE OBJECTIVE
@@ -244,8 +273,10 @@ Translate the `target_batch` subtitle segments into natural, idiomatic, spoken {
    - **`speaker` vs. `addressee` (CRITICAL DISTINCTION):**
      - `speaker` is the person talking. Use `speaker`'s gender **ONLY for 1st-person self-reference** ("I", "I'm", present-tense self verbs/adjectives like "אני חושב/חושבת", "אני מוכן/מוכנה"). **NEVER** conjugate 2nd-person verbs/pronouns ("you", "your", imperatives) according to `speaker`'s gender!
      - `addressee` (when present) is the person or group being spoken TO. Use the **addressee's** gender and number for **all 2nd-person forms** ("you", "your", imperatives, 2nd-person verbs/adjectives: masculine singular, feminine singular, or plural when `addressee` is `group (plural)` or multiple people).
-     - When `addressee` is not explicitly tagged on a line, infer who the speaker is talking to from vocative names/titles in the line, who spoke immediately before (`previous_context` / earlier in `target_batch`), and who replies immediately after (`target_batch` / `lookahead_context`).
-
+     - `addressee_guess` (given instead of `addressee` when the listener is likely but not confirmed): follow it unless the line itself or the adjacent dialogue clearly points to a different listener.
+     - When neither is tagged on a line, infer who the speaker is talking to from vocative names/titles in the line, who spoke immediately before (`previous_context` / earlier in `target_batch`), and who replies immediately after (`target_batch` / `lookahead_context`).
+     - **Stay consistent inside a conversation:** keep the same listener gender/number across consecutive lines of one exchange and never flip between masculine and feminine "you" without a reason in the dialogue. When the listener truly cannot be determined, prefer a natural phrasing that avoids gender-marked 2nd-person forms if one exists.
+{addressee_form_rule}
 5. **Segment Types (`segment_type`):**
    - "DIALOGUE": normal speech.
    - "COMMS": a radio / walkie-talkie transmission — keep it terse, in radio procedure style.
@@ -534,6 +565,10 @@ class GeminiTranslator(BaseTranslator):
         from app.providers.translation.glossary_pruner import prune_glossary_for_batch
 
         do_rtl = apply_rtl and is_rtl(target_lang)
+        from app.pipeline.gender_pretag import is_gendered_target_language
+
+        # Gendered 2nd person: ask which form was written, so it can be checked against the listener
+        report_forms = is_gendered_target_language(target_lang) and not is_same_language(source_lang, target_lang)
 
         for start_idx in range(0, total_segments, self.batch_size):
             end_idx = min(start_idx + self.batch_size, total_segments)
@@ -567,6 +602,7 @@ class GeminiTranslator(BaseTranslator):
                 glossary=batch_glossary,
                 convert_to_metric=self.convert_to_metric,
                 remove_sdh_speakers=self.remove_sdh_speakers,
+                report_addressee_form=report_forms,
             )
 
             try:
@@ -576,6 +612,7 @@ class GeminiTranslator(BaseTranslator):
                     lookahead_context=lookahead_context,
                     system_prompt=system_prompt,
                     apply_rtl=do_rtl,
+                    report_forms=report_forms,
                 )
             except TranslationAborted:
                 for seg in segments[start_idx:]:
@@ -598,11 +635,13 @@ class GeminiTranslator(BaseTranslator):
         lookahead_context: List[TranslatableSegment],
         system_prompt: str,
         apply_rtl: bool,
+        report_forms: bool = False,
     ) -> None:
         """Translate one batch. Missing indices are retried; leftovers are flagged as failed."""
         pending = list(target_batch)
         for seg in pending:
             seg.translation_failed = False
+        schema = TranslationBatchWithFormResponseSchema if report_forms else TranslationBatchResponseSchema
 
         def _ctx_item(
             seg: TranslatableSegment,
@@ -623,6 +662,10 @@ class GeminiTranslator(BaseTranslator):
             addr = getattr(seg, "addressee_info", None)
             if addr:
                 item["addressee"] = addr
+            else:
+                guess = getattr(seg, "addressee_guess", None)
+                if guess:
+                    item["addressee_guess"] = guess
             return item
 
         for attempt in range(1, self.max_retries + 1):
@@ -635,11 +678,15 @@ class GeminiTranslator(BaseTranslator):
                 response = await self._generate(
                     json.dumps(payload, ensure_ascii=False, indent=2),
                     system_prompt,
-                    TranslationBatchResponseSchema,
+                    schema,
                     temperature=0.2,
                 )
-                parsed = TranslationBatchResponseSchema.model_validate_json(response.text)
+                parsed = schema.model_validate_json(response.text)
                 translation_map = {item.index: item.translated_text for item in parsed.translations}
+                form_map = {
+                    item.index: str(getattr(item, "addressee_form", "") or "").strip().lower()
+                    for item in parsed.translations
+                }
 
                 still_missing = []
                 for seg in pending:
@@ -656,6 +703,8 @@ class GeminiTranslator(BaseTranslator):
                             if orig_s.startswith("[") and orig_s.endswith("]") and not (raw.startswith("[") and raw.endswith("]")):
                                 raw = f"[{raw.strip('[]').strip()}]"
                         seg.translated_text = apply_rtl_fix(raw) if apply_rtl else raw
+                        form = form_map.get(seg.index)
+                        seg.addressee_form = form if form in _ADDRESSEE_FORMS else None
                     else:
                         still_missing.append(seg)
                 pending = still_missing
@@ -687,11 +736,11 @@ class GeminiTranslator(BaseTranslator):
                         f"Splitting failed batch of {len(pending)} segments into {len(left)} + {len(right)}"
                     )
                     await self._translate_single_batch(
-                        left, prev_context, right[:self.lookahead_size], system_prompt, apply_rtl
+                        left, prev_context, right[:self.lookahead_size], system_prompt, apply_rtl, report_forms
                     )
                     right_prev = (prev_context + left)[-self.prev_context_size:] if self.prev_context_size > 0 else []
                     await self._translate_single_batch(
-                        right, right_prev, lookahead_context, system_prompt, apply_rtl
+                        right, right_prev, lookahead_context, system_prompt, apply_rtl, report_forms
                     )
                     return
                 if attempt < self.max_retries:

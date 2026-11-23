@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     gemini_glossary_pass: bool = True
     # Local PC pre-processing (frame pre-filtering, Whisper VRAM unload, local gender pre-tagging)
     cost_saver_mode: bool = False
+    # Gendered target languages: re-translate lines whose 2nd-person forms contradict a confidently
+    # resolved listener (one extra request, at most this many lines per run)
+    addressee_autofix: bool = True
+    addressee_autofix_max_rows: int = 40
 
     # Whisper Settings
     whisper_default_model: str = "medium"

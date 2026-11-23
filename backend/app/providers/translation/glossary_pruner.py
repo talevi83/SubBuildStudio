@@ -17,14 +17,16 @@ def _extract_text(item: Any) -> str:
             item.get("original_text") or item.get("text") or "",
             item.get("speaker_info") or "",
             item.get("addressee_info") or "",
+            item.get("addressee_guess") or "",
             item.get("speaker") or "",
-            item.get("addressee") or "",
+            item.get("addressee") if isinstance(item.get("addressee"), str) else "",
         ]
         return " ".join(str(p) for p in parts if p)
     parts = [
         getattr(item, "original_text", "") or getattr(item, "text", "") or "",
         getattr(item, "speaker_info", "") or "",
         getattr(item, "addressee_info", "") or "",
+        getattr(item, "addressee_guess", "") or "",
         getattr(item, "speaker", "") or "",
     ]
     return " ".join(str(p) for p in parts if p)

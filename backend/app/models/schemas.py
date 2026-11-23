@@ -199,6 +199,18 @@ class MergeSpeakersRequest(RequestModel):
     target_speaker_id: Optional[str] = None
 
 
+class AddresseeSchema(BaseModel):
+    """Who a dialogue line is spoken to, and how sure the app is (see app/pipeline/addressee.py)."""
+    gender: str = "unknown"       # male | female | mixed | unknown
+    number: str = "unknown"       # singular | plural | unknown
+    target: Optional[str] = None  # SPEAKER_XX of the listener
+    label: Optional[str] = None
+    confidence: float = 0.0
+    source: str = ""
+    locked: bool = False          # set by the user
+    used: Optional[str] = None    # 2nd-person form the translation was written with: m | f | pl
+
+
 class SubtitleSegmentSchema(BaseModel):
     id: Optional[int] = None
     job_id: str
@@ -213,6 +225,7 @@ class SubtitleSegmentSchema(BaseModel):
     cps: Optional[float] = 0.0
     words: Optional[List[WordTimingSchema]] = None
     speaker: Optional[str] = None
+    addressee: Optional[AddresseeSchema] = None
 
 
 class SegmentUpdate(RequestModel):
@@ -221,6 +234,9 @@ class SegmentUpdate(RequestModel):
     original_text: Optional[str] = None
     translated_text: Optional[str] = None
     speaker: Optional[str] = None
+    # Who the line is spoken to, set by hand: male, female or group. null clears the tag, and the
+    # next translation of the line works it out again.
+    addressee_gender: Optional[str] = None
 
 
 class BulkSegmentUpdate(SegmentUpdate):

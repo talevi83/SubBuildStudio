@@ -30,6 +30,13 @@ def _notes_with_hint(notes: Optional[str], hint: Optional[str], rows: List[Trans
 
 _DEFAULT_SPEAKER_LABEL_RE = re.compile(r"^Speaker \d+$", re.IGNORECASE)
 
+_LISTENER_FIX_NOTE = (
+    "GENDER CHECK - the rows in `target_batch` were already translated, but their 2nd-person forms did not "
+    "match the listener. Their `addressee` is verified: translate each row again so that every 2nd-person "
+    "pronoun, verb, imperative and adjective agrees with `addressee` (masculine singular, feminine singular "
+    "or plural). Keep the meaning, register and length otherwise."
+)
+
 
 def _format_speaker_info(speaker_id: Optional[str], speakers: Optional[Dict[str, Any]]) -> Optional[str]:
     from app.pipeline.speaker_match import format_speaker_identity
@@ -100,6 +107,83 @@ class TranslateStage(PipelineStage):
             glossary_provider=app_settings.glossary.provider,
             glossary_key_id=app_settings.glossary.key_id,
         )
+
+    async def _fix_listener_mismatches(
+        self,
+        ctx: PipelineContext,
+        translator: BaseTranslator,
+        translated: List[TranslatableSegment],
+        all_segments: List[TranslatableSegment],
+        source_lang: str,
+        target_lang: str,
+        notes: str,
+        store_batch: Callable[[List[TranslatableSegment]], Awaitable[None]],
+        on_progress: Optional[ProgressCallback],
+    ) -> int:
+        """Translate once more the lines whose 2nd-person forms contradict a confident listener.
+
+        A retry only replaces the first translation when it agrees with the listener; otherwise the
+        first one stays and the quality check reports it. Returns how many lines were corrected.
+        """
+        from dataclasses import replace
+
+        from app.pipeline.addressee import HIGH, AddresseeRecord
+        from app.pipeline.qa import listener_form_mismatch
+
+        def _expected_form(seg: TranslatableSegment) -> Optional[str]:
+            record = AddresseeRecord.from_dict(seg.addressee)
+            if record is None or record.confidence < HIGH or (seg.segment_type or "DIALOGUE") == "ON_SCREEN":
+                return None
+            return record.form
+
+        wrong = [
+            seg for seg in translated
+            if seg.translated_text and not seg.translation_failed
+            and listener_form_mismatch(_expected_form(seg), seg.translated_text, seg.addressee_form)
+        ]
+        if not wrong:
+            return 0
+        limit = max(0, int(settings.addressee_autofix_max_rows))
+        if len(wrong) > limit:
+            logger.info(f"{len(wrong)} line(s) disagree with their listener; re-checking the first {limit}")
+            wrong = wrong[:limit]
+        if not wrong:
+            return 0
+        if on_progress:
+            await on_progress(99.0, None, None, f"Re-checking 2nd-person gender on {len(wrong)} line(s)...", None)
+
+        # Work on copies: a failed retry must never cost a line the translation it already has
+        retries = [replace(seg, translated_text=None, translation_failed=False, addressee_form=None) for seg in wrong]
+        try:
+            await ctx.run_cancellable(translator.translate_segments(
+                segments=retries,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                context_notes=f"{notes}\n\n{_LISTENER_FIX_NOTE}".strip(),
+                apply_rtl=False,
+                on_batch_complete=None,
+                glossary=ctx.glossary,
+                context_segments=all_segments,
+            ))
+        except PipelineCancelled:
+            raise
+        except Exception as exc:
+            logger.warning(f"2nd-person gender re-check skipped: {exc}")
+            return 0
+
+        fixed: List[TranslatableSegment] = []
+        for seg, retry in zip(wrong, retries):
+            if not retry.translated_text or retry.translation_failed:
+                continue
+            if listener_form_mismatch(_expected_form(seg), retry.translated_text, retry.addressee_form):
+                continue
+            seg.translated_text = retry.translated_text
+            seg.addressee_form = retry.addressee_form
+            fixed.append(seg)
+        if fixed:
+            await store_batch(fixed)
+            logger.info(f"Corrected the 2nd-person gender of {len(fixed)} line(s) to match their listener")
+        return len(fixed)
 
     async def execute(
         self,
@@ -173,10 +257,7 @@ class TranslateStage(PipelineStage):
         total_to_translate = max(1, len(to_translate))
         completed_so_far = 0
 
-        async def _on_batch_complete(batch: List[TranslatableSegment], _stream_pct: float) -> None:
-            nonlocal completed_so_far
-            completed_so_far += len(batch)
-            overall_pct = min(100.0, round((completed_so_far / total_to_translate) * 100.0, 2))
+        async def _store_batch(batch: List[TranslatableSegment]) -> None:
             for b in batch:
                 seg = by_index.get(b.index)
                 if seg is None:
@@ -187,8 +268,21 @@ class TranslateStage(PipelineStage):
                     b.translated_text or seg["original_text"],
                     max(0.1, seg["end_time"] - seg["start_time"]),
                 )
+                if b.addressee is not None:
+                    # Which 2nd-person form the translator says it wrote, kept for the quality check
+                    if b.addressee_form:
+                        b.addressee["used"] = b.addressee_form
+                    else:
+                        b.addressee.pop("used", None)
+                seg["addressee"] = b.addressee
             if self._on_batch_persist:
                 await self._on_batch_persist(batch)
+
+        async def _on_batch_complete(batch: List[TranslatableSegment], _stream_pct: float) -> None:
+            nonlocal completed_so_far
+            completed_so_far += len(batch)
+            overall_pct = min(100.0, round((completed_so_far / total_to_translate) * 100.0, 2))
+            await _store_batch(batch)
             if on_progress:
                 await on_progress(
                     10.0 + overall_pct * 0.9,
@@ -256,64 +350,87 @@ class TranslateStage(PipelineStage):
                 except Exception as exc:
                     logger.debug(f"Speaker-character matching skipped: {exc}")
 
-            addressees_by_index: Dict[int, str] = {}
-            try:
-                from app.pipeline.speaker_match import infer_segment_addressees
+            from app.pipeline.addressee import (
+                AddresseeRecord,
+                merge_local_guess,
+                needs_listener_gender,
+                resolve_addressees,
+                unresolved_record,
+            )
+            from app.pipeline.gender_pretag import is_gendered_target_language
 
-                addressees_by_index = infer_segment_addressees(
+            gendered_target = is_gendered_target_language(target_lang)
+            speakers_now = getattr(ctx, "speakers", None)
+            records: Dict[int, AddresseeRecord] = {}
+            try:
+                records = resolve_addressees(
                     ctx.refined_segments,
-                    getattr(ctx, "speakers", None),
+                    speakers_now,
                     (ctx.glossary or {}).get("characters"),
                 )
             except Exception as exc:
                 logger.debug(f"Addressee inference skipped: {exc}")
 
             for seg_obj in all_segments:
-                seg_obj.speaker_info = _format_speaker_info(seg_obj.speaker, getattr(ctx, "speakers", None))
-                seg_obj.addressee_info = addressees_by_index.get(seg_obj.index)
+                seg_obj.speaker_info = _format_speaker_info(seg_obj.speaker, speakers_now)
 
             effective_notes = _notes_with_hint(ctx.context_notes, ctx.translation_hint, to_translate)
             try:
                 from app.core.user_settings import load_settings
 
-                if load_settings().cost_saver_mode:
-                    from app.pipeline.gender_pretag import (
-                        format_hints_for_context_notes,
-                        is_gendered_target_language,
-                        parse_gender_tag,
-                        pretag_gender_hints,
+                if gendered_target and load_settings().cost_saver_mode:
+                    from app.pipeline.gender_pretag import parse_gender_tag, pretag_gender_hints
+
+                    async def _on_local_batch() -> None:
+                        if on_progress:
+                            await on_progress(8.0, None, None, "Pre-tagging speaker gender with local AI...", None)
+
+                    # A second opinion on the lines the rules above left open, read in their scene
+                    local_hints = await pretag_gender_hints(
+                        to_translate,
+                        target_lang=target_lang,
+                        glossary=ctx.glossary,
+                        usage=ctx.usage,
+                        cloud_model=getattr(translator, "model_name", None),
+                        on_batch=_on_local_batch,
+                        speakers=speakers_now,
+                        addressees=records,
+                        context_segments=all_segments,
                     )
-
-                    if is_gendered_target_language(target_lang):
-                        async def _on_local_batch() -> None:
-                            if on_progress:
-                                await on_progress(8.0, None, None, "Pre-tagging speaker gender with local AI...", None)
-
-                        local_hints = await pretag_gender_hints(
-                            to_translate,
-                            target_lang=target_lang,
-                            glossary=ctx.glossary,
-                            usage=ctx.usage,
-                            cloud_model=getattr(translator, "model_name", None),
-                            on_batch=_on_local_batch,
-                            speakers=getattr(ctx, "speakers", None),
-                            addressees=addressees_by_index,
-                        )
-                        if local_hints:
-                            by_seg_obj = {seg_obj.index: seg_obj for seg_obj in all_segments}
-                            for seg_idx, tag in local_hints.items():
-                                seg_obj = by_seg_obj.get(seg_idx)
-                                if seg_obj is None:
-                                    continue
-                                sp_g, to_g = parse_gender_tag(tag)
-                                if to_g and not seg_obj.addressee_info:
-                                    seg_obj.addressee_info = to_g
-                                if sp_g and not seg_obj.speaker_info:
-                                    seg_obj.speaker_info = sp_g
-                            hint_block = format_hints_for_context_notes(local_hints)
-                            effective_notes = f"{effective_notes}\n\n{hint_block}".strip() if effective_notes else hint_block
+                    by_seg_obj = {seg_obj.index: seg_obj for seg_obj in all_segments}
+                    for seg_idx, tag in local_hints.items():
+                        seg_obj = by_seg_obj.get(seg_idx)
+                        if seg_obj is None:
+                            continue
+                        sp_g, to_g = parse_gender_tag(tag)
+                        if to_g:
+                            merge_local_guess(records, seg_idx, to_g)
+                        if sp_g and not seg_obj.speaker_info:
+                            seg_obj.speaker_info = sp_g
             except Exception as e:
                 logger.debug(f"Local gender pre-tagging skipped: {e}")
+
+            # Confident listeners go to the translator as facts, likely ones as guesses it may overrule;
+            # lines that need a listener nobody could name are marked so the editor can show them.
+            translating = {s.index for s in to_translate}
+            for seg_obj in all_segments:
+                record = records.get(seg_obj.index)
+                if (
+                    record is None
+                    and gendered_target
+                    and seg_obj.index in translating
+                    and (seg_obj.segment_type or "DIALOGUE") != "ON_SCREEN"
+                    and needs_listener_gender(seg_obj.original_text)
+                ):
+                    record = unresolved_record()
+                shown = record.display(speakers_now) if record is not None else None
+                seg_obj.addressee_info = shown if record is not None and record.tier == "high" else None
+                seg_obj.addressee_guess = shown if record is not None and record.tier == "medium" else None
+                stored = by_index.get(seg_obj.index)
+                if seg_obj.index in translating:
+                    seg_obj.addressee = record.to_dict() if record is not None else None
+                elif stored is not None:
+                    seg_obj.addressee = stored.get("addressee")  # not re-translated now: its record stands
 
             if on_progress:
                 await on_progress(10.0, None, None, f"Translating {len(to_translate)} segments to {target_lang}...", None)
@@ -355,6 +472,12 @@ class TranslateStage(PipelineStage):
                     glossary=ctx.glossary,
                     context_segments=all_segments,
                 ))
+
+            if gendered_target and settings.addressee_autofix:
+                await self._fix_listener_mismatches(
+                    ctx, translator, to_translate, all_segments, source_lang, target_lang,
+                    effective_notes, _store_batch, on_progress,
+                )
         except TranslationAborted as e:
             for b in to_translate:
                 if not b.translated_text:

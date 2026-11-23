@@ -24,27 +24,6 @@ _PLURAL_PHRASE_RE = re.compile(
     r"ladies\s+and\s+gentlemen)\b",
     re.IGNORECASE,
 )
-_GROUP_VOCATIVE_WORDS = r"(?:guys|folks|everyone|everybody|kids|boys|girls|men|women|team|class|crew|people)"
-_PLURAL_VOCATIVE_RE = re.compile(
-    rf"(?:^(?:hey|hi|hello|okay|ok|well|oh|look|listen|wait|come\s+on|alright|all\s+right|please)?[\s,!?\-]*\b{_GROUP_VOCATIVE_WORDS}\b(?:\s*[,!?]|\s*$)|"
-    rf",\s*\b{_GROUP_VOCATIVE_WORDS}\b[.!?]*$|"
-    rf"\b(?:hey|hi|hello|listen\s+up|wake\s+up|come\s+on)[,\s]+\b{_GROUP_VOCATIVE_WORDS}\b)",
-    re.IGNORECASE,
-)
-
-_MASC_HONORIFIC_RE = re.compile(
-    r"(?:^(?:yes|no|yeah|yep|nope|aye|copy|roger|sorry|please|thanks|thank\s+you|excuse\s+me|hey|hi|hello|okay|ok|well|mr\.?)[\s,]+)?\b(?:sir|my\s+lord)\b(?:\s*[,!?.]|$)|"
-    r",\s*\b(?:sir|mr\.?\s+[A-Za-z][A-Za-z'\-]+|bro|brother|dude|pal|buddy|son|dad|father|grandpa|king)\b[.!?]*$|"
-    r"^(?:hey|hi|hello|listen|look|come\s+on|well|sorry|please|excuse\s+me|thank\s+you|thanks)?[\s,!?\-]*\b(?:mr\.?\s+[A-Za-z][A-Za-z'\-]+|bro|brother|dude|pal|buddy|son|dad|father|grandpa|king)\b(?:\s*[,!?]|\s*$)|"
-    r"(?:^hey\s+|,\s*)\bman\b(?:\s*[,!?.]|$)",
-    re.IGNORECASE,
-)
-_FEM_HONORIFIC_RE = re.compile(
-    r"(?:^(?:yes|no|yeah|yep|nope|sorry|please|thanks|thank\s+you|excuse\s+me|hey|hi|hello|okay|ok|well)[\s,]+)?\b(?:ma['’]?am|madam|my\s+lady)\b(?:\s*[,!?.]|$)|"
-    r",\s*\b(?:ma['’]?am|madam|mrs\.?\s+[A-Za-z][A-Za-z'\-]+|ms\.?\s+[A-Za-z][A-Za-z'\-]+|miss\s+[A-Za-z][A-Za-z'\-]+|sis|sister|girl|honey|sweetheart|mom|mother|grandma|queen)\b[.!?]*$|"
-    r"^(?:hey|hi|hello|listen|look|come\s+on|well|sorry|please|excuse\s+me|thank\s+you|thanks)?[\s,!?\-]*\b(?:mrs\.?\s+[A-Za-z][A-Za-z'\-]+|ms\.?\s+[A-Za-z][A-Za-z'\-]+|miss\s+[A-Za-z][A-Za-z'\-]+|sis|sister|girl|honey|sweetheart|mom|mother|grandma|queen)\b(?:\s*[,!?]|\s*$)",
-    re.IGNORECASE,
-)
 
 _STOP_ALIASES = frozenset({
     "and", "the", "with", "from", "for", "staff", "group", "kids", "children", "classmates",
@@ -351,171 +330,21 @@ def infer_segment_addressees(
     max_turn_gap: float = 4.5,
 ) -> Dict[int, str]:
     """
-    Infer the listener/addressee (`to`) per dialogue segment index.
+    Infer the listener/addressee (`to`) per dialogue segment index, as a display string.
 
     Distinguishes who is speaking (`speaker`) from who is being addressed (`addressee`) so
     gendered target languages conjugate 2nd-person forms for the listener rather than the speaker.
-    Priority:
-      1. Plural / group address phrases & vocatives -> `'group (plural)'`
-      2. Named character vocatives (from glossary or named speaker profiles)
-      3. Gendered honorifics / vocatives (`sir`, `ma'am`, `Mr. X`, `Mrs. X`, ...)
-      4. Conversational turn-taking (dyadic A <-> B continuity within `max_turn_gap` seconds)
+    A thin view over `app.pipeline.addressee.resolve_addressees`, which also scores how sure each
+    answer is; anything below a usable guess is left out here.
     """
-    dialogue = sorted(
-        (s for s in (segments or ()) if (_seg_get(s, "segment_type", "DIALOGUE") or "DIALOGUE") != "ON_SCREEN"),
-        key=lambda s: (float(_seg_get(s, "start_time", 0.0)), int(_seg_get(s, "index", 0))),
-    )
-    if not dialogue:
-        return {}
+    from app.pipeline.addressee import MEDIUM, resolve_addressees
 
-    # Build combined character + named speaker list for vocative recognition
-    merged_chars: List[Dict[str, Any]] = [dict(c) for c in (characters or ()) if isinstance(c, dict)]
-    known_char_names = {str(c.get("name") or "").strip().lower() for c in merged_chars}
-    for sid, sp_info in (speakers or {}).items():
-        if not isinstance(sp_info, dict):
-            continue
-        label = str(sp_info.get("label") or "").strip()
-        cname = str(sp_info.get("character_name") or "").strip()
-        cand_name = cname or (label if label and not _DEFAULT_SPEAKER_LABEL_RE.match(label) else "")
-        if cand_name and cand_name.lower() not in known_char_names:
-            merged_chars.append({
-                "name": cand_name,
-                "target_name": label or cand_name,
-                "gender": str(sp_info.get("gender") or "unknown").strip().lower(),
-                "speaker_id": sid,
-            })
-            known_char_names.add(cand_name.lower())
-
-    alias_entries = _extract_character_aliases(merged_chars)
-    alias_to_char: List[Tuple[str, int]] = []
-    char_by_idx: Dict[int, Dict[str, Any]] = {}
-    for idx, ch, aliases in alias_entries:
-        char_by_idx[idx] = ch
-        for al in aliases:
-            alias_to_char.append((al, idx))
-    alias_to_char.sort(key=lambda item: len(item[0]), reverse=True)
-
-    addressees: Dict[int, str] = {}
-    n = len(dialogue)
-
-    for i, seg in enumerate(dialogue):
-        seg_idx = int(_seg_get(seg, "index", 0))
-        raw_text = str(_seg_get(seg, "original_text", "") or "")
-        text = _clean_text(raw_text)
-        if not text:
-            continue
-
-        # 1. Plural / group address takes priority even in multi-person exchanges
-        if _PLURAL_PHRASE_RE.search(text) or _PLURAL_VOCATIVE_RE.search(text):
-            addressees[seg_idx] = "group (plural)"
-            continue
-
-        # 2. Named character vocative address (skip if identical to current speaker)
-        sp = (_seg_get(seg, "speaker") or "").strip()
-        voc_char = _match_vocative_character(text, alias_to_char, char_by_idx) if alias_to_char else None
-        if voc_char is not None:
-            vc_sp = str(voc_char.get("speaker_id") or "").strip()
-            if not (sp and vc_sp and vc_sp == sp):
-                vc_gender = str(voc_char.get("gender") or "unknown").strip().lower()
-                if vc_gender == "mixed group":
-                    addressees[seg_idx] = "group (plural)"
-                    continue
-                vc_label = str(voc_char.get("target_name") or voc_char.get("name") or "").strip()
-                if vc_gender in ("male", "female"):
-                    if vc_sp and vc_sp in (speakers or {}):
-                        formatted = format_speaker_identity(vc_sp, speakers)
-                        if formatted:
-                            addressees[seg_idx] = formatted
-                            continue
-                    addressees[seg_idx] = f"{vc_label} ({vc_gender})" if vc_label else vc_gender
-                    continue
-                # Character gender unknown: allow honorific check to supply male/female if present
-                if _MASC_HONORIFIC_RE.search(text):
-                    addressees[seg_idx] = f"{vc_label} (male)" if vc_label else "male"
-                    continue
-                if _FEM_HONORIFIC_RE.search(text):
-                    addressees[seg_idx] = f"{vc_label} (female)" if vc_label else "female"
-                    continue
-                if vc_label:
-                    addressees[seg_idx] = vc_label
-                    continue
-
-        # 3. Gendered honorific / vocative ("sir", "ma'am", "Mr. X", "Mrs. X", ...)
-        if _MASC_HONORIFIC_RE.search(text):
-            addressees[seg_idx] = "male"
-            continue
-        if _FEM_HONORIFIC_RE.search(text):
-            addressees[seg_idx] = "female"
-            continue
-
-        # 4. Conversational turn-taking (dyadic A <-> B continuity)
-        if not sp or _DUAL_SPEAKER_LINE_RE.search(raw_text):
-            continue
-
-        prev_sp = ""
-        prev_gap = float("inf")
-        j = i - 1
-        steps = 0
-        while j >= 0 and steps < 4:
-            cand = dialogue[j]
-            cand_sp = (_seg_get(cand, "speaker") or "").strip()
-            gap = float(_seg_get(dialogue[j + 1], "start_time", 0.0)) - float(_seg_get(cand, "end_time", 0.0))
-            if not cand_sp:
-                break
-            if cand_sp != sp:
-                if gap <= max_turn_gap:
-                    prev_sp = cand_sp
-                    prev_gap = max(0.0, gap)
-                break
-            if gap > 2.5:
-                break
-            j -= 1
-            steps += 1
-
-        nxt_sp = ""
-        nxt_gap = float("inf")
-        j = i + 1
-        steps = 0
-        while j < n and steps < 4:
-            cand = dialogue[j]
-            cand_sp = (_seg_get(cand, "speaker") or "").strip()
-            gap = float(_seg_get(cand, "start_time", 0.0)) - float(_seg_get(dialogue[j - 1], "end_time", 0.0))
-            if not cand_sp:
-                break
-            if cand_sp != sp:
-                if gap <= max_turn_gap:
-                    nxt_sp = cand_sp
-                    nxt_gap = max(0.0, gap)
-                break
-            if gap > 2.5:
-                break
-            j += 1
-            steps += 1
-
-        prev_ok = bool(prev_sp and _is_informative_speaker(prev_sp, speakers))
-        nxt_ok = bool(nxt_sp and _is_informative_speaker(nxt_sp, speakers))
-
-        chosen_sp: Optional[str] = None
-        if prev_ok and nxt_ok:
-            if prev_sp == nxt_sp:
-                chosen_sp = nxt_sp
-            elif text.endswith("?"):
-                chosen_sp = nxt_sp
-            elif i - 1 >= 0 and _clean_text(_seg_get(dialogue[i - 1], "original_text", "")).endswith("?") and prev_gap <= 2.0:
-                chosen_sp = prev_sp
-            else:
-                chosen_sp = nxt_sp if nxt_gap <= prev_gap else prev_sp
-        elif nxt_ok:
-            chosen_sp = nxt_sp
-        elif prev_ok:
-            chosen_sp = prev_sp
-
-        if chosen_sp:
-            formatted = format_speaker_identity(chosen_sp, speakers)
-            if formatted:
-                addressees[seg_idx] = formatted
-
-    return addressees
+    out: Dict[int, str] = {}
+    for seg_idx, record in resolve_addressees(segments, speakers, characters, max_turn_gap=max_turn_gap).items():
+        shown = record.display(speakers) if record.confidence >= MEDIUM else None
+        if shown:
+            out[seg_idx] = shown
+    return out
 
 
 def build_speaker_dossier(

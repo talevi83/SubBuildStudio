@@ -51,7 +51,13 @@ export interface SubtitleStreamInfo {
 
 export type SegmentType = 'DIALOGUE' | 'COMMS' | 'ON_SCREEN' | 'FOREIGN';
 export type OnscreenPosition = 'top_center' | 'top_left' | 'top_right' | 'middle_left' | 'middle_right';
-export type ProblemFilter = 'NONE' | 'ALL_PROBLEMS' | 'UNTRANSLATED' | 'LATIN_LEFTOVER' | 'HIGH_CPS';
+export type ProblemFilter =
+  | 'NONE'
+  | 'ALL_PROBLEMS'
+  | 'UNTRANSLATED'
+  | 'LATIN_LEFTOVER'
+  | 'HIGH_CPS'
+  | 'UNCERTAIN_ADDRESSEE';
 
 export interface VideoStreamInfo {
   codec_name: string;
@@ -88,6 +94,23 @@ export interface SpeakerProfile {
   evidence?: string | null;
 }
 
+/** Who a dialogue line is spoken to, as resolved by the app or set by the user. */
+export interface AddresseeInfo {
+  gender: 'male' | 'female' | 'mixed' | 'unknown';
+  number: 'singular' | 'plural' | 'unknown';
+  /** SPEAKER_XX of the listener, when they are one of the job's speakers */
+  target?: string | null;
+  label?: string | null;
+  /** 0–1; below 0.75 the translator was not told the listener as a fact */
+  confidence: number;
+  /** manual | plural | vocative | honorific | reply | dyad | turn | carry | local_ai | unresolved */
+  source: string;
+  /** Set by the user: later translations keep it */
+  locked?: boolean;
+  /** The 2nd-person form the translation was written with */
+  used?: 'm' | 'f' | 'pl' | null;
+}
+
 export interface SubtitleSegment {
   id?: number;
   job_id: string;
@@ -102,6 +125,7 @@ export interface SubtitleSegment {
   cps?: number;
   words?: WordTiming[] | null;
   speaker?: string | null;
+  addressee?: AddresseeInfo | null;
 }
 
 export interface GlossaryCharacter {
@@ -355,7 +379,10 @@ export type Gender = 'male' | 'female' | 'group';
 
 export type SegmentPatch = Partial<
   Pick<SubtitleSegment, 'start_time' | 'end_time' | 'original_text' | 'translated_text' | 'speaker'>
->;
+> & {
+  /** Who the line is spoken to, picked by hand; null clears the tag */
+  addressee_gender?: Gender | null;
+};
 
 export type StorageCategoryId = 'temp' | 'cache' | 'logs' | 'exports' | 'uploads' | 'jobs';
 

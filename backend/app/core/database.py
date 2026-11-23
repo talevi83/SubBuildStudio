@@ -108,6 +108,7 @@ _ADDED_COLUMNS = {
         "segment_type": "VARCHAR NOT NULL DEFAULT 'DIALOGUE'",
         "words_json": "VARCHAR",
         "speaker": "VARCHAR",
+        "addressee_json": "VARCHAR",
     },
 }
 

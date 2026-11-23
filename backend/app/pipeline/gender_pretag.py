@@ -3,15 +3,18 @@ Automatic zero-config local gender pre-tagging via Ollama (runs when `cost_saver
 
 When translating to Hebrew or Arabic, pings `http://127.0.0.1:11434/api/tags` with a 2.0s timeout.
 If Ollama is not running or has no models, silently skips in 0s with no errors.
-If Ollama is available, selects a local text model (preferring qwen2.5 / gemma / llama), scans
-refined segments for ambiguous 1st/2nd-person pronouns, queries Ollama in small batches with
-`format="json"` and `keep_alive=0` on the final request (to free VRAM immediately), and produces
-`[Speaker: M/F, To: M/F]` hints for `GeminiTranslator`.
+If Ollama is available, selects a local text model (preferring qwen2.5 / gemma / llama) and asks it
+only about the lines the deterministic resolver (`app.pipeline.addressee`) left open: lines with a
+2nd-person form, an imperative or a 1st-person self-reference whose listener / speaker gender is
+still unknown. Each of those is sent together with the dialogue around it, so the model sees who
+was named and who answers instead of an isolated sentence. Requests use `format="json"`, and
+`keep_alive=0` on the final one (to free VRAM immediately); the result is
+`[Speaker: M/F, To: M/F/G]` hints for the translator.
 """
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import httpx
 
@@ -21,13 +24,19 @@ OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 OLLAMA_TAGS_URL = f"{OLLAMA_BASE_URL}/api/tags"
 OLLAMA_GENERATE_URL = f"{OLLAMA_BASE_URL}/api/generate"
 
-AMBIGUOUS_PRONOUN_RE = re.compile(
-    r"\b(you|your|yours|yourself|you're|i am|i'm|i was)\b",
-    re.IGNORECASE,
-)
+# Lines of dialogue sent along with each asked line, on either side, and the most lines one
+# request may carry (small local models run with a small context window)
+PRETAG_CONTEXT_LINES = 3
+PRETAG_MAX_SCENE_LINES = 32
 
 PREFERRED_FAMILIES = ("qwen2.5", "gemma", "llama")
 PRETAG_BATCH_SIZE = 15
+
+
+def _is_ambiguous(text: Optional[str]) -> bool:
+    from app.pipeline.addressee import is_gender_sensitive
+
+    return is_gender_sensitive(text)
 
 
 def is_gendered_target_language(target_lang: Optional[str]) -> bool:
@@ -59,49 +68,53 @@ def pick_ollama_model(models_payload: Sequence[Dict[str, Any]]) -> Optional[str]
     return names[0]
 
 
+def _field(seg: Any, name: str, default: Any = None) -> Any:
+    return seg.get(name, default) if isinstance(seg, dict) else getattr(seg, name, default)
+
+
+def _speaker_desc(sp_id: Optional[str], speakers: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not sp_id:
+        return None
+    sp_info = (speakers or {}).get(sp_id) if isinstance(speakers, dict) else None
+    sp_gender = sp_info.get("gender") if isinstance(sp_info, dict) else None
+    sp_label = sp_info.get("label") if isinstance(sp_info, dict) else None
+    if sp_gender in ("male", "female"):
+        return f"{sp_label or sp_id} ({sp_gender})"
+    return sp_label or str(sp_id)
+
+
 def find_ambiguous_segments(
     segments: Sequence[Any],
     speakers: Optional[Dict[str, Any]] = None,
     addressees: Optional[Dict[int, str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Return segments whose text contains ambiguous English 1st/2nd-person forms."""
-    def _sp_desc(sp_id: Optional[str]) -> Optional[str]:
-        if not sp_id:
-            return None
-        sp_info = (speakers or {}).get(sp_id) if isinstance(speakers, dict) else None
-        sp_gender = sp_info.get("gender") if isinstance(sp_info, dict) else None
-        sp_label = sp_info.get("label") if isinstance(sp_info, dict) else None
-        if sp_gender in ("male", "female"):
-            return f"{sp_label or sp_id} ({sp_gender})"
-        return sp_label or str(sp_id)
-
+    """Return segments whose translation depends on the speaker's or the listener's gender:
+    1st/2nd-person forms, imperatives ("Come here.") and bare adjective questions ("Ready?")."""
     seg_list = list(segments)
     ambiguous: List[Dict[str, Any]] = []
     for pos, seg in enumerate(seg_list):
-        idx = int(seg["index"] if isinstance(seg, dict) else getattr(seg, "index", 0))
-        text = seg["original_text"] if isinstance(seg, dict) else getattr(seg, "original_text", "")
-        if text and AMBIGUOUS_PRONOUN_RE.search(text):
+        idx = int(_field(seg, "index", 0))
+        text = _field(seg, "original_text", "")
+        if text and _is_ambiguous(text):
             item: Dict[str, Any] = {"index": idx, "text": str(text)}
-            sp_id = seg.get("speaker") if isinstance(seg, dict) else getattr(seg, "speaker", None)
-            sp_desc = _sp_desc(sp_id)
+            sp_id = _field(seg, "speaker")
+            sp_desc = _speaker_desc(sp_id, speakers)
             if sp_desc:
                 item["speaker"] = sp_desc
-            addr = (addressees or {}).get(idx) or (
-                seg.get("addressee_info") if isinstance(seg, dict) else getattr(seg, "addressee_info", None)
-            )
+            addr = (addressees or {}).get(idx) or _field(seg, "addressee_info")
             if addr:
                 item["addressee"] = str(addr)
             else:
                 if pos > 0:
-                    prev_sp = seg_list[pos - 1].get("speaker") if isinstance(seg_list[pos - 1], dict) else getattr(seg_list[pos - 1], "speaker", None)
+                    prev_sp = _field(seg_list[pos - 1], "speaker")
                     if prev_sp and prev_sp != sp_id:
-                        p_desc = _sp_desc(prev_sp)
+                        p_desc = _speaker_desc(prev_sp, speakers)
                         if p_desc:
                             item["prev_speaker"] = p_desc
                 if pos + 1 < len(seg_list):
-                    nxt_sp = seg_list[pos + 1].get("speaker") if isinstance(seg_list[pos + 1], dict) else getattr(seg_list[pos + 1], "speaker", None)
+                    nxt_sp = _field(seg_list[pos + 1], "speaker")
                     if nxt_sp and nxt_sp != sp_id:
-                        n_desc = _sp_desc(nxt_sp)
+                        n_desc = _speaker_desc(nxt_sp, speakers)
                         if n_desc:
                             item["next_speaker"] = n_desc
             ambiguous.append(item)
@@ -154,6 +167,85 @@ async def detect_ollama_model(timeout: float = 2.0) -> Optional[str]:
         return None
 
 
+def _listener_code(value: Any) -> Optional[str]:
+    """M / F / G for a listener that is already settled: a display string such as
+    `SPEAKER_02 (דוד, male)` / `group (plural)`, or a confident addressee record."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        low = value.lower()
+        if "group" in low or "plural" in low:
+            return "G"
+        if "(female)" in low or ", female)" in low or low.strip() == "female":
+            return "F"
+        if "(male)" in low or ", male)" in low or low.strip() == "male":
+            return "M"
+        return None
+    from app.pipeline.addressee import HIGH, AddresseeRecord
+
+    rec = value if isinstance(value, AddresseeRecord) else AddresseeRecord.from_dict(value)
+    if rec is None or rec.confidence < HIGH:
+        return None
+    return {"m": "M", "f": "F", "pl": "G"}.get(rec.form or "")
+
+
+def build_scene_batches(
+    asked: Sequence[int],
+    context: Sequence[Any],
+    speakers: Optional[Dict[str, Any]] = None,
+    known_to: Optional[Dict[int, str]] = None,
+    batch_size: int = PRETAG_BATCH_SIZE,
+    context_lines: int = PRETAG_CONTEXT_LINES,
+    max_scene_lines: int = PRETAG_MAX_SCENE_LINES,
+) -> List[Dict[str, Any]]:
+    """Group the asked segment indices into requests, each with the dialogue around its lines.
+
+    Returns `[{"ask": [indices], "lines": [{"index", "text", "speaker"?, "to"?, "ask"?}]}]`; the lines
+    are consecutive runs of the scene, so the model can see who was named and who replies.
+    """
+    dialogue = [s for s in context if (_field(s, "segment_type", "DIALOGUE") or "DIALOGUE") != "ON_SCREEN"]
+    pos_of = {int(_field(s, "index", 0)): pos for pos, s in enumerate(dialogue)}
+    wanted = [idx for idx in asked if idx in pos_of]
+
+    def _window(idx: int) -> range:
+        pos = pos_of[idx]
+        return range(max(0, pos - context_lines), min(len(dialogue), pos + context_lines + 1))
+
+    groups: List[Tuple[List[int], set]] = []
+    cur_ask: List[int] = []
+    cur_pos: set = set()
+    for idx in wanted:
+        grown = cur_pos | set(_window(idx))
+        if cur_ask and (len(cur_ask) >= batch_size or len(grown) > max_scene_lines):
+            groups.append((cur_ask, cur_pos))
+            cur_ask, cur_pos = [], set()
+            grown = set(_window(idx))
+        cur_ask.append(idx)
+        cur_pos = grown
+    if cur_ask:
+        groups.append((cur_ask, cur_pos))
+
+    batches: List[Dict[str, Any]] = []
+    for ask, positions in groups:
+        ask_set = set(ask)
+        lines: List[Dict[str, Any]] = []
+        for pos in sorted(positions):
+            seg = dialogue[pos]
+            idx = int(_field(seg, "index", 0))
+            line: Dict[str, Any] = {"index": idx, "text": str(_field(seg, "original_text", "") or "")[:200]}
+            sp_desc = _speaker_desc(_field(seg, "speaker"), speakers)
+            if sp_desc:
+                line["speaker"] = sp_desc
+            to_code = (known_to or {}).get(idx)
+            if to_code:
+                line["to"] = to_code
+            if idx in ask_set:
+                line["ask"] = True
+            lines.append(line)
+        batches.append({"ask": ask, "lines": lines})
+    return batches
+
+
 async def pretag_gender_hints(
     segments: Sequence[Any],
     target_lang: str = "Hebrew",
@@ -163,39 +255,49 @@ async def pretag_gender_hints(
     cloud_model: Optional[str] = None,
     on_batch: Optional[Any] = None,
     speakers: Optional[Dict[str, Any]] = None,
-    addressees: Optional[Dict[int, str]] = None,
+    addressees: Optional[Dict[int, Any]] = None,
+    context_segments: Optional[Sequence[Any]] = None,
 ) -> Dict[int, str]:
     """
-    Query local Ollama for ambiguous lines and return `{segment_index: "[Speaker: M/F, To: M/F/G]"}`.
+    Query local Ollama for the still-open lines and return `{segment_index: "[Speaker: M/F, To: M/F/G]"}`.
     Silently returns `{}` if Ollama is not running, has no models, or if any network error occurs.
+
+    `addressees` holds what is already known about each line's listener (display strings or
+    addressee records by segment index): a settled listener is not asked about again and is shown to
+    the model as evidence. `context_segments` is the whole ordered job, for the lines around each
+    asked one (defaults to `segments`).
     """
     if not is_gendered_target_language(target_lang) or not segments:
         return {}
 
-    ambiguous = find_ambiguous_segments(segments, speakers=speakers, addressees=addressees)
-    if not ambiguous:
-        return {}
+    from app.pipeline.addressee import needs_listener_gender, needs_speaker_gender
 
     known_gender_by_index: Dict[int, str] = {}
     if isinstance(speakers, dict) and speakers:
-        for seg in segments:
-            idx = int(seg["index"] if isinstance(seg, dict) else getattr(seg, "index", 0))
-            sp_id = seg.get("speaker") if isinstance(seg, dict) else getattr(seg, "speaker", None)
+        for seg in (context_segments or segments):
+            sp_id = _field(seg, "speaker")
             if sp_id and isinstance(speakers.get(sp_id), dict):
                 code = _normalize_gender_code(speakers[sp_id].get("gender"))
                 if code:
-                    known_gender_by_index[idx] = code
+                    known_gender_by_index[int(_field(seg, "index", 0))] = code
 
     known_to_by_index: Dict[int, str] = {}
-    if isinstance(addressees, dict) and addressees:
-        for seg_idx, addr_val in addressees.items():
-            low = str(addr_val or "").lower()
-            if "group" in low or "plural" in low:
-                known_to_by_index[int(seg_idx)] = "G"
-            elif "(female)" in low or low.strip() == "female":
-                known_to_by_index[int(seg_idx)] = "F"
-            elif "(male)" in low or low.strip() == "male":
-                known_to_by_index[int(seg_idx)] = "M"
+    for seg_idx, addr_val in (addressees or {}).items():
+        code = _listener_code(addr_val)
+        if code:
+            known_to_by_index[int(seg_idx)] = code
+
+    # Ask only about what is still open: a listener nobody resolved, a speaker of unknown gender
+    asked: List[int] = []
+    spoken = [s for s in segments if (_field(s, "segment_type", "DIALOGUE") or "DIALOGUE") != "ON_SCREEN"]
+    for item in find_ambiguous_segments(spoken):
+        idx, text = item["index"], item["text"]
+        open_listener = needs_listener_gender(text) and idx not in known_to_by_index
+        open_speaker = needs_speaker_gender(text) and idx not in known_gender_by_index
+        if open_listener or open_speaker:
+            asked.append(idx)
+    if not asked:
+        return {}
 
     model = await detect_ollama_model(timeout=2.0)
     if not model:
@@ -207,7 +309,9 @@ async def pretag_gender_hints(
             cast_lines.append(f"{c.get('name')}: {c.get('gender', 'unknown')}")
     cast_summary = ", ".join(cast_lines[:12]) if cast_lines else "none"
 
-    batches = [ambiguous[i:i + batch_size] for i in range(0, len(ambiguous), batch_size)]
+    batches = build_scene_batches(
+        asked, context_segments or segments, speakers=speakers, known_to=known_to_by_index, batch_size=batch_size
+    )
     hints: Dict[int, str] = {}
 
     try:
@@ -217,12 +321,17 @@ async def pretag_gender_hints(
         async with httpx.AsyncClient(timeout=90.0) as client:
             for batch_idx, batch in enumerate(batches):
                 is_last = batch_idx == len(batches) - 1
+                ask_set = set(batch["ask"])
                 prompt = (
-                    "Infer the speaker gender (M, F, or ?) and the listener/addressee ('to') gender/number (M, F, G for plural group, or ?) for each subtitle line.\n"
-                    "Note: speaker gender is ONLY who is speaking; addressee ('to') is who they are talking TO (e.g. 'Sarah, are you ready?' -> to=F; 'You guys' -> to=G; check prev_speaker/next_speaker too).\n"
+                    "These are consecutive subtitle lines of a scene. For each line marked \"ask\": true, infer the "
+                    "speaker gender (M, F, or ?) and the listener/addressee ('to') gender/number (M, F, G for plural group, or ?).\n"
+                    "Note: speaker gender is ONLY who is speaking; addressee ('to') is who they are talking TO "
+                    "(e.g. 'Sarah, are you ready?' -> to=F; 'You guys' -> to=G). Use the surrounding lines: who was just "
+                    "named, who spoke right before and who answers. Lines that already carry 'to' are settled; use them "
+                    "as evidence. Answer ? when the lines do not tell.\n"
                     f"Known characters: {cast_summary}\n"
-                    'Return JSON: {"items": [{"index": <int>, "speaker": "M"|"F"|"?", "to": "M"|"F"|"G"|"?"}]}\n'
-                    f"Lines: {json.dumps(batch, ensure_ascii=False)}"
+                    'Return JSON with one item per asked line: {"items": [{"index": <int>, "speaker": "M"|"F"|"?", "to": "M"|"F"|"G"|"?"}]}\n'
+                    f"Lines: {json.dumps(batch['lines'], ensure_ascii=False)}"
                 )
                 body: Dict[str, Any] = {
                     "model": model,
@@ -248,14 +357,17 @@ async def pretag_gender_hints(
                     for item in items:
                         if not isinstance(item, dict) or "index" not in item:
                             continue
-                        seg_idx = int(item["index"])
+                        try:
+                            seg_idx = int(item["index"])
+                        except (TypeError, ValueError):
+                            continue
+                        if seg_idx not in ask_set:
+                            continue  # a context line: the model was not asked about it
                         sp_raw = item.get("speaker") or item.get("speaker_gender")
                         if seg_idx in known_gender_by_index:
                             sp_raw = known_gender_by_index[seg_idx]
                         to_raw = item.get("to") or item.get("addressee") or item.get("addressee_gender")
-                        if seg_idx in known_to_by_index and not _normalize_gender_code(to_raw):
-                            to_raw = known_to_by_index[seg_idx]
-                        elif seg_idx in known_to_by_index:
+                        if seg_idx in known_to_by_index:
                             to_raw = known_to_by_index[seg_idx]
                         tag = format_gender_tag(sp_raw, to_raw)
                         if tag:

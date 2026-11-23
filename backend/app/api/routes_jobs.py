@@ -19,6 +19,7 @@ from app.core.user_settings import load_settings
 from app.api.routes_media import reject_network_path, validate_media_path
 from app.models.db_models import Job, JobStatus, SubtitleSegmentRecord
 from app.models.schemas import (
+    AddresseeSchema,
     AudioStreamInfo,
     BulkDeleteJobsRequest,
     BulkDeleteJobsResponse,
@@ -116,6 +117,24 @@ def _parse_words_json(raw: Optional[str]) -> Optional[List[WordTimingSchema]]:
     return out or None
 
 
+def _parse_addressee_json(raw: Optional[str]) -> Optional[AddresseeSchema]:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        return AddresseeSchema(**parsed) if isinstance(parsed, dict) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _manual_addressee_json(choice: Optional[str]) -> Optional[str]:
+    """The stored form of a listener picked by hand (male / female / group); None for no choice."""
+    from app.pipeline.addressee import manual_record
+
+    record = manual_record(choice)
+    return json.dumps(record.to_dict(), ensure_ascii=False) if record is not None else None
+
+
 def _segment_to_schema(s: SubtitleSegmentRecord) -> SubtitleSegmentSchema:
     return SubtitleSegmentSchema(
         id=s.id,
@@ -132,6 +151,7 @@ def _segment_to_schema(s: SubtitleSegmentRecord) -> SubtitleSegmentSchema:
         cps=s.cps,
         words=_parse_words_json(getattr(s, "words_json", None)),
         speaker=getattr(s, "speaker", None),
+        addressee=_parse_addressee_json(getattr(s, "addressee_json", None)),
     )
 
 
@@ -569,6 +589,15 @@ async def retranslate_job(job_id: str, req: RetranslateRequest, session: Session
             if req.context_notes is not None:
                 job.context_notes = req.context_notes
             history.begin(session, job)  # the run records its result as one step when it ends
+            manual_listener = _manual_addressee_json(req.addressee_gender) if only_indices else None
+            if manual_listener:
+                # Remember who these rows are spoken to: the tag is shown on the rows, survives later
+                # runs, and tells the resolver about the lines around them
+                selected = set(req.segment_ids or ())
+                for seg in job.segments:
+                    if seg.id in selected:
+                        seg.addressee_json = manual_listener
+                        session.add(seg)
             job.enable_translation = True
             job.status = JobStatus.TRANSLATING
             job.current_stage = "TRANSLATING"
@@ -1046,11 +1075,29 @@ def _apply_segment_patch(seg: SubtitleSegmentRecord, patch: SegmentUpdate) -> No
                 seg.words_json = None
         seg.original_text = patch.original_text
     if patch.translated_text is not None:
-        seg.translated_text = strip_directional_marks(patch.translated_text)
+        new_translation = strip_directional_marks(patch.translated_text)
+        if new_translation != (seg.translated_text or "") and getattr(seg, "addressee_json", None):
+            # The form the translator reported belongs to the text it wrote, not to the user's
+            try:
+                listener = json.loads(seg.addressee_json)
+                if isinstance(listener, dict) and listener.pop("used", None) is not None:
+                    seg.addressee_json = json.dumps(listener, ensure_ascii=False)
+            except ValueError:
+                pass
+        seg.translated_text = new_translation
         if seg.translated_text.strip():
             seg.translation_failed = False
     if "speaker" in patch.model_fields_set:
         seg.speaker = (patch.speaker or "").strip() or None
+    if "addressee_gender" in patch.model_fields_set:
+        choice = (patch.addressee_gender or "").strip()
+        if not choice:
+            seg.addressee_json = None
+        else:
+            manual = _manual_addressee_json(choice)
+            if manual is None:
+                raise HTTPException(status_code=422, detail=f"Unknown addressee: {patch.addressee_gender}")
+            seg.addressee_json = manual
 
     text_for_cps = seg.translated_text if seg.translated_text else seg.original_text
     seg.cps = calculate_cps(text_for_cps, max(0.1, seg.end_time - seg.start_time))
@@ -1314,6 +1361,7 @@ def split_segment(
         confidence=seg.confidence,
         words_json=json.dumps(right_words, ensure_ascii=False) if right_words else None,
         speaker=getattr(seg, "speaker", None),
+        addressee_json=getattr(seg, "addressee_json", None),
     )
     _refresh_cps(second)
     session.add(second)
@@ -1463,7 +1511,9 @@ def shift_segments(job_id: str, req: ShiftSegmentsRequest, session: Session = De
 
 # --- Timing-only tools -------------------------------------------------------------------------
 
-_MOVE_FIELDS = ("original_text", "translated_text", "translation_failed", "segment_type", "confidence", "speaker")
+_MOVE_FIELDS = (
+    "original_text", "translated_text", "translation_failed", "segment_type", "confidence", "speaker", "addressee_json",
+)
 _WINDOW_PAD = 3.0
 
 

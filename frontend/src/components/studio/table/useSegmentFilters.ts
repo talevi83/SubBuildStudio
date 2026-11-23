@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from 'react';
 import type { ProblemFilter, SubtitleSegment } from '../../../types';
 import { buildSearchPattern, hasMatch } from '../../../utils/textSearch';
+import { isUncertainAddressee } from './addressee';
 
 /** Matches 3+ consecutive ASCII Latin letters left inside an RTL translation */
 const LATIN_WORD_RE = /[A-Za-z]{3,}/;
@@ -10,6 +11,8 @@ export interface ProblemStats {
   untranslated: number;
   latin: number;
   highCps: number;
+  /** Lines with a "you" whose listener the app could not settle; not part of `all` */
+  uncertainAddressee: number;
 }
 
 export interface TagCounts {
@@ -81,6 +84,7 @@ export function useSegmentFilters({
     let untranslated = 0;
     let latin = 0;
     let highCps = 0;
+    let uncertainAddressee = 0;
     for (const s of segments) {
       const u = isUntranslated(s);
       const l = hasLatinLeftover(s);
@@ -89,8 +93,9 @@ export function useSegmentFilters({
       if (l) latin++;
       if (c) highCps++;
       if (u || l || c) all++;
+      if (isUncertainAddressee(s.addressee)) uncertainAddressee++;
     }
-    return { all, untranslated, latin, highCps };
+    return { all, untranslated, latin, highCps, uncertainAddressee };
   }, [segments, isUntranslated, hasLatinLeftover, isHighCps]);
 
   const tagCounts = useMemo<TagCounts>(() => {
@@ -120,6 +125,7 @@ export function useSegmentFilters({
     else if (problemFilter === 'UNTRANSLATED') list = list.filter(isUntranslated);
     else if (problemFilter === 'LATIN_LEFTOVER') list = list.filter(hasLatinLeftover);
     else if (problemFilter === 'HIGH_CPS') list = list.filter(isHighCps);
+    else if (problemFilter === 'UNCERTAIN_ADDRESSEE') list = list.filter((s) => isUncertainAddressee(s.addressee));
 
     if (tagFilter !== 'ALL') {
       if (tagFilter === 'TAGGED') {
