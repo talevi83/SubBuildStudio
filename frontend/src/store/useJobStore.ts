@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { api } from '../services/api';
-import { isActiveStatus } from '../types';
+import { isActiveStatus, isRtlLanguage } from '../types';
 import type {
   Job,
   JobStatus,
@@ -19,6 +19,7 @@ import type {
   ProblemFilter,
   EditHistory,
   HistoryRestoreResult,
+  SpeakerProfile,
 } from '../types';
 import { getItemWithLegacy } from '../utils/legacyStorage';
 import { naturalSortBy } from '../utils/desktop';
@@ -44,6 +45,7 @@ const DEFAULT_CONFIG: JobConfig = {
   convert_to_metric: false,
   remove_sdh_speakers: false,
   skip_end_credits: true,
+  enable_diarization: false,
   auto_save_srt: false,
   enable_translation: true,
   target_language: 'Hebrew',
@@ -132,6 +134,8 @@ interface JobState {
   selectedSegmentIndex: number | null;
   problemFilter: ProblemFilter;
   setProblemFilter: (filter: ProblemFilter) => void;
+  speakerFilter: string;
+  setSpeakerFilter: (speaker: string) => void;
   seekRequest: SeekRequest | null;
   subtitleOverlayMode: 'original' | 'translated' | 'dual';
   applyRtlExport: boolean;
@@ -221,6 +225,11 @@ interface JobState {
     options?: boolean | Partial<SearchOptions>
   ) => Promise<number>;
   saveGlossary: (glossary: Glossary, profile?: string) => Promise<boolean>;
+  saveSpeakers: (speakers: Record<string, SpeakerProfile>) => Promise<boolean>;
+  diarizeActiveJob: (opts?: { min_speakers?: number; max_speakers?: number; threshold?: number; auto_match?: boolean }) => Promise<boolean>;
+  matchSpeakersActiveJob: (opts?: { overwrite_manual?: boolean; auto_merge?: boolean }) => Promise<boolean>;
+  mergeSpeakersActiveJob: (sourceSpeakerIds: string[], targetSpeakerId: string | null) => Promise<boolean>;
+  bulkUpdateSpeaker: (segmentIds: number[], speaker: string | null) => Promise<void>;
   retimeActiveJob: () => Promise<void>;
   moveSegment: (segmentId: number, toPosition: number) => Promise<void>;
   setVideoCurrentTime: (time: number) => void;
@@ -344,14 +353,29 @@ export const useJobStore = create<JobState>((set, get) => {
 
     switch (data.event) {
       case 'STAGE_PROGRESS': {
+        const nextStatus = (data.stage as JobStatus) || activeJob.status;
+        const stageChanged = nextStatus !== activeJob.status;
+        const nextStagePct =
+          nextStatus === 'QUEUED' || nextStatus === 'IDLE'
+            ? null
+            : typeof data.stage_progress_percent === 'number'
+              ? data.stage_progress_percent
+              : stageChanged
+                ? 0
+                : activeJob.stage_progress_percent;
         patchActiveJob({
-          status: (data.stage as JobStatus) || activeJob.status,
+          status: nextStatus,
           progress_percent: data.progress_percent ?? activeJob.progress_percent,
+          stage_progress_percent: nextStagePct,
           speed_factor: data.speed_factor ?? activeJob.speed_factor,
           eta_seconds: data.eta_seconds ?? activeJob.eta_seconds,
           ...(data.usage ? { usage: data.usage } : {}),
         });
-        if (data.message) set({ stageMessage: data.message });
+        if (data.message) {
+          set({ stageMessage: data.message });
+        } else if (stageChanged) {
+          set({ stageMessage: null });
+        }
         break;
       }
       case 'SEGMENT_CREATED': {
@@ -364,6 +388,10 @@ export const useJobStore = create<JobState>((set, get) => {
         patchActiveJob({
           status: 'TRANSCRIBING',
           progress_percent: data.progress_percent || activeJob.progress_percent,
+          stage_progress_percent:
+            typeof data.stage_progress_percent === 'number'
+              ? data.stage_progress_percent
+              : activeJob.stage_progress_percent,
           speed_factor: data.speed_factor ?? activeJob.speed_factor,
           eta_seconds: data.eta_seconds ?? activeJob.eta_seconds,
           segments,
@@ -391,9 +419,10 @@ export const useJobStore = create<JobState>((set, get) => {
       case 'JOB_COMPLETED':
       case 'JOB_FAILED':
       case 'JOB_CANCELLED': {
-        if (data.usage) {
-          patchActiveJob({ usage: data.usage });
-        }
+        patchActiveJob({
+          stage_progress_percent: null,
+          ...(data.usage ? { usage: data.usage } : {}),
+        });
         set({ stageMessage: null });
         get().refreshActiveJob();
         get().fetchJobs();
@@ -417,6 +446,8 @@ export const useJobStore = create<JobState>((set, get) => {
     selectedSegmentIndex: null,
     problemFilter: 'NONE',
     setProblemFilter: (problemFilter) => set({ problemFilter }),
+    speakerFilter: 'ALL',
+    setSpeakerFilter: (speakerFilter) => set({ speakerFilter }),
     seekRequest: null,
     subtitleOverlayMode: 'dual',
     applyRtlExport: true,
@@ -649,6 +680,9 @@ export const useJobStore = create<JobState>((set, get) => {
       try {
         set({ isLoading: true, error: null });
         const job = await api.getJob(jobId);
+        const hasTranslation = job.segments.some((s) => Boolean(s.translated_text));
+        const isRtlSource = isRtlLanguage(job.detected_language || job.source_language);
+        const untranslatedRtl = !hasTranslation && isRtlSource;
         set({
           activeJob: job,
           history: null,
@@ -657,11 +691,18 @@ export const useJobStore = create<JobState>((set, get) => {
           insertDraft: null,
           selectedSegmentIndex: null,
           problemFilter: 'NONE',
+          speakerFilter: 'ALL',
           videoCurrentTime: 0,
           seekRequest: null,
           stageMessage: null,
           savingCount: 0,
           lastSavedAt: null,
+          ...(untranslatedRtl
+            ? {
+                applyRtlExport: true,
+                ...(get().subtitleOverlayMode === 'translated' ? { subtitleOverlayMode: 'original' as const } : {}),
+              }
+            : {}),
         });
         get().connectWebSocket(jobId);
         void get().refreshHistory();
@@ -688,7 +729,28 @@ export const useJobStore = create<JobState>((set, get) => {
           for (const seg of fresh.segments) merged.set(seg.index, seg);
           nextSegments = [...merged.values()].sort((a, b) => a.index - b.index);
         }
-        set({ activeJob: { ...fresh, segments: nextSegments } });
+        const hasTranslation = nextSegments.some((s) => Boolean(s.translated_text));
+        const isRtlSource = isRtlLanguage(fresh.detected_language || fresh.source_language);
+        const untranslatedRtl = !isActiveStatus(fresh.status) && nextSegments.length > 0 && !hasTranslation && isRtlSource;
+        const stage_progress_percent =
+          typeof fresh.stage_progress_percent === 'number'
+            ? fresh.stage_progress_percent
+            : current.status === fresh.status &&
+                isActiveStatus(fresh.status) &&
+                fresh.status !== 'QUEUED' &&
+                fresh.status !== 'IDLE' &&
+                typeof current.stage_progress_percent === 'number'
+              ? current.stage_progress_percent
+              : null;
+        set({
+          activeJob: { ...fresh, stage_progress_percent, segments: nextSegments },
+          ...(untranslatedRtl
+            ? {
+                applyRtlExport: true,
+                ...(get().subtitleOverlayMode === 'translated' ? { subtitleOverlayMode: 'original' as const } : {}),
+              }
+            : {}),
+        });
       } catch (e) {
         console.error('Failed to refresh job:', e);
       }
@@ -708,6 +770,7 @@ export const useJobStore = create<JobState>((set, get) => {
         syncLanguage: null,
         selectedSegmentIndex: null,
         problemFilter: 'NONE',
+        speakerFilter: 'ALL',
         seekRequest: null,
         stageMessage: null,
         savingCount: 0,
@@ -1047,6 +1110,109 @@ export const useJobStore = create<JobState>((set, get) => {
       } catch (e: any) {
         set({ error: e.message });
         return false;
+      }
+    },
+
+    saveSpeakers: async (speakers) => {
+      const { activeJob } = get();
+      if (!activeJob) return false;
+      try {
+        const updated = await api.updateSpeakers(activeJob.id, speakers);
+        patchActiveJob({ speakers: updated.speakers ?? speakers });
+        return true;
+      } catch (e: any) {
+        set({ error: e.message });
+        return false;
+      }
+    },
+
+    diarizeActiveJob: async (opts) => {
+      const { activeJob } = get();
+      if (!activeJob) return false;
+      const jobId = activeJob.id;
+      try {
+        const updated = await api.diarizeJob(jobId, opts);
+        if (get().activeJob?.id !== jobId) return false;
+        patchActiveJob({
+          speakers: updated.speakers,
+          segments: updated.segments,
+          glossary: updated.glossary,
+          enable_diarization: updated.enable_diarization,
+        });
+        scheduleHistoryRefresh();
+        return true;
+      } catch (e: any) {
+        set({ error: e.message });
+        return false;
+      }
+    },
+
+    matchSpeakersActiveJob: async (opts) => {
+      const { activeJob } = get();
+      if (!activeJob) return false;
+      const jobId = activeJob.id;
+      try {
+        const updated = await api.matchSpeakers(jobId, opts);
+        if (get().activeJob?.id !== jobId) return false;
+        patchActiveJob({
+          speakers: updated.speakers,
+          segments: updated.segments,
+          glossary: updated.glossary,
+        });
+        scheduleHistoryRefresh();
+        return true;
+      } catch (e: any) {
+        set({ error: e.message });
+        return false;
+      }
+    },
+
+    mergeSpeakersActiveJob: async (sourceSpeakerIds, targetSpeakerId) => {
+      const { activeJob } = get();
+      if (!activeJob || sourceSpeakerIds.length === 0) return false;
+      const jobId = activeJob.id;
+      try {
+        const updated = await api.mergeSpeakers(jobId, sourceSpeakerIds, targetSpeakerId);
+        if (get().activeJob?.id !== jobId) return false;
+        patchActiveJob({
+          speakers: updated.speakers,
+          segments: updated.segments,
+          glossary: updated.glossary,
+        });
+        scheduleHistoryRefresh();
+        return true;
+      } catch (e: any) {
+        set({ error: e.message });
+        return false;
+      }
+    },
+
+    bulkUpdateSpeaker: async (segmentIds, speaker) => {
+      const { activeJob } = get();
+      if (!activeJob || segmentIds.length === 0) return;
+      const jobId = activeJob.id;
+      const idSet = new Set(segmentIds);
+      patchActiveJob({
+        segments: activeJob.segments.map((s) => (s.id && idSet.has(s.id) ? { ...s, speaker } : s)),
+      });
+      set((s) => ({ savingCount: s.savingCount + 1 }));
+      try {
+        const saved = await api.updateSegments(
+          jobId,
+          segmentIds.map((id) => ({ id, speaker }))
+        );
+        const byId = new Map(saved.map((s) => [s.id, s]));
+        const cur = get().activeJob;
+        if (cur && cur.id === jobId) {
+          patchActiveJob({
+            segments: cur.segments.map((s) => (s.id && byId.has(s.id) ? { ...s, ...byId.get(s.id)! } : s)),
+          });
+        }
+        set((s) => ({ savingCount: Math.max(0, s.savingCount - 1), lastSavedAt: Date.now() }));
+        scheduleHistoryRefresh();
+      } catch (e: any) {
+        set((s) => ({ savingCount: Math.max(0, s.savingCount - 1), error: e.message }));
+        void get().refreshActiveJob();
       }
     },
 

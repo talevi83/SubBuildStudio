@@ -75,8 +75,16 @@ class EmbedOptions:
     font_family: Optional[str] = None  # burn
     font_size_px: Optional[int] = None # burn: preview pixel size (12..36)
     text_color: Optional[str] = None   # burn: #RRGGBB
+    outline_color: Optional[str] = None       # burn: #RRGGBB
+    outline_width: Optional[float] = None     # burn: 0.0..6.0
     background_color: Optional[str] = None    # burn: #RRGGBB
     background_opacity: Optional[int] = None  # burn: 0..100
+    margin_v: Optional[int] = None            # burn: 8..120
+    bold: bool = False                        # burn
+    color_speakers: bool = False              # burn: per-speaker colors in ASS
+    highlight_mode: str = "none"              # burn: none | word | karaoke
+    highlight_color: Optional[str] = None     # burn: #RRGGBB
+    subtitle_format: str = "srt"              # srt | ass
     quality: str = "standard"          # burn
     audio_stream: int = 0              # burn: which audio track goes into the MP4 (relative index)
 
@@ -245,23 +253,80 @@ def hex_to_ass_color(hex_color: str, opacity_percent: int = 100) -> str:
     return f"&H{alpha:02X}{b:02X}{g:02X}{r:02X}"
 
 
+_GOOGLE_FONT_SOURCES: Dict[str, tuple[str, str]] = {
+    "heebo": ("Heebo.ttf", "https://raw.githubusercontent.com/google/fonts/main/ofl/heebo/Heebo%5Bwght%5D.ttf"),
+    "rubik": ("Rubik.ttf", "https://raw.githubusercontent.com/google/fonts/main/ofl/rubik/Rubik%5Bwght%5D.ttf"),
+    "assistant": ("Assistant.ttf", "https://raw.githubusercontent.com/google/fonts/main/ofl/assistant/Assistant%5Bwght%5D.ttf"),
+    "secular one": ("SecularOne-Regular.ttf", "https://raw.githubusercontent.com/google/fonts/main/ofl/secularone/SecularOne-Regular.ttf"),
+    "alef": ("Alef-Regular.ttf", "https://raw.githubusercontent.com/google/fonts/main/ofl/alef/Alef-Regular.ttf"),
+    "varela round": ("VarelaRound-Regular.ttf", "https://raw.githubusercontent.com/google/fonts/main/ofl/varelaround/VarelaRound-Regular.ttf"),
+    "frank ruhl libre": ("FrankRuhlLibre.ttf", "https://raw.githubusercontent.com/google/fonts/main/ofl/frankruhllibre/FrankRuhlLibre%5Bwght%5D.ttf"),
+    "inter": ("Inter.ttf", "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/Inter%5Bopsz,wght%5D.ttf"),
+}
+
+
 def _dropin_font_files() -> List[Path]:
-    """Optional .ttf/.otf font files placed under app/assets/fonts or SUBBUILD_HOME/fonts."""
-    dirs = [Path(__file__).resolve().parents[1] / "assets" / "fonts"]
+    """Optional .ttf/.otf font files placed under app/assets/fonts, SUBBUILD_HOME/fonts, or storage/fonts."""
+    from app.core.config import settings
+
+    dirs = [
+        Path(__file__).resolve().parents[1] / "assets" / "fonts",
+        settings.storage_dir / "fonts",
+    ]
     home = os.environ.get("SUBBUILD_HOME")
     if home:
         dirs.append(Path(home) / "fonts")
     fonts: List[Path] = []
+    seen_names: Set[str] = set()
     for folder in dirs:
         if not folder.is_dir():
             continue
         try:
             for item in folder.iterdir():
                 if item.is_file() and item.suffix.lower() in (".ttf", ".otf"):
-                    fonts.append(item)
+                    key = item.name.lower()
+                    if key not in seen_names:
+                        seen_names.add(key)
+                        fonts.append(item)
         except OSError:
             continue
     return fonts
+
+
+def ensure_burn_font(font_family: Optional[str]) -> Optional[Path]:
+    """Download an open-source Google Font TTF into storage/fonts on first burn-in if missing."""
+    if not font_family or os.environ.get("SUBBUILD_OFFLINE") == "1":
+        return None
+    spec = _GOOGLE_FONT_SOURCES.get(font_family.strip().lower())
+    if not spec:
+        return None
+    local_name, url = spec
+    stem_norm = re.sub(r"[^a-z0-9]", "", font_family.lower())
+    for existing in _dropin_font_files():
+        ex_norm = re.sub(r"[^a-z0-9]", "", existing.stem.lower())
+        if existing.name.lower() == local_name.lower() or (stem_norm and stem_norm in ex_norm):
+            return existing
+
+    from app.core.config import settings
+    import httpx
+
+    fonts_dir = settings.storage_dir / "fonts"
+    target = fonts_dir / local_name
+    tmp = fonts_dir / f".{local_name}.tmp"
+    try:
+        fonts_dir.mkdir(parents=True, exist_ok=True)
+        with httpx.Client(timeout=8.0, follow_redirects=True) as client:
+            resp = client.get(url)
+            if resp.status_code != 200 or len(resp.content) < 4096:
+                return None
+            tmp.write_bytes(resp.content)
+            os.replace(tmp, target)
+        logger.info("Downloaded burn-in font %s to %s", font_family, target)
+        return target
+    except Exception as exc:
+        logger.debug("Could not fetch optional font %s (%s); using host fallback", font_family, exc)
+        tmp.unlink(missing_ok=True)
+        return None
 
 
 def burn_style(
@@ -271,8 +336,12 @@ def burn_style(
     font_family: Optional[str] = None,
     font_size_px: Optional[int] = None,
     text_color: Optional[str] = None,
+    outline_color: Optional[str] = None,
+    outline_width: Optional[float] = None,
     background_color: Optional[str] = None,
     background_opacity: Optional[int] = None,
+    margin_v: Optional[int] = None,
+    bold: bool = False,
 ) -> str:
     if font_size_px is not None:
         clamped_px = max(MIN_BURN_FONT_PX, min(MAX_BURN_FONT_PX, int(font_size_px)))
@@ -281,15 +350,19 @@ def burn_style(
         size = BURN_FONT_SIZES.get(font_size, BURN_FONT_SIZES["medium"])
     font = _resolve_burn_font(font_family, platform)
     primary = hex_to_ass_color(text_color or "#FFFFFF", 100)
+    mv = max(8, min(120, int(margin_v))) if margin_v is not None else 16
+    bold_part = ",Bold=-1" if bold else ""
     if background_opacity is not None and background_opacity > 0:
         box_col = hex_to_ass_color(background_color or "#000000", background_opacity)
         return (
-            f"FontName={font},FontSize={size},PrimaryColour={primary},"
-            f"OutlineColour={box_col},BackColour={box_col},BorderStyle=3,Outline=3,Shadow=0,MarginV=16"
+            f"FontName={font},FontSize={size}{bold_part},PrimaryColour={primary},"
+            f"OutlineColour={box_col},BackColour={box_col},BorderStyle=3,Outline=3,Shadow=0,MarginV={mv}"
         )
+    out_col = hex_to_ass_color(outline_color or "#000000", 100)
+    out_w = max(0.0, min(6.0, float(outline_width))) if outline_width is not None else 1.6
     return (
-        f"FontName={font},FontSize={size},PrimaryColour={primary},OutlineColour=&H00000000,"
-        f"BackColour=&H80000000,BorderStyle=1,Outline=1.6,Shadow=0.6,MarginV=16"
+        f"FontName={font},FontSize={size}{bold_part},PrimaryColour={primary},OutlineColour={out_col},"
+        f"BackColour=&H80000000,BorderStyle=1,Outline={out_w},Shadow=0.6,MarginV={mv}"
     )
 
 
@@ -304,16 +377,23 @@ def build_burn_command(video_path: str, subs_name: str, out_path: str, probe: di
     audio = [s for s in streams if s.get("codec_type") == "audio"]
     a_idx = opts.audio_stream if 0 <= opts.audio_stream < len(audio) else 0
 
-    style = burn_style(
-        opts.font_size,
-        font_family=opts.font_family,
-        font_size_px=opts.font_size_px,
-        text_color=opts.text_color,
-        background_color=opts.background_color,
-        background_opacity=opts.background_opacity,
-    )
     fonts_arg = ":fontsdir=." if _dropin_font_files() else ""
-    vf = f"subtitles={subs_name}{fonts_arg}:charenc=UTF-8:force_style='{style}',format=yuv420p"
+    if subs_name.lower().endswith(".ass"):
+        vf = f"subtitles={subs_name}{fonts_arg}:charenc=UTF-8,format=yuv420p"
+    else:
+        style = burn_style(
+            opts.font_size,
+            font_family=opts.font_family,
+            font_size_px=opts.font_size_px,
+            text_color=opts.text_color,
+            outline_color=opts.outline_color,
+            outline_width=opts.outline_width,
+            background_color=opts.background_color,
+            background_opacity=opts.background_opacity,
+            margin_v=opts.margin_v,
+            bold=opts.bold,
+        )
+        vf = f"subtitles={subs_name}{fonts_arg}:charenc=UTF-8:force_style='{style}',format=yuv420p"
     cmd = [get_ffmpeg_bin(), "-y", "-nostdin", "-v", "error", "-nostats", "-progress", "pipe:1",
            *safe_input(str(Path(video_path).resolve())), "-map", "0:v:0"]
     if audio:
@@ -393,7 +473,8 @@ async def _execute(task: EmbedTask, video_path: str, subtitle_text: str, opts: E
     tmp_out = temp_path(task.target)
     workdir = Path(tempfile.mkdtemp(prefix="subbuild_embed_"))
     try:
-        subs = workdir / "subs.srt"
+        sub_ext = "ass" if (opts.mode == "burn" and opts.subtitle_format == "ass") else "srt"
+        subs = workdir / f"subs.{sub_ext}"
         subs.write_text(subtitle_text, encoding="utf-8")
         probe = await probe_streams(video_path)
         duration = probe["duration"]
@@ -404,6 +485,7 @@ async def _execute(task: EmbedTask, video_path: str, subtitle_text: str, opts: E
             task.encoder = "copy"
             await _run(task, build_soft_command(video_path, str(subs), str(tmp_out), probe, opts), duration)
         else:
+            await asyncio.to_thread(ensure_burn_font, opts.font_family)
             for font_file in _dropin_font_files():
                 shutil.copy2(font_file, workdir / font_file.name)
             encoders = (["h264_nvenc"] if await nvenc_available() else []) + ["libx264"]

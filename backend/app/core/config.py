@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     gemini_glossary_pass: bool = True
     # Local PC pre-processing (frame pre-filtering, Whisper VRAM unload, local gender pre-tagging)
     cost_saver_mode: bool = False
+    # Gendered target languages: re-translate lines whose 2nd-person forms contradict a confidently
+    # resolved listener (one extra request, at most this many lines per run)
+    addressee_autofix: bool = True
+    addressee_autofix_max_rows: int = 40
 
     # Whisper Settings
     whisper_default_model: str = "medium"
@@ -41,7 +45,15 @@ class Settings(BaseSettings):
     # >0 enables faster-whisper's BatchedInferencePipeline on CUDA (much faster, more VRAM).
     # 0 = classic sequential decoding.
     whisper_batch_size: int = 8
-    whisper_models: List[str] = ["tiny", "base", "small", "medium", "large-v3-turbo", "large-v3"]
+    whisper_models: List[str] = [
+        "tiny",
+        "base",
+        "small",
+        "medium",
+        "large-v3-turbo",
+        "ivrit-ai/whisper-large-v3-turbo-ct2",
+        "large-v3",
+    ]
     # How many jobs may use the GPU (transcription) at the same time
     max_concurrent_transcriptions: int = 1
     # Re-listen (Whisper without VAD) to stretches no subtitle covers: recovers speech the voice

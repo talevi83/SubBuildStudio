@@ -185,7 +185,7 @@ class AudioExtractionStage(PipelineStage):
                         elif not ctx.detected_language or ctx.detected_language.lower() in ("auto", "none"):
                             ctx.detected_language = "en"
                         track_desc = f"'{track.title}'" if track.title else f"track #{track.index} ({track.language})"
-                        if not ctx.supplement_with_whisper:
+                        if not ctx.supplement_with_whisper and not getattr(ctx, "enable_diarization", False):
                             logger.info(
                                 f"Using embedded dialogue subtitle track #{track.index} "
                                 f"({track.title or track.language}, {len(dialogue_segs)} cues). "

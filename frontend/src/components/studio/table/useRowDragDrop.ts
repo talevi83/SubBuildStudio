@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SubtitleSegment } from '../../../types';
 
 /** Drag a row onto another to move its text there (time slots stay, see POST /segments/move). */
@@ -8,23 +8,33 @@ export function useRowDragDrop(
 ) {
   const [dragId, setDragId] = useState<number | null>(null);
   const [overId, setOverId] = useState<number | null>(null);
+  const segmentsRef = useRef(segments);
+  const dragIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    segmentsRef.current = segments;
+  }, [segments]);
 
-  const handleDragStart = useCallback((id: number) => setDragId(id), []);
+  const handleDragStart = useCallback((id: number) => {
+    dragIdRef.current = id;
+    setDragId(id);
+  }, []);
   const handleDragOver = useCallback((id: number) => setOverId((prev) => (prev === id ? prev : id)), []);
   const handleDragEnd = useCallback(() => {
+    dragIdRef.current = null;
     setDragId(null);
     setOverId(null);
   }, []);
   const handleDrop = useCallback(
     (targetId: number) => {
-      const from = dragId;
+      const from = dragIdRef.current;
+      dragIdRef.current = null;
       setDragId(null);
       setOverId(null);
       if (from === null || from === targetId) return;
-      const position = segments.findIndex((s) => s.id === targetId);
+      const position = segmentsRef.current.findIndex((s) => s.id === targetId);
       if (position >= 0) void moveSegment(from, position);
     },
-    [dragId, segments, moveSegment]
+    [moveSegment]
   );
   const dragFromPos = dragId === null ? -1 : segments.findIndex((s) => s.id === dragId);
 

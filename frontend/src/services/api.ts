@@ -216,6 +216,51 @@ export const api = {
     );
   },
 
+  updateSpeakers(
+    jobId: string,
+    speakers: Record<string, import('../types').SpeakerProfile>
+  ): Promise<Job> {
+    return request(
+      `${API_BASE}/jobs/${jobId}/speakers`,
+      json('PUT', { speakers }),
+      'Could not save speaker profiles'
+    );
+  },
+
+  diarizeJob(
+    jobId: string,
+    opts?: { min_speakers?: number; max_speakers?: number; threshold?: number; auto_match?: boolean }
+  ): Promise<Job> {
+    return request(
+      `${API_BASE}/jobs/${jobId}/diarize`,
+      json('POST', opts || {}),
+      'Could not detect speakers from audio'
+    );
+  },
+
+  matchSpeakers(
+    jobId: string,
+    opts?: { overwrite_manual?: boolean; auto_merge?: boolean }
+  ): Promise<Job> {
+    return request(
+      `${API_BASE}/jobs/${jobId}/match-speakers`,
+      json('POST', opts || {}),
+      'Could not match speakers to characters'
+    );
+  },
+
+  mergeSpeakers(
+    jobId: string,
+    sourceSpeakerIds: string[],
+    targetSpeakerId: string | null
+  ): Promise<Job> {
+    return request(
+      `${API_BASE}/jobs/${jobId}/speakers/merge`,
+      json('POST', { source_speaker_ids: sourceSpeakerIds, target_speaker_id: targetSpeakerId }),
+      'Could not merge speaker profiles'
+    );
+  },
+
   listGlossaryProfiles(): Promise<string[]> {
     return request(`${API_BASE}/glossary-profiles`, undefined, 'Could not load the series list');
   },
@@ -404,6 +449,67 @@ export const api = {
     }`;
   },
 
+  getAssExportUrl(
+    jobId: string,
+    opts: {
+      useTranslated: boolean;
+      applyRtl?: boolean;
+      bilingual?: boolean;
+      style?: import('../types').SubtitleStyleSettings;
+      colorSpeakers?: boolean;
+    }
+  ): string {
+    const params = new URLSearchParams({
+      use_translated: String(opts.useTranslated),
+      apply_rtl: String(opts.applyRtl ?? true),
+    });
+    if (opts.bilingual) params.set('bilingual', 'true');
+    if (opts.colorSpeakers) params.set('color_speakers', 'true');
+    if (opts.style) {
+      params.set('font_family', opts.style.fontFamily);
+      params.set('font_size_px', String(opts.style.fontSizePx));
+      params.set('text_color', opts.style.textColor);
+      params.set('outline_color', opts.style.outlineColor);
+      params.set('outline_width', String(opts.style.outlineWidth));
+      params.set('background_color', opts.style.backgroundColor);
+      params.set('background_opacity', String(opts.style.backgroundOpacity));
+      params.set('margin_v', String(opts.style.marginV));
+      params.set('bold', String(opts.style.bold));
+      params.set('highlight_mode', opts.style.highlightMode);
+      params.set('highlight_color', opts.style.highlightColor);
+    }
+    return `${API_BASE}/jobs/${jobId}/export/ass?${params.toString()}`;
+  },
+
+  getPreviewFrameUrl(jobId: string, t?: number): string {
+    return t !== undefined ? `${API_BASE}/jobs/${jobId}/preview-frame?t=${t.toFixed(2)}` : `${API_BASE}/jobs/${jobId}/preview-frame`;
+  },
+
+  getFcpxmlExportUrl(jobId: string, useTranslated: boolean, applyRtl = true, fps = 25): string {
+    const params = new URLSearchParams({
+      use_translated: String(useTranslated),
+      apply_rtl: String(applyRtl),
+      fps: String(fps),
+    });
+    return `${API_BASE}/jobs/${jobId}/export/fcpxml?${params.toString()}`;
+  },
+
+  getMarkdownExportUrl(jobId: string, useTranslated: boolean, bilingual = false): string {
+    const params = new URLSearchParams({
+      use_translated: String(useTranslated),
+      bilingual: String(bilingual),
+    });
+    return `${API_BASE}/jobs/${jobId}/export/markdown?${params.toString()}`;
+  },
+
+  getDocxExportUrl(jobId: string, useTranslated: boolean, bilingual = false): string {
+    const params = new URLSearchParams({
+      use_translated: String(useTranslated),
+      bilingual: String(bilingual),
+    });
+    return `${API_BASE}/jobs/${jobId}/export/docx?${params.toString()}`;
+  },
+
   /** The project's edit history (steps oldest first, and the current one). */
   getHistory(jobId: string): Promise<EditHistory> {
     return request(`${API_BASE}/jobs/${jobId}/history`, undefined, 'Could not load the edit history');
@@ -425,7 +531,7 @@ export const api = {
   /** Write the subtitles into the video's own folder (Movie.he.srt next to Movie.mkv). */
   saveNextToVideo(
     jobId: string,
-    options: { format?: 'srt' | 'vtt'; use_translated?: boolean; apply_rtl?: boolean; overwrite?: boolean }
+    options: { format?: 'srt' | 'vtt' | 'ass'; use_translated?: boolean; apply_rtl?: boolean; overwrite?: boolean }
   ): Promise<SaveNextToVideoResult> {
     return request(
       `${API_BASE}/jobs/${jobId}/export/save-next-to-video`,

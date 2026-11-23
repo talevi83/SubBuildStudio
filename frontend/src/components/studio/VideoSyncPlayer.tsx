@@ -1,10 +1,11 @@
 import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import { desktopApi } from '../../utils/desktop';
 import { useJobStore } from '../../store/useJobStore';
-import { hexToRgba, subtitleFontStack, useUiStore } from '../../store/useUiStore';
+import { buildSubtitleTextShadow, hexToRgba, subtitleFontStack, useUiStore } from '../../store/useUiStore';
 import { api } from '../../services/api';
-import { isRtlLanguage } from '../../types';
+import { isRtlLanguage, type WordTiming } from '../../types';
 import { findSegmentAt, formatClock, isTypingTarget } from '../../utils/time';
+import { findActiveWordIndex, resolveDisplayWords } from '../../utils/wordTiming';
 import { useT } from '../../i18n';
 import { WaveformTimeline } from './WaveformTimeline';
 import { SubtitleStylePopover } from './SubtitleStylePopover';
@@ -71,8 +72,16 @@ export const VideoSyncPlayer: React.FC = () => {
   );
   const { topOverlays, bottomOverlays } = useMemo(() => {
     const active = segments.filter((s) => currentTime >= s.start_time && currentTime <= s.end_time);
-    const top: Array<{ key: string; orig?: string; trans?: string }> = [];
-    const bottom: Array<{ key: string; orig?: string; trans?: string }> = [];
+    type OverlayItem = {
+      key: string;
+      orig?: string;
+      trans?: string;
+      startTime: number;
+      endTime: number;
+      words?: WordTiming[] | null;
+    };
+    const top: OverlayItem[] = [];
+    const bottom: OverlayItem[] = [];
 
     const isBracketed = (line: string) => {
       const s = line.trim();
@@ -102,6 +111,9 @@ export const VideoSyncPlayer: React.FC = () => {
           key: `top-${seg.index}`,
           orig: orig ? ensureBrackets(orig) : undefined,
           trans: trans ? ensureBrackets(trans) : undefined,
+          startTime: seg.start_time,
+          endTime: seg.end_time,
+          words: null,
         });
       } else if (lines.length >= 2 && isBracketed(lines[0]) && !isSpeakerTagOnly(lines[0])) {
         const origLines = orig.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -113,13 +125,13 @@ export const VideoSyncPlayer: React.FC = () => {
           const botOrig = origLines.slice(1).join('\n');
           const topTrans = transFirstIsTitle ? transLines[0] : undefined;
           const botTrans = transFirstIsTitle ? transLines.slice(1).join('\n') : trans || undefined;
-          top.push({ key: `top-${seg.index}`, orig: topOrig, trans: topTrans });
-          bottom.push({ key: `bot-${seg.index}`, orig: botOrig, trans: botTrans });
+          top.push({ key: `top-${seg.index}`, orig: topOrig, trans: topTrans, startTime: seg.start_time, endTime: seg.end_time, words: null });
+          bottom.push({ key: `bot-${seg.index}`, orig: botOrig, trans: botTrans, startTime: seg.start_time, endTime: seg.end_time, words: null });
         } else {
-          bottom.push({ key: `bot-${seg.index}`, orig: orig || undefined, trans: trans || undefined });
+          bottom.push({ key: `bot-${seg.index}`, orig: orig || undefined, trans: trans || undefined, startTime: seg.start_time, endTime: seg.end_time, words: seg.words });
         }
       } else {
-        bottom.push({ key: `bot-${seg.index}`, orig: orig || undefined, trans: trans || undefined });
+        bottom.push({ key: `bot-${seg.index}`, orig: orig || undefined, trans: trans || undefined, startTime: seg.start_time, endTime: seg.end_time, words: seg.words });
       }
     }
     return { topOverlays: top, bottomOverlays: bottom };
@@ -303,6 +315,8 @@ export const VideoSyncPlayer: React.FC = () => {
     );
   };
 
+  const containsRtl = (text: string) => /[\u0590-\u05FF\u0600-\u06FF]/.test(text);
+  const isRtlSource = isRtlLanguage(activeJob?.detected_language || activeJob?.source_language);
   const isRtlTarget = isRtlLanguage(activeJob?.target_language);
   const showOriginal = subtitleOverlayMode === 'dual' || subtitleOverlayMode === 'original';
   const showTranslated = subtitleOverlayMode === 'dual' || subtitleOverlayMode === 'translated';
@@ -315,15 +329,55 @@ export const VideoSyncPlayer: React.FC = () => {
   const overlayBg = hasOverlayBg
     ? hexToRgba(subtitleStyle.backgroundColor, subtitleStyle.backgroundOpacity)
     : 'transparent';
-  const overlayTextShadow =
-    subtitleStyle.backgroundOpacity < 30
-      ? '0 1px 3px rgba(0,0,0,0.95), 0 0 6px rgba(0,0,0,0.9), 1px 0 2px rgba(0,0,0,0.9), -1px 0 2px rgba(0,0,0,0.9)'
-      : '0 1px 2px rgba(0,0,0,0.6)';
+  const overlayTextShadow = buildSubtitleTextShadow(subtitleStyle);
+  const overlayFontWeight = subtitleStyle.bold ? 700 : 500;
   const overlayBoxStyle: React.CSSProperties = {
     backgroundColor: overlayBg,
     fontFamily: overlayFontFamily,
     fontSize: `${overlayFontSize}px`,
+    fontWeight: overlayFontWeight,
     lineHeight: 1.4,
+  };
+
+  const renderCaptionText = (
+    text: string,
+    startTime: number,
+    endTime: number,
+    storedWords?: WordTiming[] | null
+  ): React.ReactNode => {
+    if (subtitleStyle.highlightMode === 'none') return text;
+    const resolved = resolveDisplayWords(text, startTime, endTime, storedWords);
+    if (resolved.length === 0) return text;
+    const activeIdx = findActiveWordIndex(resolved, currentTime);
+    const lines = text.split('\n');
+    let cursor = 0;
+    return lines.map((line, li) => {
+      const tokens = line.trim().split(/\s+/).filter(Boolean);
+      return (
+        <React.Fragment key={li}>
+          {li > 0 && <br />}
+          {tokens.map((tok, ti) => {
+            const idx = cursor++;
+            const w = resolved[idx];
+            const isLit =
+              subtitleStyle.highlightMode === 'karaoke'
+                ? Boolean(w && currentTime >= w.s && activeIdx >= 0)
+                : idx === activeIdx;
+            return (
+              <React.Fragment key={`${li}-${ti}`}>
+                {ti > 0 ? ' ' : ''}
+                <span
+                  data-active-word={isLit ? 'true' : undefined}
+                  style={isLit ? { color: subtitleStyle.highlightColor, fontWeight: 800 } : undefined}
+                >
+                  {tok}
+                </span>
+              </React.Fragment>
+            );
+          })}
+        </React.Fragment>
+      );
+    });
   };
 
   const modeButton = (mode: 'dual' | 'translated' | 'original', label: string, title: string) => (
@@ -432,6 +486,7 @@ export const VideoSyncPlayer: React.FC = () => {
                 >
                   {displayOrig && (
                     <p
+                      dir={isRtlSource || containsRtl(displayOrig) ? 'rtl' : 'ltr'}
                       className={`font-medium whitespace-pre-line italic ${
                         displayTrans ? 'text-cyan-200' : ''
                       }`}
@@ -461,7 +516,8 @@ export const VideoSyncPlayer: React.FC = () => {
 
         {bottomOverlays.length > 0 && (
           <div
-            className="absolute bottom-6 inset-x-4 flex flex-col items-center gap-1.5 pointer-events-none z-10"
+            className="absolute inset-x-4 flex flex-col items-center gap-1.5 pointer-events-none z-10"
+            style={{ bottom: `${subtitleStyle.marginV}px` }}
             data-testid="player-bottom-overlay"
           >
             {bottomOverlays.map((item) => {
@@ -477,6 +533,7 @@ export const VideoSyncPlayer: React.FC = () => {
                 >
                   {displayOrig && (
                     <p
+                      dir={isRtlSource || containsRtl(displayOrig) ? 'rtl' : 'ltr'}
                       className="font-medium whitespace-pre-line"
                       style={{
                         color: displayTrans ? 'rgba(255, 255, 255, 0.88)' : subtitleStyle.textColor,
@@ -484,7 +541,9 @@ export const VideoSyncPlayer: React.FC = () => {
                         textShadow: overlayTextShadow,
                       }}
                     >
-                      {displayOrig}
+                      {displayTrans
+                        ? displayOrig
+                        : renderCaptionText(displayOrig, item.startTime, item.endTime, item.words)}
                     </p>
                   )}
                   {displayTrans && (
@@ -493,7 +552,7 @@ export const VideoSyncPlayer: React.FC = () => {
                       className="font-medium whitespace-pre-line"
                       style={{ color: subtitleStyle.textColor, textShadow: overlayTextShadow }}
                     >
-                      {displayTrans}
+                      {renderCaptionText(displayTrans, item.startTime, item.endTime, null)}
                     </p>
                   )}
                 </div>
@@ -529,9 +588,10 @@ export const VideoSyncPlayer: React.FC = () => {
           value={Math.min(currentTime, duration || 0)}
           onChange={(e) => {
             const v = videoRef.current;
-            if (!v) return;
-            v.currentTime = Number(e.target.value);
-            setCurrentTime(v.currentTime);
+            const nextTime = Number(e.target.value);
+            if (v) v.currentTime = nextTime;
+            setCurrentTime(nextTime);
+            setVideoCurrentTime(nextTime);
           }}
           className="flex-1 accent-indigo-500 cursor-pointer"
           aria-label={t('player.seek')}

@@ -15,6 +15,7 @@ class TranscribedWord:
     start: float
     end: float
     probability: float = 1.0
+    speaker: Optional[str] = None
 
 
 @dataclass
@@ -25,6 +26,7 @@ class RawSegment:
     text: str
     confidence: float = 1.0
     words: List[TranscribedWord] = field(default_factory=list)
+    speaker: Optional[str] = None
 
 
 @dataclass
@@ -53,6 +55,9 @@ class PipelineContext:
     convert_to_metric: bool = False
     remove_sdh_speakers: bool = False
     skip_end_credits: bool = True
+    enable_diarization: bool = False
+    diarization_timeline: List[Dict[str, Any]] = field(default_factory=list)
+    speakers: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     enable_translation: bool = False
     target_language: str = "Hebrew"
     gemini_model: str = "gemini-3.8-flash"

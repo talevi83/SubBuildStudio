@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from pathlib import Path
 from typing import Optional
@@ -12,9 +13,12 @@ from app.core.config import settings
 from app.core.database import engine, get_session
 from app.models.db_models import Job
 from app.models.schemas import EmbedVideoRequest, EmbedVideoStatus, SaveNextToVideoRequest, SaveNextToVideoResponse
+from app.utils.ass_formatter import AssStyleConfig, serialize_to_ass
 from app.utils.filenames import safe_basename
-from app.utils.languages import language_code, language_code3, language_name
+from app.utils.languages import is_rtl, language_code, language_code3, language_name
+from app.utils.nle_export import serialize_to_fcpxml
 from app.utils.srt_formatter import serialize_to_srt, serialize_to_vtt
+from app.utils.transcript_export import serialize_to_docx, serialize_to_markdown
 
 router = APIRouter(prefix="/api/jobs", tags=["Export"])
 
@@ -42,6 +46,17 @@ def _attachment_headers(filename: str) -> dict:
     }
 
 
+def _job_speakers(job: Job) -> Optional[dict]:
+    raw = getattr(job, "speakers_json", None)
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except (ValueError, TypeError):
+        return None
+
+
 def _render(
     job: Job,
     use_translated: bool,
@@ -49,20 +64,35 @@ def _render(
     max_chars_per_line: Optional[int],
     fmt: str,
     bilingual: bool = False,
+    ass_style: Optional[AssStyleConfig] = None,
 ) -> bytes:
     """The subtitle file's bytes, exactly as downloaded (SRT with a UTF-8 BOM)."""
-    serializer = serialize_to_srt if fmt == "srt" else serialize_to_vtt
     onscreen_pos = getattr(job, "onscreen_position", "top_center") or "top_center"
+    max_chars = max_chars_per_line or settings.max_chars_per_line
+    if fmt == "ass":
+        content = serialize_to_ass(
+            job.segments,
+            use_translated=use_translated,
+            apply_rtl=apply_rtl,
+            max_chars_per_line=max_chars,
+            onscreen_position=onscreen_pos,
+            bilingual=bilingual,
+            style=ass_style,
+            speakers=_job_speakers(job),
+        )
+        return ("\ufeff" + content).encode("utf-8")
+
+    serializer = serialize_to_srt if fmt == "srt" else serialize_to_vtt
     content = serializer(
         job.segments,
         use_translated=use_translated,
         apply_rtl=apply_rtl,
-        max_chars_per_line=max_chars_per_line or settings.max_chars_per_line,
+        max_chars_per_line=max_chars,
         onscreen_position=onscreen_pos,
         bilingual=bilingual,
     )
     # UTF-8 BOM: some players (and Windows Notepad) otherwise mis-detect Hebrew as ANSI.
-    body = ("﻿" + content) if fmt == "srt" else content
+    body = ("\ufeff" + content) if fmt == "srt" else content
     return body.encode("utf-8")
 
 
@@ -74,14 +104,23 @@ def _export(
     max_chars_per_line: Optional[int],
     fmt: str,
     bilingual: bool = False,
+    ass_style: Optional[AssStyleConfig] = None,
 ) -> Response:
     with history.job_lock(job_id):
         session.expire_all()
         job = session.get(Job, job_id)
         if not job:
             raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-        media_type = "application/x-subrip; charset=utf-8" if fmt == "srt" else "text/vtt; charset=utf-8"
-        content = _render(job, use_translated, apply_rtl, max_chars_per_line, fmt, bilingual=bilingual)
+        if fmt == "srt":
+            media_type = "application/x-subrip; charset=utf-8"
+        elif fmt == "ass":
+            media_type = "text/x-ssa; charset=utf-8"
+        else:
+            media_type = "text/vtt; charset=utf-8"
+        content = _render(
+            job, use_translated, apply_rtl, max_chars_per_line, fmt,
+            bilingual=bilingual, ass_style=ass_style,
+        )
         headers = _attachment_headers(_build_filename(job, use_translated, fmt, bilingual=bilingual))
     return Response(
         content=content,
@@ -114,6 +153,138 @@ def export_vtt(
 ):
     """Export and download subtitles as WebVTT (.vtt) format."""
     return _export(job_id, session, use_translated, apply_rtl, max_chars_per_line, "vtt", bilingual=bilingual)
+
+
+@router.get("/{job_id}/export/ass")
+def export_ass(
+    job_id: str,
+    use_translated: bool = Query(False, description="Export translated subtitle text if True"),
+    apply_rtl: bool = Query(True, description="Apply BiDi RTL marks for Hebrew/Arabic"),
+    max_chars_per_line: Optional[int] = Query(None, ge=10, le=200, description="Line length limit"),
+    bilingual: bool = Query(False, description="Export both original and translated text in each cue"),
+    font_family: Optional[str] = Query(None, max_length=64),
+    font_size_px: int = Query(18, ge=12, le=36),
+    text_color: str = Query("#FFFFFF", pattern=r"^#[0-9A-Fa-f]{6}$"),
+    outline_color: str = Query("#000000", pattern=r"^#[0-9A-Fa-f]{6}$"),
+    outline_width: float = Query(1.6, ge=0.0, le=6.0),
+    background_color: str = Query("#000000", pattern=r"^#[0-9A-Fa-f]{6}$"),
+    background_opacity: int = Query(0, ge=0, le=100),
+    margin_v: int = Query(16, ge=8, le=120),
+    bold: bool = Query(False),
+    color_speakers: bool = Query(False),
+    highlight_mode: str = Query("none", pattern=r"^(none|word|karaoke)$"),
+    highlight_color: str = Query("#FACC15", pattern=r"^#[0-9A-Fa-f]{6}$"),
+    session: Session = Depends(get_session),
+):
+    """Export and download styled subtitles in Advanced SubStation Alpha (.ass) format."""
+    style = AssStyleConfig(
+        font_family=font_family or "Heebo",
+        font_size_px=font_size_px,
+        text_color=text_color,
+        outline_color=outline_color,
+        outline_width=outline_width,
+        background_color=background_color,
+        background_opacity=background_opacity,
+        margin_v=margin_v,
+        bold=bold,
+        color_speakers=color_speakers,
+        highlight_mode=highlight_mode,
+        highlight_color=highlight_color,
+    )
+    return _export(
+        job_id, session, use_translated, apply_rtl, max_chars_per_line, "ass",
+        bilingual=bilingual, ass_style=style,
+    )
+
+
+@router.get("/{job_id}/export/fcpxml")
+def export_fcpxml(
+    job_id: str,
+    use_translated: bool = Query(False, description="Export translated subtitle text if True"),
+    apply_rtl: bool = Query(True, description="Apply BiDi RTL marks for Hebrew/Arabic"),
+    fps: float = Query(25.0, ge=1.0, le=120.0, description="Timeline frame rate"),
+    max_chars_per_line: Optional[int] = Query(None, ge=10, le=200, description="Line length limit"),
+    session: Session = Depends(get_session),
+):
+    """Export timeline titles and markers as Final Cut Pro XML (FCPXML 1.9) for DaVinci Resolve / Premiere / FCP."""
+    with history.job_lock(job_id):
+        session.expire_all()
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        xml_str = serialize_to_fcpxml(
+            job.segments,
+            title=Path(job.file_name).stem or "SubBuild Studio",
+            duration=job.video_duration,
+            fps=fps,
+            use_translated=use_translated,
+            apply_rtl=apply_rtl,
+            max_chars_per_line=max_chars_per_line or settings.max_chars_per_line,
+            speakers=_job_speakers(job),
+        )
+        headers = _attachment_headers(_build_filename(job, use_translated, "fcpxml"))
+    return Response(content=xml_str.encode("utf-8"), media_type="application/xml; charset=utf-8", headers=headers)
+
+
+@router.get("/{job_id}/export/markdown")
+def export_markdown(
+    job_id: str,
+    use_translated: bool = Query(False, description="Export translated transcript text if True"),
+    bilingual: bool = Query(False, description="Include both translated and original text"),
+    session: Session = Depends(get_session),
+):
+    """Export a formatted, speaker-grouped Markdown (.md) transcript."""
+    with history.job_lock(job_id):
+        session.expire_all()
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        lang = job.target_language if use_translated else (job.detected_language or job.source_language)
+        md_str = serialize_to_markdown(
+            job.segments,
+            title=Path(job.file_name).stem or "Transcript",
+            language=lang,
+            duration=job.video_duration,
+            use_translated=use_translated,
+            bilingual=bilingual,
+            speakers=_job_speakers(job),
+        )
+        headers = _attachment_headers(_build_filename(job, use_translated, "md", bilingual=bilingual))
+    return Response(content=md_str.encode("utf-8"), media_type="text/markdown; charset=utf-8", headers=headers)
+
+
+@router.get("/{job_id}/export/docx")
+def export_docx(
+    job_id: str,
+    use_translated: bool = Query(False, description="Export translated transcript text if True"),
+    bilingual: bool = Query(False, description="Include both translated and original text"),
+    rtl: Optional[bool] = Query(None, description="Force RTL BiDi layout; defaults to target/source language direction"),
+    session: Session = Depends(get_session),
+):
+    """Export a formatted Word (.docx) transcript with BiDi RTL support."""
+    with history.job_lock(job_id):
+        session.expire_all()
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        lang = job.target_language if use_translated else (job.detected_language or job.source_language)
+        use_rtl = is_rtl(lang) if rtl is None else rtl
+        blob = serialize_to_docx(
+            job.segments,
+            title=Path(job.file_name).stem or "Transcript",
+            language=lang,
+            duration=job.video_duration,
+            use_translated=use_translated,
+            bilingual=bilingual,
+            rtl=use_rtl,
+            speakers=_job_speakers(job),
+        )
+        headers = _attachment_headers(_build_filename(job, use_translated, "docx", bilingual=bilingual))
+    return Response(
+        content=blob,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers=headers,
+    )
 
 
 @router.post("/{job_id}/export/save-next-to-video", response_model=SaveNextToVideoResponse)
@@ -251,7 +422,30 @@ async def start_embed_video(job_id: str, req: EmbedVideoRequest, session: Sessio
                 if free is not None and free < video.stat().st_size * 1.02 + 50_000_000:
                     raise HTTPException(status_code=507, detail=f"Not enough free disk space in {target.parent}")
 
-            text = _render(job, req.use_translated, req.apply_rtl, None, "srt").decode("utf-8").lstrip("\ufeff")
+            if req.mode == "burn":
+                tier_px = {"small": 15, "medium": 18, "large": 23}.get(req.font_size, 18)
+                ass_style = AssStyleConfig(
+                    font_family=req.font_family or ve._burn_font_name(),
+                    font_size_px=req.font_size_px if req.font_size_px is not None else tier_px,
+                    text_color=req.text_color or "#FFFFFF",
+                    outline_color=req.outline_color or "#000000",
+                    outline_width=req.outline_width if req.outline_width is not None else 1.6,
+                    background_color=req.background_color or "#000000",
+                    background_opacity=req.background_opacity if req.background_opacity is not None else 0,
+                    margin_v=req.margin_v if req.margin_v is not None else 16,
+                    bold=req.bold,
+                    color_speakers=req.color_speakers,
+                    highlight_mode=req.highlight_mode,
+                    highlight_color=req.highlight_color or "#FACC15",
+                )
+                text = _render(
+                    job, req.use_translated, req.apply_rtl, None, "ass",
+                    bilingual=req.bilingual, ass_style=ass_style,
+                ).decode("utf-8").lstrip("\ufeff")
+                sub_fmt = "ass"
+            else:
+                text = _render(job, req.use_translated, req.apply_rtl, None, "srt").decode("utf-8").lstrip("\ufeff")
+                sub_fmt = "srt"
             opts = ve.EmbedOptions(
                 mode=req.mode,
                 language3=language_code3(language),
@@ -261,8 +455,16 @@ async def start_embed_video(job_id: str, req: EmbedVideoRequest, session: Sessio
                 font_family=req.font_family,
                 font_size_px=req.font_size_px,
                 text_color=req.text_color,
+                outline_color=req.outline_color,
+                outline_width=req.outline_width,
                 background_color=req.background_color,
                 background_opacity=req.background_opacity,
+                margin_v=req.margin_v,
+                bold=req.bold,
+                color_speakers=req.color_speakers,
+                highlight_mode=req.highlight_mode,
+                highlight_color=req.highlight_color,
+                subtitle_format=sub_fmt,
                 quality=req.quality,
                 audio_stream=job.selected_audio_stream or 0,
             )
@@ -280,6 +482,53 @@ async def start_embed_video(job_id: str, req: EmbedVideoRequest, session: Sessio
         raise HTTPException(status_code=409, detail=f"Another project is already writing {target.name}.")
     task = ve.start_embed(job_id, str(video.resolve()), target, text, opts, in_app_storage=job_is_upload)
     return _embed_status(job_id, task)
+
+
+@router.get("/{job_id}/preview-frame")
+async def get_preview_frame(
+    job_id: str,
+    t: Optional[float] = Query(None, ge=0.0, description="Timestamp in seconds"),
+    session: Session = Depends(get_session),
+):
+    """Return a single JPEG video frame for live burn-in subtitle preview."""
+    from app.pipeline import speaker_detect as sd
+    from app.pipeline.stages.audio_stage import get_ffmpeg_bin
+
+    job = session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    video = Path(job.video_path)
+    if not video.is_file():
+        raise HTTPException(status_code=404, detail=f"The video file no longer exists: {video}")
+
+    if t is not None:
+        ts = float(t)
+        if job.video_duration and job.video_duration > 0.2:
+            ts = min(ts, job.video_duration - 0.1)
+    else:
+        ordered = sorted(job.segments, key=lambda s: (s.start_time, s.index))
+        sample_seg = next(
+            (
+                s for s in ordered
+                if (s.segment_type or "DIALOGUE") != "ON_SCREEN"
+                and ((s.translated_text or s.original_text or "").strip())
+            ),
+            None,
+        )
+        if sample_seg is not None:
+            ts = max(0.0, (float(sample_seg.start_time) + float(sample_seg.end_time)) / 2.0)
+        else:
+            dur = float(job.video_duration or 10.0)
+            ts = min(5.0, max(0.0, dur / 2.0))
+
+    jpeg = await asyncio.to_thread(sd.grab_frame, str(video.resolve()), ts, get_ffmpeg_bin())
+    if not jpeg:
+        raise HTTPException(status_code=502, detail="Could not extract preview frame from video")
+    return Response(
+        content=jpeg,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=30"},
+    )
 
 
 @router.get("/{job_id}/export/embed", response_model=Optional[EmbedVideoStatus])

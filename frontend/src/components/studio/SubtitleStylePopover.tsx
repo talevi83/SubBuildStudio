@@ -2,14 +2,20 @@ import React, { useEffect, useRef } from 'react';
 import { RotateCcw, X } from 'lucide-react';
 import { useT } from '../../i18n';
 import {
+  MAX_MARGIN_V,
+  MAX_OUTLINE_WIDTH,
   MAX_SUBTITLE_FONT_SIZE,
+  MIN_MARGIN_V,
+  MIN_OUTLINE_WIDTH,
   MIN_SUBTITLE_FONT_SIZE,
   SUBTITLE_BG_COLORS,
   SUBTITLE_FONTS,
+  SUBTITLE_STYLE_PRESETS,
   SUBTITLE_TEXT_COLORS,
+  type SubtitleStylePresetId,
   useUiStore,
 } from '../../store/useUiStore';
-import type { SubtitleFontFamily } from '../../types';
+import type { SubtitleFontFamily, SubtitleHighlightMode } from '../../types';
 
 interface Props {
   open: boolean;
@@ -23,6 +29,17 @@ const OPACITY_PRESETS: Array<{ value: number; key: 'bgNone' | 'bgLight' | 'bgSta
   { value: 75, key: 'bgStandard' },
   { value: 100, key: 'bgSolid' },
 ];
+
+const PRESET_KEY_MAP: Record<
+  SubtitleStylePresetId,
+  'presetCinema' | 'presetYoutube' | 'presetReels' | 'presetPodcast' | 'presetBox'
+> = {
+  cinema: 'presetCinema',
+  youtube: 'presetYoutube',
+  reels: 'presetReels',
+  podcast: 'presetPodcast',
+  box: 'presetBox',
+};
 
 export const SubtitleStylePopover: React.FC<Props> = ({ open, onClose, anchorRef }) => {
   const t = useT();
@@ -77,11 +94,53 @@ export const SubtitleStylePopover: React.FC<Props> = ({ open, onClose, anchorRef
         </button>
       </div>
 
-      {/* Font family */}
+      {/* Style presets */}
+      <div className="space-y-1.5">
+        <span className="block text-[11px] font-medium text-zinc-400">{t('player.style.presetsLabel')}</span>
+        <div className="flex flex-wrap gap-1">
+          {SUBTITLE_STYLE_PRESETS.map((preset) => {
+            const active =
+              subtitleStyle.fontFamily === preset.style.fontFamily &&
+              subtitleStyle.fontSizePx === preset.style.fontSizePx &&
+              subtitleStyle.backgroundOpacity === preset.style.backgroundOpacity &&
+              subtitleStyle.bold === preset.style.bold &&
+              subtitleStyle.highlightMode === preset.style.highlightMode;
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                onClick={() => setSubtitleStyle(preset.style)}
+                data-testid={`subtitle-style-preset-${preset.id}`}
+                className={`px-2 py-0.5 rounded-md text-[10px] font-medium border transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-indigo-600/20 border-indigo-500 text-indigo-200'
+                    : 'bg-sunken border-line text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                {t(`player.style.${PRESET_KEY_MAP[preset.id]}`)}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Font family + Bold */}
       <div className="space-y-1">
-        <label htmlFor="subtitle-font-select" className="block text-[11px] font-medium text-zinc-400">
-          {t('player.style.fontFamily')}
-        </label>
+        <div className="flex items-center justify-between">
+          <label htmlFor="subtitle-font-select" className="block text-[11px] font-medium text-zinc-400">
+            {t('player.style.fontFamily')}
+          </label>
+          <label className="flex items-center gap-1.5 text-[11px] text-zinc-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={subtitleStyle.bold}
+              onChange={(e) => setSubtitleStyle({ bold: e.target.checked })}
+              data-testid="subtitle-bold"
+              className="w-3.5 h-3.5 rounded border-zinc-700 text-indigo-600 bg-zinc-800 cursor-pointer"
+            />
+            <span>{t('player.style.bold')}</span>
+          </label>
+        </div>
         <select
           id="subtitle-font-select"
           data-testid="subtitle-font-family"
@@ -255,6 +314,88 @@ export const SubtitleStylePopover: React.FC<Props> = ({ open, onClose, anchorRef
             />
           </div>
         </div>
+      </div>
+
+      {/* Outline (when box opacity < 100%) */}
+      {subtitleStyle.backgroundOpacity < 100 && (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between gap-2 text-[11px]">
+            <span className="font-medium text-zinc-400">{t('player.style.outlineWidth')}</span>
+            <div className="flex items-center gap-1.5">
+              <span className="font-mono text-indigo-300 font-semibold" dir="ltr">
+                {subtitleStyle.outlineWidth.toFixed(1)}
+              </span>
+              <input
+                type="color"
+                value={subtitleStyle.outlineColor}
+                onChange={(e) => setSubtitleStyle({ outlineColor: e.target.value })}
+                aria-label={t('player.style.outlineColor')}
+                data-testid="subtitle-outline-color"
+                className="w-5 h-5 rounded border border-line bg-transparent cursor-pointer p-0"
+              />
+            </div>
+          </div>
+          <input
+            type="range"
+            min={MIN_OUTLINE_WIDTH}
+            max={MAX_OUTLINE_WIDTH}
+            step={0.2}
+            value={subtitleStyle.outlineWidth}
+            onChange={(e) => setSubtitleStyle({ outlineWidth: Number(e.target.value) })}
+            aria-label={t('player.style.outlineWidth')}
+            data-testid="subtitle-outline-width"
+            className="w-full accent-indigo-500 cursor-pointer"
+          />
+        </div>
+      )}
+
+      {/* Word Highlight (Creator mode) */}
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between gap-2 text-[11px]">
+          <span className="font-medium text-zinc-400">{t('player.style.highlightMode')}</span>
+          {subtitleStyle.highlightMode !== 'none' && (
+            <input
+              type="color"
+              value={subtitleStyle.highlightColor}
+              onChange={(e) => setSubtitleStyle({ highlightColor: e.target.value })}
+              aria-label={t('player.style.highlightColor')}
+              data-testid="subtitle-highlight-color"
+              className="w-5 h-5 rounded border border-line bg-transparent cursor-pointer p-0"
+            />
+          )}
+        </div>
+        <select
+          value={subtitleStyle.highlightMode}
+          onChange={(e) => setSubtitleStyle({ highlightMode: e.target.value as SubtitleHighlightMode })}
+          aria-label={t('player.style.highlightMode')}
+          data-testid="style-highlight-mode"
+          className="w-full bg-sunken border border-line rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 focus:outline-none focus:border-indigo-500 cursor-pointer"
+        >
+          <option value="none">{t('player.style.highlightNone')}</option>
+          <option value="word">{t('player.style.highlightWord')}</option>
+          <option value="karaoke">{t('player.style.highlightKaraoke')}</option>
+        </select>
+      </div>
+
+      {/* Bottom height */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="font-medium text-zinc-400">{t('player.style.bottomHeight')}</span>
+          <span className="font-mono text-indigo-300 font-semibold" dir="ltr">
+            {subtitleStyle.marginV}px
+          </span>
+        </div>
+        <input
+          type="range"
+          min={MIN_MARGIN_V}
+          max={MAX_MARGIN_V}
+          step={2}
+          value={subtitleStyle.marginV}
+          onChange={(e) => setSubtitleStyle({ marginV: Number(e.target.value) })}
+          aria-label={t('player.style.bottomHeight')}
+          data-testid="subtitle-margin-v"
+          className="w-full accent-indigo-500 cursor-pointer"
+        />
       </div>
 
       {/* Reset */}

@@ -13,6 +13,16 @@ class TranslatableSegment:
     translated_text: Optional[str] = None
     translation_failed: bool = False
     segment_type: str = "DIALOGUE"  # DIALOGUE | COMMS | ON_SCREEN
+    speaker: Optional[str] = None
+    speaker_info: Optional[str] = None
+    # Who the line is spoken to. `addressee_info` is a confident listener (sent as `addressee`),
+    # `addressee_guess` a likely one the translator may overrule from context.
+    addressee_info: Optional[str] = None
+    addressee_guess: Optional[str] = None
+    # The structured listener record stored with the row (see app/pipeline/addressee.py)
+    addressee: Optional[Dict[str, Any]] = None
+    # 2nd-person form the translator reports having written: m | f | pl (None = none / not reported)
+    addressee_form: Optional[str] = None
 
     @property
     def duration(self) -> float:

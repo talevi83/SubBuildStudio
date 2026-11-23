@@ -13,8 +13,23 @@ def _extract_text(item: Any) -> str:
     if isinstance(item, str):
         return item
     if isinstance(item, dict):
-        return str(item.get("original_text") or item.get("text") or "")
-    return str(getattr(item, "original_text", "") or getattr(item, "text", "") or "")
+        parts = [
+            item.get("original_text") or item.get("text") or "",
+            item.get("speaker_info") or "",
+            item.get("addressee_info") or "",
+            item.get("addressee_guess") or "",
+            item.get("speaker") or "",
+            item.get("addressee") if isinstance(item.get("addressee"), str) else "",
+        ]
+        return " ".join(str(p) for p in parts if p)
+    parts = [
+        getattr(item, "original_text", "") or getattr(item, "text", "") or "",
+        getattr(item, "speaker_info", "") or "",
+        getattr(item, "addressee_info", "") or "",
+        getattr(item, "addressee_guess", "") or "",
+        getattr(item, "speaker", "") or "",
+    ]
+    return " ".join(str(p) for p in parts if p)
 
 
 def _build_window_text(
@@ -31,15 +46,19 @@ def _build_window_text(
 
 
 def _character_matches(char: Dict[str, Any], window_cf: str, window_tokens: set[str]) -> bool:
-    name = (char.get("name") or "").strip()
-    if not name:
-        return False
-    name_cf = name.casefold()
-    if name_cf in window_cf:
+    speaker_id = (char.get("speaker_id") or "").strip().casefold()
+    if speaker_id and speaker_id in window_tokens:
         return True
-    for token in re.findall(r"[^\W_]+", name_cf):
-        if len(token) >= 3 and token in window_tokens:
+    for key in ("name", "target_name"):
+        val = (char.get(key) or "").strip()
+        if not val:
+            continue
+        val_cf = val.casefold()
+        if val_cf in window_cf:
             return True
+        for token in re.findall(r"[^\W_]+", val_cf):
+            if len(token) >= 3 and token in window_tokens:
+                return True
     return False
 
 

@@ -17,6 +17,7 @@ from app.models.db_models import Job, JobStatus, SubtitleSegmentRecord
 from app.models.schemas import AudioStreamInfo
 from app.pipeline.context import PipelineCancelled, PipelineContext, RawSegment
 from app.pipeline.stages.audio_stage import AudioExtractionStage
+from app.pipeline.stages.diarize_stage import DiarizeStage
 from app.pipeline.frame_sampling import remove_frames
 from app.pipeline.job_report import log_job_start, log_job_summary
 from app.pipeline.stages.ocr_stage import OnScreenTextStage
@@ -56,6 +57,7 @@ ACTIVE_STATUSES = {
     JobStatus.PROBING,
     JobStatus.EXTRACTING_AUDIO,
     JobStatus.TRANSCRIBING,
+    JobStatus.DIARIZING,
     JobStatus.SCANNING_ONSCREEN,
     JobStatus.REFINING,
     JobStatus.TRANSLATING,
@@ -67,6 +69,7 @@ STAGE_WEIGHTS = {
     JobStatus.PROBING: 2,
     JobStatus.EXTRACTING_AUDIO: 6,
     JobStatus.TRANSCRIBING: 62,
+    JobStatus.DIARIZING: 10,
     JobStatus.SCANNING_ONSCREEN: 12,
     JobStatus.REFINING: 2,
     JobStatus.TRANSLATING: 28,
@@ -161,6 +164,30 @@ def _norm_text(value: Optional[str]) -> str:
     return strip_directional_marks(value) if value else ""
 
 
+def _parse_words(raw: Optional[str]) -> Optional[List[Dict[str, Any]]]:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, list) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_addressee(raw: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _dump_addressee(record: Any) -> Optional[str]:
+    return json.dumps(record, ensure_ascii=False) if isinstance(record, dict) and record else None
+
+
 def _segment_payload(job_id: str, seg: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": seg.get("id"),
@@ -174,6 +201,9 @@ def _segment_payload(job_id: str, seg: Dict[str, Any]) -> Dict[str, Any]:
         "segment_type": seg.get("segment_type", "DIALOGUE"),
         "confidence": seg.get("confidence", 1.0),
         "cps": seg.get("cps", 0.0),
+        "words": seg.get("words"),
+        "speaker": seg.get("speaker"),
+        "addressee": seg.get("addressee"),
     }
 
 
@@ -213,6 +243,7 @@ class PipelineOrchestrator:
         self._history_recorded = False
         self._prior_usage_dict: Optional[Dict[str, Any]] = None
         self._ctx: Optional[PipelineContext] = None
+        self._stage_progress_percent: Optional[float] = None
         # segment id -> (original_text, translated_text) as this run last saw them in the database.
         # Text can be edited while a translation runs; a row whose text no longer matches was changed
         # by the user and must not be overwritten by a translation of the old text.
@@ -237,6 +268,12 @@ class PipelineOrchestrator:
     @classmethod
     def is_running(cls, job_id: str) -> bool:
         return job_id in active_pipelines
+
+    @classmethod
+    def get_stage_progress(cls, job_id: str) -> Optional[float]:
+        """Return the active stage's own 0..100 progress for a running job, if any."""
+        pipeline = active_pipelines.get(job_id)
+        return pipeline._stage_progress_percent if pipeline is not None else None
 
     @classmethod
     def get_live_segments(cls, job_id: str) -> List[Dict[str, Any]]:
@@ -286,6 +323,14 @@ class PipelineOrchestrator:
                     glossary = json.loads(job.glossary_json)
                 except Exception:
                     pass
+            speakers: Dict[str, Dict[str, Any]] = {}
+            if getattr(job, "speakers_json", None):
+                try:
+                    parsed_sp = json.loads(job.speakers_json)
+                    if isinstance(parsed_sp, dict):
+                        speakers = parsed_sp
+                except Exception:
+                    pass
             if job.usage_json:
                 try:
                     self._prior_usage_dict = json.loads(job.usage_json)
@@ -313,6 +358,8 @@ class PipelineOrchestrator:
                 convert_to_metric=getattr(job, "convert_to_metric", False),
                 remove_sdh_speakers=getattr(job, "remove_sdh_speakers", False),
                 skip_end_credits=getattr(job, "skip_end_credits", True),
+                enable_diarization=bool(getattr(job, "enable_diarization", False)),
+                speakers=speakers,
                 enable_translation=job.enable_translation or self.mode == "translate",
                 target_language=job.target_language,
                 gemini_model=job.gemini_model,
@@ -349,6 +396,9 @@ class PipelineOrchestrator:
                         "segment_type": s.segment_type or "DIALOGUE",
                         "confidence": s.confidence,
                         "cps": s.cps,
+                        "words": _parse_words(getattr(s, "words_json", None)),
+                        "speaker": getattr(s, "speaker", None),
+                        "addressee": _parse_addressee(getattr(s, "addressee_json", None)),
                     }
                     for s in job.segments
                 ]
@@ -376,6 +426,8 @@ class PipelineOrchestrator:
             (JobStatus.EXTRACTING_AUDIO, AudioExtractionStage()),
             (JobStatus.TRANSCRIBING, TranscribeStage()),
         ]
+        if ctx.enable_diarization:
+            stages.append((JobStatus.DIARIZING, DiarizeStage()))
         if ctx.detect_onscreen_text:
             stages.append((JobStatus.SCANNING_ONSCREEN, OnScreenTextStage()))
         stages.append((JobStatus.REFINING, RefineStage()))
@@ -456,11 +508,13 @@ class PipelineOrchestrator:
     async def _acquire_gpu(self, overall_pct: float) -> None:
         sem = _get_gpu_semaphore()
         if sem.locked():
+            self._stage_progress_percent = None
             self._update_job(status=JobStatus.QUEUED, current_stage="QUEUED", progress_percent=overall_pct)
             await self._broadcast({
                 "event": "STAGE_PROGRESS",
                 "stage": JobStatus.QUEUED.value,
                 "progress_percent": overall_pct,
+                "stage_progress_percent": None,
                 "message": "Waiting for another job to finish transcribing...",
             })
         acquire = asyncio.ensure_future(sem.acquire())
@@ -484,11 +538,13 @@ class PipelineOrchestrator:
             return
         sem = _get_pipeline_semaphore()
         if sem.locked():
+            self._stage_progress_percent = None
             self._update_job(status=JobStatus.QUEUED, current_stage="QUEUED", progress_percent=0.0)
             await self._broadcast({
                 "event": "STAGE_PROGRESS",
                 "stage": JobStatus.QUEUED.value,
                 "progress_percent": 0.0,
+                "stage_progress_percent": None,
                 "message": "Waiting in queue for earlier episode to finish...",
             })
         acquire = asyncio.ensure_future(sem.acquire())
@@ -546,6 +602,9 @@ class PipelineOrchestrator:
                     segment_type=s.get("segment_type", "DIALOGUE"),
                     confidence=s.get("confidence", 1.0),
                     cps=s.get("cps", 0.0),
+                    words_json=json.dumps(s["words"], ensure_ascii=False) if s.get("words") else None,
+                    speaker=s.get("speaker"),
+                    addressee_json=_dump_addressee(s.get("addressee")),
                 )
                 session.add(rec)
                 records.append(rec)
@@ -586,12 +645,17 @@ class PipelineOrchestrator:
                     SubtitleSegmentRecord.job_id == self.job_id, SubtitleSegmentRecord.id.in_(ids)
                 )
             ).all():
+                tagged = _parse_addressee(getattr(row, "addressee_json", None))
+                if tagged and tagged.get("locked") and not (by_id[row.id].get("addressee") or {}).get("locked"):
+                    by_id[row.id]["addressee"] = tagged  # a listener the user set by hand during the run
                 if self._edited_by_user(row):
                     seg = by_id[row.id]
                     seg["original_text"] = row.original_text
                     seg["translated_text"] = row.translated_text
                     seg["translation_failed"] = bool(row.translation_failed)
                     seg["cps"] = row.cps
+                    seg["words"] = _parse_words(getattr(row, "words_json", None))
+                    seg["speaker"] = getattr(row, "speaker", None)
                     adopted += 1
         return adopted
 
@@ -654,12 +718,22 @@ class PipelineOrchestrator:
                     row.translated_text = b.translated_text
                     row.translation_failed = b.translation_failed
                     row.cps = calculate_cps(b.translated_text or row.original_text, max(0.1, row.end_time - row.start_time))
+                    tagged = _parse_addressee(getattr(row, "addressee_json", None))
+                    incoming = getattr(b, "addressee", None)
+                    if tagged and tagged.get("locked") and not (incoming or {}).get("locked"):
+                        # Set by hand while this batch was out: the user's listener stands
+                        seg = seg_by_id.get(row.id)
+                        if seg is not None:
+                            seg["addressee"] = tagged
+                    else:
+                        row.addressee_json = _dump_addressee(incoming)
                     session.add(row)
                 stored[idx] = {
                     "id": row.id,
                     "original_text": row.original_text,
                     "translated_text": row.translated_text,
                     "translation_failed": bool(row.translation_failed),
+                    "addressee": _parse_addressee(getattr(row, "addressee_json", None)),
                 }
             session.commit()
             for value in stored.values():
@@ -677,6 +751,8 @@ class PipelineOrchestrator:
                     "translated_text": stored.get(b.index, {}).get("translated_text", b.translated_text),
                     "translation_failed": stored.get(b.index, {}).get("translation_failed", b.translation_failed),
                     "segment_type": b.segment_type,
+                    "speaker": b.speaker,
+                    "addressee": stored.get(b.index, {}).get("addressee", getattr(b, "addressee", None)),
                 }
                 for b in batch
             ],
@@ -710,6 +786,7 @@ class PipelineOrchestrator:
                     if not ctx.embedded_dialogue_segments:
                         await self._acquire_gpu(round(base_pct, 1))
 
+                self._stage_progress_percent = 0.0
                 self._update_job(
                     status=stage_status,
                     current_stage=stage.name,
@@ -721,6 +798,7 @@ class PipelineOrchestrator:
                     "event": "STAGE_PROGRESS",
                     "stage": stage_status.value,
                     "progress_percent": round(base_pct, 1),
+                    "stage_progress_percent": 0.0,
                 })
 
                 logger.info(f"Stage {stage_status.value} started")
@@ -754,12 +832,18 @@ class PipelineOrchestrator:
                     except Exception as e:
                         logger.debug(f"Could not unload Whisper model after transcription: {e}")
                     self._release_gpu()
-                    if self.mode != "sync":  # syncing still needs the audio for voice detection
+                    if self.mode != "sync" and not ctx.enable_diarization:  # defer deletion if diarization needs the WAV
                         self._delete_audio()
                     self._update_job(detected_language=ctx.detected_language)
+                elif stage_status == JobStatus.DIARIZING:
+                    if ctx.speakers:
+                        self._update_job(speakers_json=json.dumps(ctx.speakers, ensure_ascii=False))
+                    self._delete_audio()
                 elif stage_status == JobStatus.SCANNING_ONSCREEN:
                     await self._stop_frame_sampling(ctx)
                 elif stage_status == JobStatus.REFINING:
+                    if ctx.speakers:
+                        self._update_job(speakers_json=json.dumps(ctx.speakers, ensure_ascii=False))
                     self._save_segments(ctx.refined_segments)
                     await self._broadcast({
                         "event": "SEGMENTS_REFINED",
@@ -781,8 +865,13 @@ class PipelineOrchestrator:
                         "segments_batch": [_segment_payload(self.job_id, s) for s in ctx.refined_segments],
                     })
                 elif stage_status == JobStatus.TRANSLATING:
-                    if ctx.glossary is not None:
-                        self._update_job(glossary_json=json.dumps(ctx.glossary, ensure_ascii=False))
+                    if ctx.glossary is not None or ctx.speakers:
+                        fields: Dict[str, Any] = {}
+                        if ctx.glossary is not None:
+                            fields["glossary_json"] = json.dumps(ctx.glossary, ensure_ascii=False)
+                        if ctx.speakers:
+                            fields["speakers_json"] = json.dumps(ctx.speakers, ensure_ascii=False)
+                        self._update_job(**fields)
                     if any(s.get("id") is None for s in ctx.refined_segments):
                         # Lines were split: the whole list replaces the stored rows, so keep edits first
                         self._adopt_user_edits(ctx.refined_segments)
@@ -810,6 +899,7 @@ class PipelineOrchestrator:
             # Before the final status: from that moment the job may be started again, and the
             # history step (a thread hop) must not leave a window where it still counts as running
             await self._record_history()
+            self._stage_progress_percent = None
             self._update_job(
                 status=JobStatus.COMPLETED,
                 current_stage="COMPLETED",
@@ -879,11 +969,14 @@ class PipelineOrchestrator:
         ) -> None:
             if self.cancel_flag.is_set():
                 return
-            overall_pct = round(base_pct + pct * share, 1)
+            stage_pct = round(max(0.0, min(100.0, float(pct))), 1)
+            self._stage_progress_percent = stage_pct
+            overall_pct = round(base_pct + stage_pct * share, 1)
             payload: Dict[str, Any] = {
                 "event": "STAGE_PROGRESS",
                 "stage": stage_status.value,
                 "progress_percent": overall_pct,
+                "stage_progress_percent": stage_pct,
                 "speed_factor": speed,
                 "eta_seconds": eta,
                 "message": msg,
@@ -912,6 +1005,7 @@ class PipelineOrchestrator:
         return _on_stage_progress
 
     async def _handle_cancellation(self) -> None:
+        self._stage_progress_percent = None
         if self.mode == "translate":
             # The transcription is intact; only the retranslation was stopped.
             self._update_job(
@@ -932,6 +1026,7 @@ class PipelineOrchestrator:
         })
 
     async def _handle_failure(self, error_message: str) -> None:
+        self._stage_progress_percent = None
         self._update_job(status=JobStatus.FAILED, error_message=error_message, speed_factor=None, eta_seconds=None)
         await self._broadcast({
             "event": "JOB_FAILED",

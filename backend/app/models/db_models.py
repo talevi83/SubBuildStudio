@@ -11,6 +11,7 @@ class JobStatus(str, Enum):
     PROBING = "PROBING"
     EXTRACTING_AUDIO = "EXTRACTING_AUDIO"
     TRANSCRIBING = "TRANSCRIBING"
+    DIARIZING = "DIARIZING"
     SCANNING_ONSCREEN = "SCANNING_ONSCREEN"
     REFINING = "REFINING"
     TRANSLATING = "TRANSLATING"
@@ -42,6 +43,11 @@ class SubtitleSegmentRecord(SQLModel, table=True):
     segment_type: str = Field(default=SegmentType.DIALOGUE.value)
     confidence: Optional[float] = 1.0
     cps: Optional[float] = 0.0
+    words_json: Optional[str] = None
+    speaker: Optional[str] = Field(default=None, index=True)
+    # Who the line is spoken to: JSON {"gender", "number", "target", "label", "confidence", "source",
+    # "locked", "used"} (see app/pipeline/addressee.py); None when nothing is known or needed
+    addressee_json: Optional[str] = None
 
     job: Optional["Job"] = Relationship(back_populates="segments")
 
@@ -95,6 +101,9 @@ class Job(SQLModel, table=True):
     remove_sdh_speakers: bool = Field(default=False)
     # Skip end credits rolls/songs in the tail of the video while preserving mid/post-credits scenes
     skip_end_credits: bool = Field(default=True)
+    # Acoustic speaker diarization via local ONNX speaker embeddings
+    enable_diarization: bool = Field(default=False)
+    speakers_json: Optional[str] = None  # JSON map {"SPEAKER_01": {"label", "gender", "color"}}
     # Automatically save the generated SRT next to the local video file upon completion
     auto_save_srt: bool = Field(default=False)
     enable_translation: bool = Field(default=False)

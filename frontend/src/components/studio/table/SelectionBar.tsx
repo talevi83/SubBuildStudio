@@ -1,7 +1,7 @@
 import React from 'react';
 import { ChevronsDown, ChevronsUp, Merge, Trash2 } from 'lucide-react';
 import { useT } from '../../../i18n';
-import type { Gender, ThinkingLevel } from '../../../types';
+import type { Gender, SpeakerProfile, ThinkingLevel } from '../../../types';
 import type { CheckedRangeBounds } from './useRowSelection';
 
 export interface RowTranslateOptions {
@@ -27,6 +27,8 @@ interface SelectionBarProps {
   onMerge?: () => void;
   canDelete: boolean;
   onDelete: () => void;
+  speakers?: Record<string, SpeakerProfile> | null;
+  onBulkAssignSpeaker?: (speakerId: string | null) => void;
   onClear: () => void;
 }
 
@@ -44,9 +46,12 @@ export const SelectionBar: React.FC<SelectionBarProps> = ({
   onMerge,
   canDelete,
   onDelete,
+  speakers,
+  onBulkAssignSpeaker,
   onClear,
 }) => {
   const t = useT();
+  const speakerEntries = speakers ? Object.entries(speakers) : [];
   return (
     <div
       className="flex flex-wrap items-center gap-2 px-4 py-2 bg-indigo-950/40 border-y border-indigo-500/30 text-xs"
@@ -132,6 +137,29 @@ export const SelectionBar: React.FC<SelectionBarProps> = ({
           <Merge className="w-3 h-3" />
           {t('table.mergeSelected', { count })}
         </button>
+      )}
+      {onBulkAssignSpeaker && speakerEntries.length > 0 && (
+        <select
+          value=""
+          aria-label={t('selection.assignSpeaker')}
+          data-testid="bulk-speaker-select"
+          onChange={(e) => {
+            const val = e.target.value;
+            if (!val) return;
+            onBulkAssignSpeaker(val === '__NONE__' ? null : val);
+          }}
+          className="px-2 py-1 rounded border border-line bg-surface text-zinc-200 text-xs focus:outline-none focus:border-indigo-500 cursor-pointer"
+        >
+          <option value="" disabled>
+            {t('selection.assignSpeaker')}
+          </option>
+          {speakerEntries.map(([id, sp]) => (
+            <option key={id} value={id}>
+              {sp.label || id}
+            </option>
+          ))}
+          <option value="__NONE__">{t('speakers.unassigned')}</option>
+        </select>
       )}
       {canDelete && (
         <button

@@ -261,6 +261,22 @@ def allocate_turn_timings(
     return timings
 
 
+def _slice_words(
+    raw_words: Optional[List[Dict[str, Any]]],
+    start_time: float,
+    end_time: float,
+    original_text: str,
+) -> Optional[List[Dict[str, Any]]]:
+    """Return word timings overlapping [start_time, end_time] only if count matches original_text words."""
+    if not raw_words:
+        return None
+    sliced = [
+        w for w in raw_words
+        if start_time - 0.05 <= ((float(w.get("s", 0.0)) + float(w.get("e", 0.0))) * 0.5) <= end_time + 0.05
+    ]
+    return sliced if len(sliced) == len((original_text or "").split()) else None
+
+
 def split_dual_speaker_segment(
     seg: Dict[str, Any],
     max_chars_per_line: int = 42,
@@ -299,11 +315,13 @@ def split_dual_speaker_segment(
                 onscreen_child["segment_type"] = "ON_SCREEN"
                 onscreen_child["original_text"] = orig_header or header or ""
                 onscreen_child["translated_text"] = header or orig_header
+                onscreen_child["words"] = None
                 onscreen_child["cps"] = calculate_cps(
                     onscreen_child["translated_text"] or onscreen_child["original_text"],
                     max(0.1, float(seg["end_time"]) - float(seg["start_time"])),
                 )
                 out.append(onscreen_child)
+            raw_words = seg.get("words") if isinstance(seg.get("words"), list) else None
             for t_turn, o_turn, (st, et) in zip(trans_turns, orig_turns, timings):
                 t_formatted = split_long_lines(t_turn, max_chars_per_line=max_chars_per_line)
                 o_formatted = split_long_lines(o_turn or orig_body or original, max_chars_per_line=max_chars_per_line)
@@ -313,6 +331,7 @@ def split_dual_speaker_segment(
                 child["end_time"] = et
                 child["original_text"] = o_formatted
                 child["translated_text"] = t_formatted
+                child["words"] = _slice_words(raw_words, st, et, o_formatted)
                 child["cps"] = calculate_cps(t_formatted, max(0.1, et - st))
                 out.append(child)
             return out
@@ -333,11 +352,13 @@ def split_dual_speaker_segment(
             onscreen_child["segment_type"] = "ON_SCREEN"
             onscreen_child["original_text"] = orig_header
             onscreen_child["translated_text"] = None
+            onscreen_child["words"] = None
             onscreen_child["cps"] = calculate_cps(
                 orig_header,
                 max(0.1, float(seg["end_time"]) - float(seg["start_time"])),
             )
             out.append(onscreen_child)
+        raw_words = seg.get("words") if isinstance(seg.get("words"), list) else None
         for o_turn, (st, et) in zip(orig_turns, timings):
             o_formatted = split_long_lines(o_turn, max_chars_per_line=max_chars_per_line)
             child = dict(seg)
@@ -346,6 +367,7 @@ def split_dual_speaker_segment(
             child["end_time"] = et
             child["original_text"] = o_formatted
             child["translated_text"] = None
+            child["words"] = _slice_words(raw_words, st, et, o_formatted)
             child["cps"] = calculate_cps(o_formatted, max(0.1, et - st))
             out.append(child)
         return out

@@ -4,6 +4,7 @@ export type JobStatus =
   | 'PROBING'
   | 'EXTRACTING_AUDIO'
   | 'TRANSCRIBING'
+  | 'DIARIZING'
   | 'SCANNING_ONSCREEN'
   | 'REFINING'
   | 'TRANSLATING'
@@ -18,6 +19,7 @@ export const ACTIVE_STATUSES: JobStatus[] = [
   'PROBING',
   'EXTRACTING_AUDIO',
   'TRANSCRIBING',
+  'DIARIZING',
   'SCANNING_ONSCREEN',
   'REFINING',
   'TRANSLATING',
@@ -49,7 +51,13 @@ export interface SubtitleStreamInfo {
 
 export type SegmentType = 'DIALOGUE' | 'COMMS' | 'ON_SCREEN' | 'FOREIGN';
 export type OnscreenPosition = 'top_center' | 'top_left' | 'top_right' | 'middle_left' | 'middle_right';
-export type ProblemFilter = 'NONE' | 'ALL_PROBLEMS' | 'UNTRANSLATED' | 'LATIN_LEFTOVER' | 'HIGH_CPS';
+export type ProblemFilter =
+  | 'NONE'
+  | 'ALL_PROBLEMS'
+  | 'UNTRANSLATED'
+  | 'LATIN_LEFTOVER'
+  | 'HIGH_CPS'
+  | 'UNCERTAIN_ADDRESSEE';
 
 export interface VideoStreamInfo {
   codec_name: string;
@@ -71,6 +79,38 @@ export interface ProbeResponse {
   subtitle_streams?: SubtitleStreamInfo[];
 }
 
+export interface WordTiming {
+  w: string;
+  s: number;
+  e: number;
+}
+
+export interface SpeakerProfile {
+  label: string;
+  gender: 'male' | 'female' | 'unknown';
+  color: string;
+  character_name?: string | null;
+  confidence?: 'high' | 'medium' | 'low' | null;
+  evidence?: string | null;
+}
+
+/** Who a dialogue line is spoken to, as resolved by the app or set by the user. */
+export interface AddresseeInfo {
+  gender: 'male' | 'female' | 'mixed' | 'unknown';
+  number: 'singular' | 'plural' | 'unknown';
+  /** SPEAKER_XX of the listener, when they are one of the job's speakers */
+  target?: string | null;
+  label?: string | null;
+  /** 0–1; below 0.75 the translator was not told the listener as a fact */
+  confidence: number;
+  /** manual | plural | vocative | honorific | reply | dyad | turn | carry | local_ai | unresolved */
+  source: string;
+  /** Set by the user: later translations keep it */
+  locked?: boolean;
+  /** The 2nd-person form the translation was written with */
+  used?: 'm' | 'f' | 'pl' | null;
+}
+
 export interface SubtitleSegment {
   id?: number;
   job_id: string;
@@ -83,6 +123,9 @@ export interface SubtitleSegment {
   segment_type?: SegmentType;
   confidence?: number;
   cps?: number;
+  words?: WordTiming[] | null;
+  speaker?: string | null;
+  addressee?: AddresseeInfo | null;
 }
 
 export interface GlossaryCharacter {
@@ -90,6 +133,7 @@ export interface GlossaryCharacter {
   target_name?: string;
   gender: string;
   notes?: string;
+  speaker_id?: string;
 }
 
 export interface Glossary {
@@ -108,6 +152,7 @@ export interface Job {
   status: JobStatus;
   current_stage?: string | null;
   progress_percent: number;
+  stage_progress_percent?: number | null;
   speed_factor?: number | null;
   eta_seconds?: number | null;
   error_message?: string | null;
@@ -131,6 +176,8 @@ export interface Job {
   convert_to_metric?: boolean;
   remove_sdh_speakers?: boolean;
   skip_end_credits?: boolean;
+  enable_diarization?: boolean;
+  speakers?: Record<string, SpeakerProfile> | null;
   auto_save_srt?: boolean;
   enable_translation: boolean;
   target_language: string;
@@ -162,6 +209,7 @@ export interface WebSocketEventPayload {
   job_id: string;
   stage?: string;
   progress_percent: number;
+  stage_progress_percent?: number | null;
   speed_factor?: number | null;
   eta_seconds?: number | null;
   segment?: SubtitleSegment | null;
@@ -301,6 +349,7 @@ export interface JobConfig {
   convert_to_metric?: boolean;
   remove_sdh_speakers?: boolean;
   skip_end_credits?: boolean;
+  enable_diarization?: boolean;
   auto_save_srt?: boolean;
   enable_translation: boolean;
   target_language: string;
@@ -329,7 +378,7 @@ export interface RetranslateOptions {
 export type Gender = 'male' | 'female' | 'group';
 
 export type SegmentPatch = Partial<
-  Pick<SubtitleSegment, 'start_time' | 'end_time' | 'original_text' | 'translated_text'>
+  Pick<SubtitleSegment, 'start_time' | 'end_time' | 'original_text' | 'translated_text' | 'speaker'>
 >;
 
 export type StorageCategoryId = 'temp' | 'cache' | 'logs' | 'exports' | 'uploads' | 'jobs';
@@ -373,6 +422,7 @@ export interface SegmentCreate {
   original_text: string;
   translated_text?: string | null;
   segment_type?: SegmentType;
+  speaker?: string | null;
 }
 
 /** Where the "add a line" dialog opens: at a time (the playhead), or right after a line. */
@@ -595,6 +645,7 @@ export interface JobUsage {
 export type EmbedMode = 'soft' | 'burn';
 export type EmbedFontSize = 'small' | 'medium' | 'large';
 export type EmbedQuality = 'standard' | 'high';
+export type SubtitleHighlightMode = 'none' | 'word' | 'karaoke';
 
 export type SubtitleFontFamily =
   | 'Heebo'
@@ -614,10 +665,22 @@ export interface SubtitleStyleSettings {
   fontSizePx: number;
   /** Primary text color (#RRGGBB, default #FCD34D) */
   textColor: string;
+  /** Outline stroke color (#RRGGBB, default #000000) */
+  outlineColor: string;
+  /** Outline stroke width (0..6, default 1.6) */
+  outlineWidth: number;
   /** Background box color (#RRGGBB, default #000000) */
   backgroundColor: string;
   /** Background opacity percentage 0..100 (default 75) */
   backgroundOpacity: number;
+  /** Bottom margin in reference pixels (8..120, default 16) */
+  marginV: number;
+  /** Bold font weight */
+  bold: boolean;
+  /** Active-word highlight mode for creator clips */
+  highlightMode: SubtitleHighlightMode;
+  /** Active-word / karaoke fill color (#RRGGBB) */
+  highlightColor: string;
 }
 
 export interface EmbedVideoOptions {
@@ -630,8 +693,16 @@ export interface EmbedVideoOptions {
   font_family?: string;
   font_size_px?: number;
   text_color?: string;
+  outline_color?: string;
+  outline_width?: number;
   background_color?: string;
   background_opacity?: number;
+  margin_v?: number;
+  bold?: boolean;
+  color_speakers?: boolean;
+  highlight_mode?: SubtitleHighlightMode;
+  highlight_color?: string;
+  bilingual?: boolean;
   quality?: EmbedQuality;
   overwrite?: boolean;
 }
@@ -674,6 +745,7 @@ export type HistoryAction =
   | 'move'
   | 'retime'
   | 'translate'
+  | 'diarize'
   | 'external';
 
 /** One step of a project's edit history (the subtitles as they were after it) */

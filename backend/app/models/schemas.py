@@ -74,6 +74,7 @@ class JobConfig(RequestModel):
     convert_to_metric: Optional[bool] = None
     remove_sdh_speakers: Optional[bool] = None
     skip_end_credits: Optional[bool] = None
+    enable_diarization: bool = False
     auto_save_srt: bool = False
     enable_translation: bool = False
     target_language: str = "Hebrew"
@@ -137,6 +138,7 @@ class GlossaryCharacterEdit(RequestModel):
     target_name: str = ""
     gender: str = "unknown"
     notes: str = ""
+    speaker_id: str = ""
 
 
 class GlossaryTermEdit(RequestModel):
@@ -161,6 +163,54 @@ class JobSettingsUpdate(RequestModel):
     )
 
 
+class WordTimingSchema(BaseModel):
+    w: str
+    s: float
+    e: float
+
+
+class SpeakerProfileSchema(BaseModel):
+    label: str
+    gender: Literal["male", "female", "unknown"] = "unknown"
+    color: str = "#38BDF8"
+    character_name: Optional[str] = None
+    confidence: Optional[Literal["high", "medium", "low"]] = None
+    evidence: Optional[str] = None
+
+
+class SpeakersUpdateRequest(RequestModel):
+    speakers: Dict[str, SpeakerProfileSchema]
+
+
+class DiarizeJobRequest(RequestModel):
+    min_speakers: Optional[int] = Field(default=None, ge=1, le=20)
+    max_speakers: Optional[int] = Field(default=None, ge=1, le=20)
+    threshold: Optional[float] = Field(default=None, ge=0.05, le=0.95)
+    auto_match: bool = True
+
+
+class MatchSpeakersRequest(RequestModel):
+    overwrite_manual: bool = False
+    auto_merge: bool = True
+
+
+class MergeSpeakersRequest(RequestModel):
+    source_speaker_ids: List[str] = Field(min_length=1)
+    target_speaker_id: Optional[str] = None
+
+
+class AddresseeSchema(BaseModel):
+    """Who a dialogue line is spoken to, and how sure the app is (see app/pipeline/addressee.py)."""
+    gender: str = "unknown"       # male | female | mixed | unknown
+    number: str = "unknown"       # singular | plural | unknown
+    target: Optional[str] = None  # SPEAKER_XX of the listener
+    label: Optional[str] = None
+    confidence: float = 0.0
+    source: str = ""
+    locked: bool = False          # set by the user
+    used: Optional[str] = None    # 2nd-person form the translation was written with: m | f | pl
+
+
 class SubtitleSegmentSchema(BaseModel):
     id: Optional[int] = None
     job_id: str
@@ -173,6 +223,9 @@ class SubtitleSegmentSchema(BaseModel):
     segment_type: str = "DIALOGUE"
     confidence: Optional[float] = 1.0
     cps: Optional[float] = 0.0
+    words: Optional[List[WordTimingSchema]] = None
+    speaker: Optional[str] = None
+    addressee: Optional[AddresseeSchema] = None
 
 
 class SegmentUpdate(RequestModel):
@@ -180,6 +233,10 @@ class SegmentUpdate(RequestModel):
     end_time: Optional[float] = None
     original_text: Optional[str] = None
     translated_text: Optional[str] = None
+    speaker: Optional[str] = None
+    # Who the line is spoken to, set by hand: male, female or group. null clears the tag, and the
+    # next translation of the line works it out again.
+    addressee_gender: Optional[str] = None
 
 
 class BulkSegmentUpdate(SegmentUpdate):
@@ -199,6 +256,7 @@ class SegmentCreate(RequestModel):
     original_text: str = ""
     translated_text: Optional[str] = None
     segment_type: str = "DIALOGUE"
+    speaker: Optional[str] = None
 
 
 class MoveSegmentRequest(RequestModel):
@@ -266,6 +324,7 @@ class JobResponse(BaseModel):
     status: JobStatus
     current_stage: Optional[str] = None
     progress_percent: float = 0.0
+    stage_progress_percent: Optional[float] = None
     speed_factor: Optional[float] = None
     eta_seconds: Optional[float] = None
     error_message: Optional[str] = None
@@ -289,6 +348,8 @@ class JobResponse(BaseModel):
     convert_to_metric: bool = False
     remove_sdh_speakers: bool = False
     skip_end_credits: bool = True
+    enable_diarization: bool = False
+    speakers: Optional[Dict[str, SpeakerProfileSchema]] = None
     auto_save_srt: bool = False
     enable_translation: bool = False
     target_language: str = "Hebrew"
@@ -314,6 +375,7 @@ class WebSocketEventPayload(BaseModel):
     job_id: str
     stage: Optional[str] = None
     progress_percent: float = 0.0
+    stage_progress_percent: Optional[float] = None
     speed_factor: Optional[float] = None
     eta_seconds: Optional[float] = None
     segment: Optional[SubtitleSegmentSchema] = None
@@ -380,7 +442,7 @@ class SystemInfoResponse(BaseModel):
 
 class SaveNextToVideoRequest(RequestModel):
     """Write the subtitles into the folder of the job's video (Movie.he.srt next to Movie.mkv)."""
-    format: Literal["srt", "vtt"] = "srt"
+    format: Literal["srt", "vtt", "ass"] = "srt"
     use_translated: bool = True
     apply_rtl: bool = True
     # A file with the same name already next to the video is only replaced when this is true
@@ -407,8 +469,16 @@ class EmbedVideoRequest(RequestModel):
     font_family: Optional[str] = Field(default=None, max_length=64)
     font_size_px: Optional[int] = Field(default=None, ge=12, le=36)
     text_color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    outline_color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    outline_width: Optional[float] = Field(default=None, ge=0.0, le=6.0)
     background_color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     background_opacity: Optional[int] = Field(default=None, ge=0, le=100)
+    margin_v: Optional[int] = Field(default=None, ge=8, le=120)
+    bold: bool = False
+    color_speakers: bool = False
+    highlight_mode: Literal["none", "word", "karaoke"] = "none"
+    highlight_color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    bilingual: bool = False
     quality: Literal["standard", "high"] = "standard"
     # A video with the same name already next to the original is only replaced when this is true
     overwrite: bool = False

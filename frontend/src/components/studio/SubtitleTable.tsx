@@ -29,7 +29,16 @@ import { useQualityCheck } from './table/useQualityCheck';
 const SEEK_LEAD_IN_S = 1.5;
 
 export const SubtitleTable: React.FC = () => {
-  const activeJob = useJobStore((s) => s.activeJob);
+  const jobId = useJobStore((s) => s.activeJob?.id);
+  const rawSegments = useJobStore((s) => s.activeJob?.segments);
+  const jobStatus = useJobStore((s) => s.activeJob?.status);
+  const jobTargetLanguage = useJobStore((s) => s.activeJob?.target_language);
+  const jobDetectedLanguage = useJobStore((s) => s.activeJob?.detected_language);
+  const jobSourceLanguage = useJobStore((s) => s.activeJob?.source_language);
+  const speakers = useJobStore((s) => s.activeJob?.speakers ?? null);
+  const jobEnableTranslation = useJobStore((s) => !!s.activeJob?.enable_translation);
+  const isSyncJob = useJobStore((s) => s.activeJob?.job_kind === 'sync');
+  const jobGeminiModel = useJobStore((s) => s.activeJob?.gemini_model);
   const selectedSegmentIndex = useJobStore((s) => s.selectedSegmentIndex);
   const setSelectedSegmentIndex = useJobStore((s) => s.setSelectedSegmentIndex);
   const problemFilter = useJobStore((s) => s.problemFilter);
@@ -43,12 +52,15 @@ export const SubtitleTable: React.FC = () => {
   const moveSegment = useJobStore((s) => s.moveSegment);
   const savingCount = useJobStore((s) => s.savingCount);
   const lastSavedAt = useJobStore((s) => s.lastSavedAt);
+  const speakerFilter = useJobStore((s) => s.speakerFilter);
+  const setSpeakerFilter = useJobStore((s) => s.setSpeakerFilter);
+  const bulkUpdateSpeaker = useJobStore((s) => s.bulkUpdateSpeaker);
   const retranslate = useJobStore((s) => s.retranslateActiveJob);
   const systemInfo = useJobStore((s) => s.systemInfo);
   const keyOverride = useJobStore((s) => s.pipelineConfig.gemini_api_key_override);
   const appSettings = useSettingsStore((s) => s.settings);
   const activeProvider =
-    appSettings?.translation.provider || inferProviderFromModelId(activeJob?.gemini_model || appSettings?.translation.model);
+    appSettings?.translation.provider || inferProviderFromModelId(jobGeminiModel || appSettings?.translation.model);
   const canTranslate =
     isProviderReady(systemInfo, activeProvider, keyOverride) || isAnyAiReady(systemInfo, keyOverride);
   const timingBusy = useJobStore((s) => s.timingBusy);
@@ -69,8 +81,8 @@ export const SubtitleTable: React.FC = () => {
   const activeRowRef = useRef<HTMLTableRowElement | null>(null);
 
   const segments = useMemo(
-    () => [...(activeJob?.segments || [])].sort((a, b) => a.start_time - b.start_time),
-    [activeJob?.segments]
+    () => [...(rawSegments || [])].sort((a, b) => a.start_time - b.start_time),
+    [rawSegments]
   );
   const overlappedIds = useMemo(() => {
     const ids = new Set<number>();
@@ -88,14 +100,16 @@ export const SubtitleTable: React.FC = () => {
     scanLane(segments.filter((s) => s.segment_type === 'ON_SCREEN'));
     return ids;
   }, [segments]);
-  const isRtl = isRtlLanguage(activeJob?.target_language);
-  const jobFinished = !!activeJob && !isActiveStatus(activeJob.status);
+  const isRtl = isRtlLanguage(jobTargetLanguage);
+  const isRtlSource = isRtlLanguage(jobDetectedLanguage || jobSourceLanguage);
+  const speakerEntries = useMemo(() => (speakers ? Object.entries(speakers) : []), [speakers]);
+  const hasAnySpeakers = speakerEntries.length > 0 || segments.some((s) => Boolean(s.speaker));
+  const jobFinished = !!jobId && !isActiveStatus(jobStatus);
   // Only promise "Translating…" while a translation is actually running
-  const translationEnabled = !!activeJob?.enable_translation && isActiveStatus(activeJob?.status);
+  const translationEnabled = jobEnableTranslation && isActiveStatus(jobStatus);
   const hasTranslationExpectation =
-    !!activeJob?.enable_translation || segments.some((s) => !!s.translated_text || !!s.translation_failed);
+    jobEnableTranslation || segments.some((s) => !!s.translated_text || !!s.translation_failed);
   // A synced file also flags lines that were placed with low confidence
-  const isSyncJob = activeJob?.job_kind === 'sync';
 
   // Subscribe only to the primitive active subtitle index (not raw videoCurrentTime ticks)
   // so the table only re-renders when the active subtitle actually changes (~every 3-4s).
@@ -118,6 +132,7 @@ export const SubtitleTable: React.FC = () => {
     maxCps,
     problemFilter,
     tagFilter,
+    speakerFilter,
     searchTerm: deferredSearchTerm,
     useRegex,
     matchCase,
@@ -126,11 +141,17 @@ export const SubtitleTable: React.FC = () => {
 
   const isLive = segments.length > 0 && segments.some((s) => !s.id);
   const canSelect = jobFinished && !isLive;
-  const canInsert = !!activeJob && jobFinished && !isLive;
-  const canRecheck = !!activeJob && jobFinished && segments.length > 0;
+  const canInsert = !!jobId && jobFinished && !isLive;
+  const canRecheck = !!jobId && jobFinished && segments.length > 0;
   // Moving rows only makes sense in the full, time-ordered list of a finished job
   const canDrag =
-    !!activeJob && jobFinished && !searchTerm && problemFilter === 'NONE' && tagFilter === 'ALL' && !timingBusy;
+    !!jobId &&
+    jobFinished &&
+    !searchTerm &&
+    problemFilter === 'NONE' &&
+    tagFilter === 'ALL' &&
+    speakerFilter === 'ALL' &&
+    !timingBusy;
 
   const {
     checked,
@@ -143,11 +164,13 @@ export const SubtitleTable: React.FC = () => {
     handleSelectToEnd,
     handleSelectFromStart,
     checkedRangeBounds,
-  } = useRowSelection(filteredSegments, `${activeJob?.id ?? ''}:${jobFinished}`);
+  } = useRowSelection(filteredSegments, `${jobId ?? ''}:${jobFinished}`);
   // Neighbours in the whole project, not just the filtered view: rows hidden by a filter count too
   const checkedAreNeighbours = useMemo(() => areNeighbours(segments, checked), [segments, checked]);
+  const layoutKey = `${jobId ?? ''}:${hasAnySpeakers}:${canSelect}`;
   const {
     scrollContainerRef,
+    tbodyRef,
     handleTableScroll,
     scrollToListIndex,
     scrollToTop,
@@ -155,10 +178,10 @@ export const SubtitleTable: React.FC = () => {
     visibleSegments,
     topSpacerHeight,
     bottomSpacerHeight,
-  } = useVirtualRows(filteredSegments, activeIndex, autoScroll);
+  } = useVirtualRows(filteredSegments, activeIndex, autoScroll, layoutKey);
   const { dragId, overId, dragFromPos, handleDragStart, handleDragOver, handleDragEnd, handleDrop } =
     useRowDragDrop(segments, moveSegment);
-  const qa = useQualityCheck(activeJob?.id);
+  const qa = useQualityCheck(jobId);
 
   const showReplaceResult = (message: string) => {
     setReplaceResult(message);
@@ -324,6 +347,24 @@ export const SubtitleTable: React.FC = () => {
 
             <TagFilterSelect value={tagFilter} onChange={setTagFilter} counts={tagCounts} />
 
+            {hasAnySpeakers && (
+              <select
+                value={speakerFilter}
+                onChange={(e) => setSpeakerFilter(e.target.value)}
+                aria-label={t('toolbar.filterSpeaker')}
+                data-testid="speaker-filter"
+                className="bg-surface border border-line rounded-lg px-2 py-1 text-[11px] text-zinc-300 focus:outline-none focus:border-indigo-500 cursor-pointer"
+              >
+                <option value="ALL">{t('toolbar.allSpeakers')}</option>
+                {speakerEntries.map(([id, sp]) => (
+                  <option key={id} value={id}>
+                    {sp.label || id}
+                  </option>
+                ))}
+                <option value="__NONE__">{t('speakers.unassigned')}</option>
+              </select>
+            )}
+
             {filteredSegments.length > 20 && (
               <JumpToRow
                 filteredSegments={filteredSegments}
@@ -375,6 +416,8 @@ export const SubtitleTable: React.FC = () => {
           onMerge={() => void handleMergeSelected()}
           canDelete={canInsert}
           onDelete={() => void handleDeleteSelected()}
+          speakers={speakers}
+          onBulkAssignSpeaker={canSelect ? (sp) => void bulkUpdateSpeaker([...checked], sp) : undefined}
           onClear={() => setChecked(new Set())}
         />
       )}
@@ -383,12 +426,12 @@ export const SubtitleTable: React.FC = () => {
         <RowTranslateDialog
           count={checked.size}
           onCancel={() => setRowsDialog(false)}
-          defaultModel={activeJob?.gemini_model}
+          defaultModel={jobGeminiModel}
           onDetect={
-            activeJob && canRecheck
+            jobId && canRecheck
               ? (model, thinking) =>
                   api.detectSpeakers(
-                    activeJob.id,
+                    jobId,
                     [...checked],
                     useJobStore.getState().pipelineConfig.gemini_api_key_override,
                     model,
@@ -400,11 +443,17 @@ export const SubtitleTable: React.FC = () => {
         />
       )}
 
-      <div ref={scrollContainerRef} onScroll={handleTableScroll} className="flex-1 overflow-y-auto">
-        <table className="w-full text-start border-collapse text-xs">
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleTableScroll}
+        style={{ overflowAnchor: 'none' }}
+        data-testid="subtitle-scroll-container"
+        className="flex-1 overflow-y-auto"
+      >
+        <table className="w-full table-fixed text-start border-collapse text-xs">
           <thead className="bg-sunken text-zinc-400 sticky top-0 z-10 border-b border-line uppercase font-semibold text-[10px] tracking-wider select-none">
             <tr>
-              <th className="py-2.5 px-3 w-16 text-center">
+              <th className="py-2.5 px-2 w-28 text-center">
                 <div className="flex items-center justify-center gap-1.5">
                   {canSelect && selectableFilteredIds.length > 0 && (
                     <input
@@ -422,12 +471,12 @@ export const SubtitleTable: React.FC = () => {
                 </div>
               </th>
               <th className="py-2.5 px-3 w-48 text-start">{t('table.colTimecode')}</th>
-              <th className="py-2.5 px-3 w-1/2 text-start">{t('table.colOriginal')}</th>
-              <th className="py-2.5 px-3 w-1/2 text-start">{t('table.colTranslated')}</th>
+              <th className="py-2.5 px-3 text-start">{t('table.colOriginal')}</th>
+              <th className="py-2.5 px-3 text-start">{t('table.colTranslated')}</th>
               <th className="py-2.5 px-3 w-20 text-center">{t('table.colCps')}</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-line/60 font-sans">
+          <tbody ref={tbodyRef} className="divide-y divide-line/60 font-sans">
             {filteredSegments.length === 0 ? (
               <tr>
                 <td colSpan={5} className="py-12 text-center text-zinc-500">
@@ -457,8 +506,10 @@ export const SubtitleTable: React.FC = () => {
                       isActive={isActive}
                       isSelected={selectedSegmentIndex === seg.index}
                       isRtl={isRtl}
+                      isRtlSource={isRtlSource}
                       translationEnabled={translationEnabled}
                       maxCps={maxCps}
+                      speakers={speakers}
                       onSelect={onSelect}
                       onSave={updateSegment}
                       rowRef={isActive ? activeRowRef : undefined}

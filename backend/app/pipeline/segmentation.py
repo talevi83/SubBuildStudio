@@ -49,6 +49,7 @@ class _Tok:
     end: float
     prob: float = 1.0
     seg_end: bool = False  # last word of a Whisper segment
+    speaker: Optional[str] = None
 
 
 @dataclass
@@ -138,12 +139,29 @@ def split_at_pauses(raw_segments: List[RawSegment], max_gap: float = PAUSE_SPLIT
     return out
 
 
-_TERMINAL_PUNCT = ('.', '?', '!', '\u2026', '."', '?"', '!"', '.\u201d', '?\u201d', '!\u201d')
-_ANY_PUNCT = _TERMINAL_PUNCT + (',', ';', ':', ',"', ',\u201d')
+_TERMINAL_PUNCT = ('.', '?', '!', '\u2026', '."', '?"', '!"', '.\u201d', '?\u201d', '!\u201d', '.\u05f4', '?\u05f4', '!\u05f4')
+_ANY_PUNCT = _TERMINAL_PUNCT + (',', ';', ':', ',"', ',\u201d', ',\u05f4')
 _ORPHAN_MAX_WORDS = 3
 _ORPHAN_LEAD = 0.2  # seconds each reattached word is placed before the next line's first word
 _ORPHAN_TAIL_PAD = 0.2  # seconds each reattached ending word extends the previous line
-_UNPUNCTUATED_OPENERS = {"hey", "hi", "hello", "yo", "well", "look", "listen", "wait", "oh"}
+_UNPUNCTUATED_OPENERS = {
+    "hey", "hi", "hello", "yo", "well", "look", "listen", "wait", "oh",
+    "היי", "שלום", "תשמע", "תשמעי", "תראה", "תראי", "רגע", "חכה", "חכי", "תקשיב", "תקשיבי",
+}
+
+
+def _is_unspaced_script(ch: str) -> bool:
+    """True for CJK/Japanese/Korean/Thai scripts where consecutive segments join without a space."""
+    if not ch:
+        return False
+    code = ord(ch)
+    return (
+        0x4E00 <= code <= 0x9FFF
+        or 0x3400 <= code <= 0x4DBF
+        or 0x3040 <= code <= 0x30FF
+        or 0xAC00 <= code <= 0xD7AF
+        or 0x0E00 <= code <= 0x0E7F
+    )
 
 
 def _orphan_tail(words: List[Any]) -> List[Any]:
@@ -277,9 +295,10 @@ def _tokens_from_raw(raw_segments: List[RawSegment]) -> List[_Tok]:
     for raw in raw_segments:
         words = [w for w in (raw.words or []) if w.word and w.word.strip()]
         seg_toks: List[_Tok] = []
+        raw_sp = getattr(raw, "speaker", None)
         if words:
             for w in words:
-                seg_toks.append(_Tok(w.word, float(w.start), float(w.end), float(w.probability)))
+                seg_toks.append(_Tok(w.word, float(w.start), float(w.end), float(w.probability), speaker=getattr(w, "speaker", None) or raw_sp))
         else:
             # No word timestamps: spread the segment's time over its words by length.
             parts = raw.text.split()
@@ -290,14 +309,14 @@ def _tokens_from_raw(raw_segments: List[RawSegment]) -> List[_Tok]:
             t = raw.start_time
             for p in parts:
                 d = span * (len(p) + 1) / total
-                seg_toks.append(_Tok(" " + p, t, t + d, raw.confidence))
+                seg_toks.append(_Tok(" " + p, t, t + d, raw.confidence, speaker=raw_sp))
                 t += d
 
         # Make sure words from consecutive Whisper segments don't get glued together
         if toks and seg_toks and not seg_toks[0].text[:1].isspace():
             prev_last = toks[-1].text[-1:]
             first = seg_toks[0].text[:1]
-            if prev_last.isascii() and prev_last.isalnum() and first.isascii() and first.isalnum():
+            if prev_last.isalnum() and first.isalnum() and not _is_unspaced_script(prev_last) and not _is_unspaced_script(first):
                 seg_toks[0].text = " " + seg_toks[0].text
 
         for i, tok in enumerate(seg_toks):
@@ -386,8 +405,10 @@ def _split_units(toks: List[_Tok]) -> List[List[_Tok]]:
             and gap < _SEGMENT_PAUSE
             and not tok.seg_end
         )
+        speaker_switch = bool(tok.speaker and nxt.speaker and tok.speaker != nxt.speaker)
         if (
-            gap >= _HARD_PAUSE
+            speaker_switch
+            or gap >= _HARD_PAUSE
             or (tok.seg_end and (ends_sentence(tok.text) or gap >= _SEGMENT_PAUSE))
             or (ends_sentence(tok.text) and not is_paired_exclamation)
         ):
@@ -613,6 +634,16 @@ def refine_raw_segments(
     for b in blocks:
         text = split_long_lines(b.text, max_chars_per_line=max_chars_per_line)
         start, end = round(max(0.0, b.start), 3), round(b.end, 3)
+        words_payload = [
+            {"w": t.text.strip(), "s": round(max(0.0, t.start), 3), "e": round(max(t.start, t.end), 3)}
+            for t in b.toks
+            if t.text.strip()
+        ]
+        dur_by_sp: Dict[str, float] = {}
+        for t in b.toks:
+            if t.speaker:
+                dur_by_sp[t.speaker] = dur_by_sp.get(t.speaker, 0.0) + max(0.05, t.end - t.start)
+        dominant_sp = max(dur_by_sp.items(), key=lambda kv: kv[1])[0] if dur_by_sp else None
         refined.append({
             "index": len(refined) + 1,
             "start_time": start,
@@ -623,6 +654,8 @@ def refine_raw_segments(
             "segment_type": SegmentType.DIALOGUE.value,
             "confidence": round(sum(t.prob for t in b.toks) / len(b.toks), 2),
             "cps": calculate_cps(text, max(0.1, end - start)),
+            "words": words_payload or None,
+            "speaker": dominant_sp,
         })
     from app.utils.speaker_split import split_dual_speaker_segments
 

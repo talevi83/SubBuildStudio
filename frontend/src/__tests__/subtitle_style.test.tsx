@@ -79,21 +79,32 @@ describe('subtitle style customization', () => {
       fontSizePx: 99,
       backgroundOpacity: 150,
       textColor: '#67e8f9',
+      outlineColor: '#112233',
+      outlineWidth: 9.5,
       backgroundColor: '#1e1b4b',
+      marginV: 200,
+      bold: true,
     });
 
     const state = useUiStore.getState().subtitleStyle;
     expect(state).toEqual({
+      ...DEFAULT_SUBTITLE_STYLE,
       fontFamily: 'Rubik',
       fontSizePx: MAX_SUBTITLE_FONT_SIZE,
       backgroundOpacity: 100,
       textColor: '#67E8F9',
+      outlineColor: '#112233',
+      outlineWidth: 6,
       backgroundColor: '#1E1B4B',
+      marginV: 120,
+      bold: true,
     });
 
-    useUiStore.getState().setSubtitleStyle({ fontSizePx: 4, backgroundOpacity: -20 });
+    useUiStore.getState().setSubtitleStyle({ fontSizePx: 4, backgroundOpacity: -20, outlineWidth: -2, marginV: 1 });
     expect(useUiStore.getState().subtitleStyle.fontSizePx).toBe(MIN_SUBTITLE_FONT_SIZE);
     expect(useUiStore.getState().subtitleStyle.backgroundOpacity).toBe(0);
+    expect(useUiStore.getState().subtitleStyle.outlineWidth).toBe(0);
+    expect(useUiStore.getState().subtitleStyle.marginV).toBe(8);
 
     const saved = JSON.parse(localStorage.getItem('subbuild.ui') || '{}');
     expect(saved.subtitleStyle.fontFamily).toBe('Rubik');
@@ -105,11 +116,39 @@ describe('subtitle style customization', () => {
         fontFamily: 'InvalidFont' as never,
         textColor: 'not-a-color',
         backgroundColor: '#123',
+        outlineColor: 'bad',
+        highlightMode: 'invalid' as never,
       })
     ).toEqual(DEFAULT_SUBTITLE_STYLE);
 
     useUiStore.getState().resetSubtitleStyle();
     expect(useUiStore.getState().subtitleStyle).toEqual(DEFAULT_SUBTITLE_STYLE);
+  });
+
+  it('applies style presets and builds ASS export URL with style params', () => {
+    const view = render(<VideoSyncPlayer />);
+    fireEvent.click(view.getByTestId('open-subtitle-style'));
+    fireEvent.click(view.getByTestId('subtitle-style-preset-reels'));
+
+    const s = useUiStore.getState().subtitleStyle;
+    expect(s.fontFamily).toBe('Rubik');
+    expect(s.bold).toBe(true);
+    expect(s.marginV).toBe(48);
+    expect(s.highlightMode).toBe('word');
+
+    const url = api.getAssExportUrl('job_style', {
+      useTranslated: true,
+      applyRtl: true,
+      bilingual: true,
+      colorSpeakers: true,
+      style: s,
+    });
+    expect(url).toContain('/api/jobs/job_style/export/ass?');
+    expect(url).toContain('font_family=Rubik');
+    expect(url).toContain('bold=true');
+    expect(url).toContain('margin_v=48');
+    expect(url).toContain('highlight_mode=word');
+    expect(url).toContain('color_speakers=true');
   });
 
   it('updates live subtitle overlay styling in VideoSyncPlayer', () => {
@@ -178,8 +217,11 @@ describe('subtitle style customization', () => {
 
     fireEvent.click(view.getByTestId('embed-mode-burn'));
     expect(view.getByTestId('embed-burn-style')).toBeTruthy();
+    expect(view.getByTestId('embed-live-preview')).toBeTruthy();
 
     fireEvent.change(view.getByTestId('embed-bg-opacity'), { target: { value: '50' } });
+    fireEvent.change(view.getByTestId('embed-margin-v'), { target: { value: '32' } });
+    fireEvent.click(view.getByTestId('embed-bold'));
     fireEvent.click(view.getByTestId('embed-start'));
 
     await waitFor(() => expect(startSpy).toHaveBeenCalledTimes(1));
@@ -193,6 +235,8 @@ describe('subtitle style customization', () => {
         text_color: '#FACC15',
         background_color: '#000000',
         background_opacity: 50,
+        margin_v: 32,
+        bold: true,
       })
     );
   });

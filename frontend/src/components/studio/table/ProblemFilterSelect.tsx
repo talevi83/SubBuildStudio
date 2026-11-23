@@ -57,6 +57,11 @@ export const ProblemFilterSelect: React.FC<ProblemFilterSelectProps> = ({ stats,
         <option value="HIGH_CPS" className="bg-zinc-900 text-zinc-300">
           ⚡ {t('table.problemHighCps', { count: stats.highCps })}
         </option>
+        {(stats.uncertainAddressee > 0 || problemFilter === 'UNCERTAIN_ADDRESSEE') && (
+          <option value="UNCERTAIN_ADDRESSEE" className="bg-zinc-900 text-zinc-300">
+            👤 {t('table.problemAddressee', { count: stats.uncertainAddressee })}
+          </option>
+        )}
       </select>
       {problemFilter !== 'NONE' && (
         <button

@@ -23,13 +23,15 @@ import {
   TimerReset,
   CheckCircle2,
   Cpu,
+  Users,
 } from 'lucide-react';
-import type { JobUsage, ModelUsage, SyncReport } from '../../types';
+import type { JobStatus, JobUsage, ModelUsage, SyncReport } from '../../types';
 
-const ALL_STAGES = [
+const ALL_STAGES: ReadonlyArray<{ key: JobStatus; icon: React.ComponentType<{ className?: string }> }> = [
   { key: 'PROBING', icon: Search },
   { key: 'EXTRACTING_AUDIO', icon: Music },
   { key: 'TRANSCRIBING', icon: Mic },
+  { key: 'DIARIZING', icon: Users },
   { key: 'SCANNING_ONSCREEN', icon: ScanText },
   { key: 'REFINING', icon: Sliders },
   { key: 'TRANSLATING', icon: Languages },
@@ -67,16 +69,21 @@ export const LivePipelineBar: React.FC = () => {
   const stages = ALL_STAGES.filter(
     (s) =>
       (isSync
-        ? s.key !== 'REFINING' && s.key !== 'TRANSLATING'
-        : s.key !== 'SYNCING' && (s.key !== 'TRANSLATING' || activeJob.enable_translation || status === 'TRANSLATING')) &&
-      (s.key !== 'SCANNING_ONSCREEN' || activeJob.detect_onscreen_text)
+        ? s.key !== 'DIARIZING' && s.key !== 'REFINING' && s.key !== 'TRANSLATING'
+        : s.key !== 'SYNCING' &&
+          (s.key !== 'DIARIZING' || activeJob.enable_diarization || status === 'DIARIZING') &&
+          (s.key !== 'TRANSLATING' || activeJob.enable_translation || status === 'TRANSLATING')) &&
+      (s.key !== 'SCANNING_ONSCREEN' || activeJob.detect_onscreen_text || status === 'SCANNING_ONSCREEN')
   );
   const order = stages.map((s) => s.key);
 
-  const stageState = (key: string) => {
+  const stageState = (key: JobStatus) => {
     if (isCompleted) return 'done';
     if (isFailed || isCancelled) return 'idle';
-    if (isQueued) return order.indexOf(key) < order.indexOf('TRANSCRIBING') ? 'done' : 'idle';
+    if (isQueued) {
+      if (activeJob.progress_percent <= 0) return 'idle';
+      return order.indexOf(key) < order.indexOf('TRANSCRIBING') ? 'done' : 'idle';
+    }
     if (translateOnly) return key === 'TRANSLATING' ? 'active' : 'done';
     const current = order.indexOf(status);
     const idx = order.indexOf(key);
@@ -86,6 +93,11 @@ export const LivePipelineBar: React.FC = () => {
   };
 
   const isCuda = systemInfo?.hardware?.cuda_available;
+  const rawStagePct = activeJob.stage_progress_percent;
+  const stagePercent =
+    isRunning && typeof rawStagePct === 'number' && Number.isFinite(rawStagePct)
+      ? Math.round(Math.min(100, Math.max(0, rawStagePct)))
+      : null;
   const usageTotal = activeJob.usage?.total_cost_usd;
   const stageProviders = new Set(
     Object.values(activeJob.usage?.stages || {})
@@ -119,7 +131,9 @@ export const LivePipelineBar: React.FC = () => {
             return (
               <React.Fragment key={s.key}>
                 <div
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  data-testid={`pipeline-stage-${s.key}`}
+                  data-stage-state={state}
+                  className={`relative overflow-hidden flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
                     state === 'active'
                       ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/40 shadow-sm'
                       : state === 'done'
@@ -133,6 +147,26 @@ export const LivePipelineBar: React.FC = () => {
                     }`}
                   />
                   <span className="whitespace-nowrap">{t(`stages.${s.key}` as MessageKey)}</span>
+                  {state === 'active' && stagePercent !== null && (
+                    <>
+                      <span
+                        data-testid="active-stage-percent"
+                        dir="ltr"
+                        className="font-mono tabular-nums text-[11px] font-semibold px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-200 leading-none"
+                      >
+                        {stagePercent}%
+                      </span>
+                      <span
+                        aria-hidden="true"
+                        className="pointer-events-none absolute inset-x-0 bottom-0 h-0.5 bg-indigo-500/20"
+                      >
+                        <span
+                          className="block h-full bg-indigo-400 transition-all duration-300"
+                          style={{ width: `${stagePercent}%` }}
+                        />
+                      </span>
+                    </>
+                  )}
                 </div>
                 {idx < stages.length - 1 && <div className="w-3 h-0.5 bg-line flex-shrink-0" />}
               </React.Fragment>

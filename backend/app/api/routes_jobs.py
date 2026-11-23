@@ -19,6 +19,7 @@ from app.core.user_settings import load_settings
 from app.api.routes_media import reject_network_path, validate_media_path
 from app.models.db_models import Job, JobStatus, SubtitleSegmentRecord
 from app.models.schemas import (
+    AddresseeSchema,
     AudioStreamInfo,
     BulkDeleteJobsRequest,
     BulkDeleteJobsResponse,
@@ -29,6 +30,9 @@ from app.models.schemas import (
     JobSettingsUpdate,
     DetectSpeakersRequest,
     DetectSpeakersResponse,
+    DiarizeJobRequest,
+    MatchSpeakersRequest,
+    MergeSpeakersRequest,
     MoveSegmentRequest,
     QAIssueSchema,
     RetimeRequest,
@@ -37,10 +41,13 @@ from app.models.schemas import (
     SegmentUpdate,
     SegmentsChangeResponse,
     ShiftSegmentsRequest,
+    SpeakerProfileSchema,
+    SpeakersUpdateRequest,
     MergeSegmentsRequest,
     SplitSegmentRequest,
     SubtitleSegmentSchema,
     WaveformResponse,
+    WordTimingSchema,
 )
 from app.pipeline.orchestrator import (
     ACTIVE_STATUSES,
@@ -85,6 +92,49 @@ def _history_record(session: Session, job: Job, recording: bool, action: str,
         logger.warning(f"Could not record edit history for {job.id}: {e}")
 
 
+def _parse_words_raw(raw: Optional[str]) -> Optional[List[dict]]:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            return None
+        return [item for item in parsed if isinstance(item, dict) and "w" in item and "s" in item and "e" in item]
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_words_json(raw: Optional[str]) -> Optional[List[WordTimingSchema]]:
+    parsed = _parse_words_raw(raw)
+    if not parsed:
+        return None
+    out: List[WordTimingSchema] = []
+    for item in parsed:
+        try:
+            out.append(WordTimingSchema(w=str(item["w"]), s=float(item["s"]), e=float(item["e"])))
+        except (ValueError, TypeError):
+            continue
+    return out or None
+
+
+def _parse_addressee_json(raw: Optional[str]) -> Optional[AddresseeSchema]:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        return AddresseeSchema(**parsed) if isinstance(parsed, dict) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _manual_addressee_json(choice: Optional[str]) -> Optional[str]:
+    """The stored form of a listener picked by hand (male / female / group); None for no choice."""
+    from app.pipeline.addressee import manual_record
+
+    record = manual_record(choice)
+    return json.dumps(record.to_dict(), ensure_ascii=False) if record is not None else None
+
+
 def _segment_to_schema(s: SubtitleSegmentRecord) -> SubtitleSegmentSchema:
     return SubtitleSegmentSchema(
         id=s.id,
@@ -99,6 +149,9 @@ def _segment_to_schema(s: SubtitleSegmentRecord) -> SubtitleSegmentSchema:
         segment_type=s.segment_type or "DIALOGUE",
         confidence=s.confidence,
         cps=s.cps,
+        words=_parse_words_json(getattr(s, "words_json", None)),
+        speaker=getattr(s, "speaker", None),
+        addressee=_parse_addressee_json(getattr(s, "addressee_json", None)),
     )
 
 
@@ -118,6 +171,18 @@ def _job_to_response(
     if job.glossary_json:
         try:
             glossary = json.loads(job.glossary_json)
+        except Exception:
+            pass
+    speakers = None
+    if getattr(job, "speakers_json", None):
+        try:
+            raw_speakers = json.loads(job.speakers_json)
+            if isinstance(raw_speakers, dict):
+                speakers = {
+                    str(k): SpeakerProfileSchema(**v)
+                    for k, v in raw_speakers.items()
+                    if isinstance(v, dict)
+                } or None
         except Exception:
             pass
     sync_report = None
@@ -165,6 +230,7 @@ def _job_to_response(
         status=job.status,
         current_stage=job.current_stage,
         progress_percent=job.progress_percent,
+        stage_progress_percent=PipelineOrchestrator.get_stage_progress(job.id),
         speed_factor=job.speed_factor,
         eta_seconds=job.eta_seconds,
         error_message=job.error_message,
@@ -188,6 +254,8 @@ def _job_to_response(
         convert_to_metric=getattr(job, "convert_to_metric", False),
         remove_sdh_speakers=getattr(job, "remove_sdh_speakers", False),
         skip_end_credits=getattr(job, "skip_end_credits", True),
+        enable_diarization=bool(getattr(job, "enable_diarization", False)),
+        speakers=speakers,
         auto_save_srt=bool(getattr(job, "auto_save_srt", False)),
         enable_translation=job.enable_translation,
         target_language=job.target_language,
@@ -311,6 +379,7 @@ async def create_job(req: JobCreate, session: Session = Depends(get_session)):
             if req.skip_end_credits is not None
             else getattr(saved_settings, "skip_end_credits", True)
         ),
+        enable_diarization=bool(getattr(req, "enable_diarization", False)),
         auto_save_srt=bool(getattr(req, "auto_save_srt", False)) and not is_upload_file,
         enable_translation=req.enable_translation,
         target_language=req.target_language,
@@ -520,6 +589,15 @@ async def retranslate_job(job_id: str, req: RetranslateRequest, session: Session
             if req.context_notes is not None:
                 job.context_notes = req.context_notes
             history.begin(session, job)  # the run records its result as one step when it ends
+            manual_listener = _manual_addressee_json(req.addressee_gender) if only_indices else None
+            if manual_listener:
+                # Remember who these rows are spoken to: the tag is shown on the rows, survives later
+                # runs, and tells the resolver about the lines around them
+                selected = set(req.segment_ids or ())
+                for seg in job.segments:
+                    if seg.id in selected:
+                        seg.addressee_json = manual_listener
+                        session.add(seg)
             job.enable_translation = True
             job.status = JobStatus.TRANSLATING
             job.current_stage = "TRANSLATING"
@@ -584,6 +662,246 @@ def update_glossary(job_id: str, body: GlossaryUpdate, session: Session = Depend
     session.add(job)
     session.commit()
     return glossary
+
+
+@router.put("/{job_id}/speakers", response_model=JobResponse)
+def update_speakers(job_id: str, body: SpeakersUpdateRequest, session: Session = Depends(get_session)):
+    """Save edited speaker profiles (names, genders, colors) on a job."""
+    job = _get_job_or_404(session, job_id)
+    _require_not_running(job, "edit speaker profiles")
+    serialized = {k: v.model_dump() for k, v in body.speakers.items()}
+    job.speakers_json = json.dumps(serialized, ensure_ascii=False)
+    job.updated_at = _now()
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    return _job_to_response(job)
+
+
+@router.post("/{job_id}/diarize", response_model=JobResponse)
+async def diarize_job(
+    job_id: str,
+    req: Optional[DiarizeJobRequest] = None,
+    session: Session = Depends(get_session),
+):
+    """Run local ONNX acoustic speaker diarization retroactively on an existing job."""
+    from app.pipeline import diarization, speech_regions
+    from app.pipeline.speaker_match import match_speakers_to_characters
+
+    job = _get_job_or_404(session, job_id)
+    _require_not_running(job, "detect speakers from audio")
+    if not job.video_path or not Path(job.video_path).is_file():
+        raise HTTPException(status_code=404, detail="Source video file not found")
+
+    rows = _ordered_rows(session, job_id)
+    if not rows:
+        return _job_to_response(job)
+
+    spans = [(r.start_time, r.end_time) for r in rows if (r.segment_type or "DIALOGUE") != "ON_SCREEN"]
+    if not spans:
+        return _job_to_response(job)
+
+    stream, channels = _job_audio_params(job)
+    wav_path = settings.storage_dir / "audio" / f"{job_id}_diarize.wav"
+    wav_path.parent.mkdir(parents=True, exist_ok=True)
+    threshold = req.threshold if (req and req.threshold is not None) else 0.66
+    min_sp = req.min_speakers if req else None
+    max_sp = req.max_speakers if req else None
+    glossary = json.loads(job.glossary_json) if job.glossary_json else None
+    target_language = job.target_language
+
+    def _run_diarization():
+        speech_regions._extract(job.video_path, str(wav_path), stream, channels, job.comms_boost, 0.0, None)
+        onnx_path = diarization.ensure_diarization_model()
+        embedder = diarization.OnnxSpeakerEmbedder(onnx_path=onnx_path)
+        return diarization.diarize_audio_spans(
+            wav_path,
+            spans,
+            embedder=embedder,
+            threshold=threshold,
+            min_speakers=min_sp,
+            max_speakers=max_sp,
+        )
+
+    try:
+        timeline, speakers = await asyncio.to_thread(_run_diarization)
+    finally:
+        wav_path.unlink(missing_ok=True)
+
+    match_segs = [
+        {
+            "id": r.id,
+            "index": r.index,
+            "start_time": r.start_time,
+            "end_time": r.end_time,
+            "original_text": r.original_text,
+            "segment_type": r.segment_type,
+            "speaker": None,
+        }
+        for r in rows
+    ]
+    diarization.assign_speakers_to_segments(match_segs, timeline)
+    speakers = diarization.prune_unused_speakers(speakers, match_segs)
+    if req is None or req.auto_match:
+        try:
+            await match_speakers_to_characters(
+                match_segs,
+                speakers,
+                glossary,
+                target_language=target_language,
+                use_ai=True,
+                overwrite_manual=False,
+                auto_merge=True,
+            )
+            speakers = diarization.prune_unused_speakers(speakers, match_segs)
+        except Exception as exc:
+            logger.info(f"Auto-matching after diarization skipped for {job_id}: {exc}")
+
+    with history.job_lock(job_id):
+        session.expire_all()
+        job = _get_job_or_404(session, job_id)
+        _require_not_running(job, "detect speakers from audio")
+        rows = _ordered_rows(session, job_id)
+        recording = _history_begin(session, job)
+        by_id = {s["id"]: s["speaker"] for s in match_segs if s.get("id") is not None}
+        by_idx = {s["index"]: s["speaker"] for s in match_segs}
+        for r in rows:
+            r.speaker = by_id[r.id] if r.id in by_id else by_idx.get(r.index)
+            session.add(r)
+        speakers = diarization.prune_unused_speakers(speakers, rows)
+        job.speakers_json = json.dumps(speakers, ensure_ascii=False)
+        if glossary is not None:
+            job.glossary_json = json.dumps(glossary, ensure_ascii=False)
+        job.enable_diarization = True
+        job.updated_at = _now()
+        session.add(job)
+        session.commit()
+        _history_record(session, job, recording, "diarize", {"count": len(speakers)})
+        session.refresh(job)
+        return _job_to_response(job)
+
+
+@router.post("/{job_id}/match-speakers", response_model=JobResponse)
+async def match_speakers_endpoint(
+    job_id: str,
+    req: Optional[MatchSpeakersRequest] = None,
+    session: Session = Depends(get_session),
+):
+    """Cross-reference acoustic speakers against dialogue cues and glossary characters."""
+    from app.pipeline import diarization
+    from app.pipeline.speaker_match import match_speakers_to_characters
+
+    job = _get_job_or_404(session, job_id)
+    _require_not_running(job, "match speakers to characters")
+    rows = _ordered_rows(session, job_id)
+    speakers = json.loads(job.speakers_json or "{}")
+    if not speakers or not rows:
+        return _job_to_response(job)
+    glossary = json.loads(job.glossary_json) if job.glossary_json else None
+
+    match_segs = [
+        {
+            "id": r.id,
+            "index": r.index,
+            "start_time": r.start_time,
+            "end_time": r.end_time,
+            "original_text": r.original_text,
+            "segment_type": r.segment_type,
+            "speaker": r.speaker,
+        }
+        for r in rows
+    ]
+    await match_speakers_to_characters(
+        match_segs,
+        speakers,
+        glossary,
+        target_language=job.target_language,
+        use_ai=True,
+        overwrite_manual=bool(req.overwrite_manual) if req else False,
+        auto_merge=bool(req.auto_merge) if req else True,
+    )
+
+    with history.job_lock(job_id):
+        session.expire_all()
+        job = _get_job_or_404(session, job_id)
+        _require_not_running(job, "match speakers to characters")
+        rows = _ordered_rows(session, job_id)
+        by_id = {s["id"]: s["speaker"] for s in match_segs if s.get("id") is not None}
+        changed_rows = any(r.id in by_id and r.speaker != by_id[r.id] for r in rows)
+        recording = _history_begin(session, job) if changed_rows else None
+        if changed_rows:
+            for r in rows:
+                if r.id in by_id and r.speaker != by_id[r.id]:
+                    r.speaker = by_id[r.id]
+                    session.add(r)
+        speakers = diarization.prune_unused_speakers(speakers, rows)
+        job.speakers_json = json.dumps(speakers, ensure_ascii=False)
+        if glossary is not None:
+            job.glossary_json = json.dumps(glossary, ensure_ascii=False)
+        job.updated_at = _now()
+        session.add(job)
+        session.commit()
+        if recording is not None:
+            _history_record(session, job, recording, "diarize", {"count": len(speakers)})
+        session.refresh(job)
+        return _job_to_response(job)
+
+
+@router.post("/{job_id}/speakers/merge", response_model=JobResponse)
+def merge_speakers_endpoint(
+    job_id: str,
+    body: MergeSpeakersRequest,
+    session: Session = Depends(get_session),
+):
+    """Merge or unassign acoustic speaker clusters and clean up glossary references."""
+    from app.pipeline import diarization
+
+    source_set = {s.strip() for s in body.source_speaker_ids if s and s.strip()}
+    target_id = (body.target_speaker_id or "").strip() or None
+    if target_id and target_id in source_set:
+        source_set.discard(target_id)
+    if not source_set:
+        raise HTTPException(status_code=400, detail="No source speakers selected")
+
+    with history.job_lock(job_id):
+        job = _get_job_or_404(session, job_id)
+        _require_not_running(job, "merge speakers")
+        rows = _ordered_rows(session, job_id)
+        speakers = json.loads(job.speakers_json or "{}")
+        glossary = json.loads(job.glossary_json) if job.glossary_json else None
+
+        changed_rows = any((r.speaker or "") in source_set for r in rows)
+        recording = _history_begin(session, job) if changed_rows else None
+        for r in rows:
+            if (r.speaker or "") in source_set:
+                r.speaker = target_id
+                session.add(r)
+
+        if target_id and changed_rows and target_id not in speakers:
+            idx = len(speakers)
+            speakers[target_id] = {
+                "label": target_id,
+                "gender": "unknown",
+                "color": diarization.SPEAKER_PALETTE[idx % len(diarization.SPEAKER_PALETTE)],
+            }
+        for src in source_set:
+            speakers.pop(src, None)
+
+        if glossary and isinstance(glossary.get("characters"), list):
+            for ch in glossary["characters"]:
+                if isinstance(ch, dict) and str(ch.get("speaker_id") or "").strip() in source_set:
+                    ch["speaker_id"] = target_id or ""
+
+        job.speakers_json = json.dumps(speakers, ensure_ascii=False)
+        if glossary is not None:
+            job.glossary_json = json.dumps(glossary, ensure_ascii=False)
+        job.updated_at = _now()
+        session.add(job)
+        session.commit()
+        if recording is not None:
+            _history_record(session, job, recording, "diarize", {"merged": len(source_set), "target": target_id})
+        session.refresh(job)
+        return _job_to_response(job)
 
 
 @router.post("/{job_id}/detect-speakers", response_model=DetectSpeakersResponse)
@@ -659,7 +977,9 @@ def quality_check(job_id: str, session: Session = Depends(get_session)):
             glossary = json.loads(job.glossary_json)
         except Exception:
             glossary = None
-    issues = check_rows(_ordered_rows(session, job_id), glossary)
+    rows = _ordered_rows(session, job_id)
+    translation_enabled = bool(job.enable_translation or any(r.translated_text for r in rows))
+    issues = check_rows(rows, glossary, translation_enabled=translation_enabled)
     return [QAIssueSchema(segment_id=i.segment_id, index=i.index, kind=i.kind, message=i.message) for i in issues]
 
 
@@ -749,11 +1069,35 @@ def _apply_segment_patch(seg: SubtitleSegmentRecord, patch: SegmentUpdate) -> No
         raise HTTPException(status_code=422, detail=f"Segment #{seg.index}: end time must be after start time")
     seg.start_time, seg.end_time = start, end
     if patch.original_text is not None:
+        if patch.original_text != seg.original_text:
+            existing_words = _parse_words_raw(getattr(seg, "words_json", None))
+            if existing_words is not None and len(patch.original_text.split()) != len(existing_words):
+                seg.words_json = None
         seg.original_text = patch.original_text
     if patch.translated_text is not None:
-        seg.translated_text = strip_directional_marks(patch.translated_text)
+        new_translation = strip_directional_marks(patch.translated_text)
+        if new_translation != (seg.translated_text or "") and getattr(seg, "addressee_json", None):
+            # The form the translator reported belongs to the text it wrote, not to the user's
+            try:
+                listener = json.loads(seg.addressee_json)
+                if isinstance(listener, dict) and listener.pop("used", None) is not None:
+                    seg.addressee_json = json.dumps(listener, ensure_ascii=False)
+            except ValueError:
+                pass
+        seg.translated_text = new_translation
         if seg.translated_text.strip():
             seg.translation_failed = False
+    if "speaker" in patch.model_fields_set:
+        seg.speaker = (patch.speaker or "").strip() or None
+    if "addressee_gender" in patch.model_fields_set:
+        choice = (patch.addressee_gender or "").strip()
+        if not choice:
+            seg.addressee_json = None
+        else:
+            manual = _manual_addressee_json(choice)
+            if manual is None:
+                raise HTTPException(status_code=422, detail=f"Unknown addressee: {patch.addressee_gender}")
+            seg.addressee_json = manual
 
     text_for_cps = seg.translated_text if seg.translated_text else seg.original_text
     seg.cps = calculate_cps(text_for_cps, max(0.1, seg.end_time - seg.start_time))
@@ -891,7 +1235,7 @@ def create_segment(job_id: str, req: SegmentCreate, session: Session = Depends(g
     new = SubtitleSegmentRecord(
         job_id=job_id, index=0, start_time=start, end_time=end,
         original_text=original, translated_text=translated or None, translation_failed=False,
-        segment_type=kind, confidence=1.0,
+        segment_type=kind, confidence=1.0, speaker=(req.speaker or "").strip() or None,
     )
     _refresh_cps(new)
     session.add(new)
@@ -994,10 +1338,14 @@ def split_segment(
     recording = _history_begin(session, job)
     old_end = seg.end_time
     old_index = seg.index
+    raw_words = _parse_words_raw(getattr(seg, "words_json", None))
+    left_words = [w for w in raw_words if float(w["s"]) < split_at] if raw_words else []
+    right_words = [w for w in raw_words if float(w["s"]) >= split_at] if raw_words else []
 
     seg.end_time = split_at
     seg.original_text = orig1 or seg.original_text
     seg.translated_text = (tr1 or seg.translated_text) if has_tr else None
+    seg.words_json = json.dumps(left_words, ensure_ascii=False) if left_words else None
     _refresh_cps(seg)
     session.add(seg)
 
@@ -1011,6 +1359,9 @@ def split_segment(
         translation_failed=seg.translation_failed,
         segment_type=seg.segment_type,
         confidence=seg.confidence,
+        words_json=json.dumps(right_words, ensure_ascii=False) if right_words else None,
+        speaker=getattr(seg, "speaker", None),
+        addressee_json=getattr(seg, "addressee_json", None),
     )
     _refresh_cps(second)
     session.add(second)
@@ -1083,6 +1434,12 @@ def merge_segments(job_id: str, req: MergeSegmentsRequest, session: Session = De
         first.translation_failed = untranslated_part
     else:
         first.translation_failed = any(t.translation_failed for t in targets)
+    word_chunks = [_parse_words_raw(getattr(t, "words_json", None)) for t in targets if (t.original_text or "").strip()]
+    if word_chunks and all(word_chunks):
+        first.words_json = json.dumps([w for chunk in word_chunks for w in (chunk or [])], ensure_ascii=False)
+    else:
+        first.words_json = None
+    first.speaker = next((getattr(t, "speaker", None) for t in targets if getattr(t, "speaker", None)), None)
     _refresh_cps(first)
     session.add(first)
 
@@ -1119,6 +1476,7 @@ def shift_segments(job_id: str, req: ShiftSegmentsRequest, session: Session = De
 
     recording = _history_begin(session, job)
     for seg in targets:
+        old_start = seg.start_time
         dur = max(0.1, round(seg.end_time - seg.start_time, 3))
         shifted_start = seg.start_time + req.offset_seconds
         new_start = max(0.0, round(shifted_start, 3))
@@ -1128,6 +1486,15 @@ def shift_segments(job_id: str, req: ShiftSegmentsRequest, session: Session = De
             new_end = max(round(new_start + 0.1, 3), round(seg.end_time + req.offset_seconds, 3))
         seg.start_time = new_start
         seg.end_time = new_end
+        parsed_words = _parse_words_raw(getattr(seg, "words_json", None))
+        if parsed_words:
+            delta = round(new_start - old_start, 3)
+            shifted_words = []
+            for w in parsed_words:
+                ws = round(max(0.0, float(w["s"]) + delta), 3)
+                we = round(max(ws, float(w["e"]) + delta), 3)
+                shifted_words.append({"w": w["w"], "s": ws, "e": we})
+            seg.words_json = json.dumps(shifted_words, ensure_ascii=False)
         _refresh_cps(seg)
         session.add(seg)
     session.flush()
@@ -1144,7 +1511,9 @@ def shift_segments(job_id: str, req: ShiftSegmentsRequest, session: Session = De
 
 # --- Timing-only tools -------------------------------------------------------------------------
 
-_MOVE_FIELDS = ("original_text", "translated_text", "translation_failed", "segment_type", "confidence")
+_MOVE_FIELDS = (
+    "original_text", "translated_text", "translation_failed", "segment_type", "confidence", "speaker", "addressee_json",
+)
 _WINDOW_PAD = 3.0
 
 
@@ -1258,6 +1627,7 @@ def move_segment(job_id: str, req: MoveSegmentRequest, session: Session = Depend
     except Exception as e:
         retimed, message = False, f"Rows moved, but the timing check failed: {e}"
     for r in rows[lo:hi + 1]:
+        r.words_json = None
         _refresh_cps(r)
         session.add(r)
     session.commit()

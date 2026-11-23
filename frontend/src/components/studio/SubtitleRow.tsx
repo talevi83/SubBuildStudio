@@ -1,20 +1,33 @@
 import React, { memo, useEffect, useRef, useState } from 'react';
-import type { SegmentPatch, SubtitleSegment } from '../../types';
+import type { SegmentPatch, SpeakerProfile, SubtitleSegment } from '../../types';
+import { addresseeChoice, isUncertainAddressee } from './table/addressee';
 import { registerPendingFlush } from '../../store/useJobStore';
 import { CpsBadge } from './CpsBadge';
+import { virtualRowKey } from './table/useVirtualRows';
 import { formatTimecode, parseTimecode } from '../../utils/time';
 import { useT } from '../../i18n';
 import { AlertTriangle, ChevronsDown, GripVertical, Minus, Plus, Scissors, Trash2 } from 'lucide-react';
 
 const SAVE_DELAY_MS = 600;
 
+const ADDRESSEE_NAME_KEY = {
+  male: 'table.genderMale',
+  female: 'table.genderFemale',
+  group: 'table.genderGroup',
+  unknown: 'table.addresseeUnknown',
+} as const;
+
+const ADDRESSEE_ICON = { male: '♂', female: '♀', group: '👥', unknown: '?' } as const;
+
 interface SubtitleRowProps {
   seg: SubtitleSegment;
   isActive: boolean;
   isSelected: boolean;
   isRtl: boolean;
+  isRtlSource?: boolean;
   translationEnabled: boolean;
   maxCps: number;
+  speakers?: Record<string, SpeakerProfile> | null;
   onSelect: (seg: SubtitleSegment) => void;
   onSave: (segmentId: number, patch: SegmentPatch) => void;
   rowRef?: React.Ref<HTMLTableRowElement>;
@@ -195,8 +208,10 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
   isActive,
   isSelected,
   isRtl,
+  isRtlSource,
   translationEnabled,
   maxCps,
+  speakers,
   onSelect,
   onSave,
   rowRef,
@@ -248,6 +263,7 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
   return (
     <tr
       ref={rowRef}
+      data-row-key={virtualRowKey(seg)}
       onClick={() => onSelect(seg)}
       onDragOver={
         canDrag && onDragOver && seg.id
@@ -277,7 +293,7 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
           : 'hover:bg-zinc-800/30'
       }`}
     >
-      <td className="py-2 px-3 text-center text-zinc-500 font-mono text-[11px] select-none align-top">
+      <td className="py-2 px-2 text-center text-zinc-500 font-mono text-[11px] select-none align-top">
         {canDrag && onDragStart && seg.id && (
           <span
             draggable
@@ -381,7 +397,7 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
         </div>
         {seg.segment_type === 'ON_SCREEN' && (
           <span
-            className={`mt-1 inline-block whitespace-nowrap px-1 py-0.5 rounded text-[9px] font-sans font-semibold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 ${
+            className={`mt-1 inline-block max-w-full truncate whitespace-nowrap px-1 py-0.5 rounded text-[9px] font-sans font-semibold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 ${
               onFilterTag ? 'cursor-pointer hover:bg-cyan-500/25 hover:border-cyan-400' : ''
             }`}
             title={onFilterTag ? t('table.filterByTag', { tag: t('table.onscreenBadge') }) : t('table.onscreenTitle')}
@@ -397,7 +413,7 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
         )}
         {seg.segment_type === 'FOREIGN' && (
           <span
-            className={`mt-1 inline-block whitespace-nowrap px-1 py-0.5 rounded text-[9px] font-sans font-semibold bg-violet-500/15 text-violet-300 border border-violet-500/30 ${
+            className={`mt-1 inline-block max-w-full truncate whitespace-nowrap px-1 py-0.5 rounded text-[9px] font-sans font-semibold bg-violet-500/15 text-violet-300 border border-violet-500/30 ${
               onFilterTag ? 'cursor-pointer hover:bg-violet-500/25 hover:border-violet-400' : ''
             }`}
             title={onFilterTag ? t('table.filterByTag', { tag: t('table.foreignBadge') }) : t('table.foreignTitle')}
@@ -413,7 +429,7 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
         )}
         {seg.segment_type === 'COMMS' && (
           <span
-            className={`mt-1 inline-block whitespace-nowrap px-1 py-0.5 rounded text-[9px] font-sans font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 ${
+            className={`mt-1 inline-block max-w-full truncate whitespace-nowrap px-1 py-0.5 rounded text-[9px] font-sans font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 ${
               onFilterTag ? 'cursor-pointer hover:bg-emerald-500/25 hover:border-emerald-400' : ''
             }`}
             title={onFilterTag ? t('table.filterByTag', { tag: t('table.commsBadge') }) : t('table.commsTitle')}
@@ -426,6 +442,67 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
           >
             📻 {t('table.commsBadge')}
           </span>
+        )}
+        {((speakers && Object.keys(speakers).length > 0) || seg.speaker) && seg.segment_type !== 'ON_SCREEN' && (
+          <div className="mt-1 flex items-center justify-center gap-1" onClick={(e) => e.stopPropagation()}>
+            {seg.speaker && speakers?.[seg.speaker]?.color && (
+              <span
+                className="inline-block w-2 h-2 rounded-full flex-shrink-0"
+                style={{ backgroundColor: speakers[seg.speaker].color }}
+              />
+            )}
+            <select
+              value={seg.speaker || ''}
+              disabled={!editable}
+              onChange={(e) => seg.id && onSave(seg.id, { speaker: e.target.value || null })}
+              data-testid="segment-speaker-pill"
+              aria-label={t('table.speaker')}
+              className="max-w-[82px] truncate bg-zinc-800/80 border border-line rounded px-1 py-0.5 text-[9px] font-sans text-zinc-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+            >
+              <option value="">{t('speakers.unassigned')}</option>
+              {speakers &&
+                Object.entries(speakers).map(([id, sp]) => (
+                  <option key={id} value={id}>
+                    {sp.label || id}
+                  </option>
+                ))}
+              {seg.speaker && (!speakers || !speakers[seg.speaker]) && (
+                <option value={seg.speaker}>{seg.speaker}</option>
+              )}
+            </select>
+          </div>
+        )}
+        {seg.addressee && seg.segment_type !== 'ON_SCREEN' && (
+          <div className="mt-1 flex items-center justify-center">
+            <span
+              data-testid="segment-addressee-pill"
+              data-choice={addresseeChoice(seg.addressee) || 'unknown'}
+              data-uncertain={isUncertainAddressee(seg.addressee) ? 'true' : undefined}
+              data-locked={seg.addressee.locked ? 'true' : undefined}
+              aria-label={`${t('table.addressee')}: ${t(ADDRESSEE_NAME_KEY[addresseeChoice(seg.addressee) || 'unknown'])}`}
+              title={
+                seg.addressee.locked
+                  ? t('table.addresseeTitleManual')
+                  : isUncertainAddressee(seg.addressee)
+                    ? t('table.addresseeTitleUnsure')
+                    : t('table.addresseeTitleSure', {
+                        who: seg.addressee.label || t(ADDRESSEE_NAME_KEY[addresseeChoice(seg.addressee) || 'unknown']),
+                        percent: Math.round(seg.addressee.confidence * 100),
+                      })
+              }
+              className={`inline-flex max-w-[82px] items-center gap-0.5 truncate rounded px-1 py-0.5 text-[9px] font-sans border cursor-help select-none ${
+                seg.addressee.locked
+                  ? 'bg-indigo-500/15 border-indigo-500/50 text-indigo-200'
+                  : isUncertainAddressee(seg.addressee)
+                    ? 'bg-amber-500/10 border-dashed border-amber-500/60 text-amber-200'
+                    : 'bg-zinc-800/80 border-line text-zinc-300'
+              }`}
+            >
+              {seg.addressee.locked && <span aria-hidden>🔒</span>}
+              <span aria-hidden>{ADDRESSEE_ICON[addresseeChoice(seg.addressee) || 'unknown']}</span>
+              <span className="truncate">{t(ADDRESSEE_NAME_KEY[addresseeChoice(seg.addressee) || 'unknown'])}</span>
+            </span>
+          </div>
         )}
       </td>
 
@@ -471,7 +548,7 @@ const SubtitleRowInner: React.FC<SubtitleRowProps> = ({
           value={seg.original_text}
           disabled={!editable}
           dir="auto"
-          className={`${textareaClass} border-transparent text-zinc-200`}
+          className={`${textareaClass} border-transparent text-zinc-200${isRtlSource ? ' font-rtl-hebrew' : ''}`}
           onCommit={commit('original_text')}
         />
       </td>
