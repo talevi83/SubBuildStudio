@@ -67,7 +67,7 @@ jobs:
         id: build
         run: bash packaging/macos/build-app.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: SubBuild-Studio-macOS-${{ matrix.label }}-${{ steps.build.outputs.version }}
           path: ${{ steps.build.outputs.dmg }}
