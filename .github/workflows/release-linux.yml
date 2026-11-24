@@ -72,7 +72,7 @@ jobs:
         id: build
         run: bash packaging/linux/build-appimage.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: SubBuild-Studio-Linux-x86_64-${{ steps.build.outputs.version }}
           path: ${{ steps.build.outputs.appimage }}
