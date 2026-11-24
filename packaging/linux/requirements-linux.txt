@@ -2,4 +2,4 @@
 # Qt WebEngine ships in the wheels, so the AppImage needs no WebKitGTK / PyGObject from the system.
 PyQt6>=6.7
 PyQt6-WebEngine>=6.7
-qtpy>=2.4
+qtpy>=2.4.3
