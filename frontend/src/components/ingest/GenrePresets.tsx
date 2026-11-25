@@ -114,13 +114,16 @@ const GENRE_PRESETS: GenrePresetDefinition[] = [
     titleKey: 'config.presetDocuTitle',
     descKey: 'config.presetDocuDesc',
     preferredWhisperModel: 'large-v3-turbo',
-    tags: ['OCR · 2', '+Whisper', 'Voice ID', 'Metric'],
+    tags: ['OCR · 2', '+Whisper', 'Voice ID', 'Smart Audio'],
     config: {
       vad_filter: true,
       high_speech_sensitivity: false,
       use_embedded_subtitles: true,
       supplement_with_whisper: true,
-      comms_boost: true,
+      vocal_isolation: false,
+      vocal_isolation_mode: 'off',
+      comms_boost: false,
+      comms_boost_mode: 'auto',
       detect_onscreen_text: true,
       onscreen_sensitivity: 2,
       allow_onscreen_overlap: true,
@@ -137,13 +140,16 @@ const GENRE_PRESETS: GenrePresetDefinition[] = [
     titleKey: 'config.presetCinemaTitle',
     descKey: 'config.presetCinemaDesc',
     preferredWhisperModel: 'large-v3',
-    tags: ['High Sens', 'OCR · 2', 'Voice ID', '+Whisper'],
+    tags: ['High Sens', 'Smart Audio', 'OCR · 2', 'Voice ID'],
     config: {
       vad_filter: true,
       high_speech_sensitivity: true,
       use_embedded_subtitles: true,
       supplement_with_whisper: true,
-      comms_boost: true,
+      vocal_isolation: false,
+      vocal_isolation_mode: 'off',
+      comms_boost: false,
+      comms_boost_mode: 'auto',
       detect_onscreen_text: true,
       onscreen_sensitivity: 2,
       allow_onscreen_overlap: true,
@@ -173,7 +179,12 @@ function matchesPreset(current: JobConfig, preset: GenrePresetDefinition, availa
   if (Boolean(current.high_speech_sensitivity) !== Boolean(c.high_speech_sensitivity)) return false;
   if ((current.use_embedded_subtitles !== false) !== (c.use_embedded_subtitles !== false)) return false;
   if (Boolean(current.supplement_with_whisper) !== Boolean(c.supplement_with_whisper)) return false;
-  if (Boolean(current.comms_boost) !== Boolean(c.comms_boost)) return false;
+  const curCommsMode = current.comms_boost_mode ?? (current.comms_boost ? 'on' : 'off');
+  const expCommsMode = c.comms_boost_mode ?? (c.comms_boost ? 'on' : 'off');
+  if (curCommsMode !== expCommsMode) return false;
+  const curVocalMode = current.vocal_isolation_mode ?? (current.vocal_isolation ? 'on' : 'off');
+  const expVocalMode = c.vocal_isolation_mode ?? (c.vocal_isolation ? 'on' : 'off');
+  if (curVocalMode !== expVocalMode) return false;
   if (Boolean(current.detect_onscreen_text) !== Boolean(c.detect_onscreen_text)) return false;
   if (c.detect_onscreen_text && (current.onscreen_sensitivity ?? 2) !== c.onscreen_sensitivity) return false;
   if (Boolean(current.convert_to_metric) !== Boolean(c.convert_to_metric)) return false;
@@ -194,6 +205,10 @@ export const GenrePresets: React.FC<{
   const handleSelect = (preset: GenrePresetDefinition) => {
     const model = resolveModel(preset.preferredWhisperModel, whisperModels);
     onApply({
+      vocal_isolation: false,
+      vocal_isolation_mode: 'off',
+      comms_boost: false,
+      comms_boost_mode: 'off',
       ...preset.config,
       whisper_model: model,
     });

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import re
 from typing import Any, Dict, List, Optional
@@ -33,6 +34,7 @@ from app.core.user_settings import (
 )
 
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
+logger = logging.getLogger(__name__)
 
 
 class SettingsResponse(BaseModel):
@@ -127,8 +129,8 @@ class CheckRequest(BaseModel):
     api_key: Optional[str] = None
 
 
-# Flex can be slow by design; give the test request longer than a Standard one
-_FLEX_CHECK_TIMEOUT = 90
+# Flex can be slow by design; keep interactive health checks bounded and fall back to Standard when Flex is busy
+_FLEX_CHECK_TIMEOUT = 25
 
 
 def _make_client(api_key: str):
@@ -163,38 +165,69 @@ async def check_models(req: CheckRequest):
         raise HTTPException(status_code=400, detail="No AI API key configured")
 
     async def probe(step: str, call):
-        if call.provider == "google" and call.key_id is None:
-            key = explicit_override
+        if call.provider == "google":
+            key = explicit_override if call.key_id is None else ""
             if not key:
-                vault = resolve_secret_key("google", key_id=None, allow_local_ollama_fallback=False)
-                key = vault.api_key if vault else (settings.gemini_api_key if settings.is_gemini_configured else "")
+                vault = resolve_secret_key("google", key_id=call.key_id, allow_local_ollama_fallback=False)
+                key = vault.api_key if vault else (settings.gemini_api_key if (call.key_id is None and settings.is_gemini_configured) else "")
             if not key:
                 return step, call.model, "No Google Gemini API key configured"
 
             from google.genai import types
-            from app.core.model_catalog import media_resolution, thinking_config
+            from app.core.model_catalog import (
+                is_capacity_error,
+                is_timeout_error,
+                media_resolution,
+                thinking_config,
+            )
             from app.providers.gemini_calls import flex_config
 
-            client = google_client or _make_client(key)
+            client = google_client if (google_client is not None and call.key_id is None) else _make_client(key)
             contents: Any = "Reply with the single word OK."
-            config = types.GenerateContentConfig(
+            base_config = types.GenerateContentConfig(
                 max_output_tokens=512, thinking_config=thinking_config(call.model, call.thinking))
             if step == "vision":
                 contents = [types.Part.from_bytes(data=_probe_png(), mime_type="image/png"),
                             "What color is this image? Reply with one word."]
-                config.media_resolution = media_resolution(call.model, chosen.vision_media_resolution)
+                base_config.media_resolution = media_resolution(call.model, chosen.vision_media_resolution)
+
             if call.flex:
-                config = flex_config(config)
-            limit = _FLEX_CHECK_TIMEOUT if call.flex else 30
+                flex_cfg = flex_config(base_config).model_copy(
+                    update={"http_options": types.HttpOptions(timeout=_FLEX_CHECK_TIMEOUT * 1000)}
+                )
+                try:
+                    await asyncio.wait_for(asyncio.to_thread(
+                        client.models.generate_content, model=call.model, contents=contents, config=flex_cfg,
+                    ), timeout=_FLEX_CHECK_TIMEOUT)
+                    return step, call.model, None
+                except asyncio.TimeoutError as exc:
+                    logger.warning(f"Settings check: Flex probe timed out for {call.model}; falling back to Standard probe")
+                    flex_err: Exception = exc
+                except Exception as e:
+                    if not (is_timeout_error(e) or is_capacity_error(e)):
+                        return step, call.model, (str(e)[:400] or type(e).__name__)
+                    logger.warning(f"Settings check: Flex probe unavailable for {call.model} ({e}); falling back to Standard probe")
+                    flex_err = e
+
+                try:
+                    await asyncio.wait_for(asyncio.to_thread(
+                        client.models.generate_content, model=call.model, contents=contents, config=base_config,
+                    ), timeout=30)
+                    return step, call.model, None
+                except asyncio.TimeoutError:
+                    return step, call.model, (
+                        f"Flex busy ({type(flex_err).__name__}) and Standard probe did not answer within 30s"
+                    )
+                except Exception as e:
+                    return step, call.model, (str(e)[:400] or type(e).__name__)
+
             try:
                 await asyncio.wait_for(asyncio.to_thread(
-                    client.models.generate_content, model=call.model, contents=contents, config=config,
-                ), timeout=limit)
+                    client.models.generate_content, model=call.model, contents=contents, config=base_config,
+                ), timeout=30)
                 return step, call.model, None
             except asyncio.TimeoutError:
-                return step, call.model, (
-                    f"Flex did not answer within {limit}s (Google may be busy); "
-                    "jobs retry and then fall back to Standard" if call.flex else f"No answer within {limit}s")
+                return step, call.model, "No answer within 30s"
             except Exception as e:
                 return step, call.model, (str(e)[:400] or type(e).__name__)
 

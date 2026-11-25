@@ -13,7 +13,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.utils.rtl_fixer import strip_directional_marks
-from app.utils.srt_formatter import calculate_cps, split_long_lines
+from app.utils.srt_formatter import calculate_cps, format_balanced_lines, split_long_lines
 from app.utils.text_rules import ends_sentence
 
 # Leading dialogue dash at the start of a line: "- Hello", "-שלום", "– Hi", "— Hi"
@@ -277,6 +277,56 @@ def _slice_words(
     return sliced if len(sliced) == len((original_text or "").split()) else None
 
 
+def _can_time_slice_turns(
+    start_time: float,
+    end_time: float,
+    turns: List[str],
+    original_text: str = "",
+) -> bool:
+    """True when `turns` represent real multi-speaker dialogue long enough to time-slice safely.
+
+    Short cues or bogus mid-phrase dashes are kept as a single subtitle block formatted with `\\n`
+    so 2-3 word lines are never chopped into sub-second single-word subtitles.
+    """
+    k = len(turns)
+    if k <= 1:
+        return False
+    duration = float(end_time) - float(start_time)
+    if duration < 0.9 * k:
+        return False
+    for turn in turns:
+        flat = " ".join(strip_directional_marks(turn).split())
+        words = flat.split()
+        if not words:
+            return False
+        if len(words) == 1 and not _ends_with_terminal(flat):
+            tok = _bare_token(words[0])
+            if tok not in _STANDALONE_ONE_WORD_SENTENCES_HE and tok not in _STANDALONE_ONE_WORD_SENTENCES_EN:
+                return False
+    clean_orig = " ".join(strip_directional_marks(original_text or "").split())
+    if clean_orig:
+        _, orig_explicit_turns = extract_speaker_turns(original_text)
+        orig_sents = _split_into_sentences(clean_orig)
+        if len(orig_explicit_turns) < 2 and len(orig_sents) < 2 and len(clean_orig.split()) <= 5:
+            return False
+    return True
+
+
+def _format_turns_in_single_block(turns: List[str], original_text: str, max_chars_per_line: int) -> str:
+    """Format `turns` inside a single subtitle block using `\\n` without time-slicing."""
+    clean_orig = " ".join(strip_directional_marks(original_text or "").split())
+    _, orig_explicit = extract_speaker_turns(original_text)
+    orig_sents = _split_into_sentences(clean_orig)
+    is_genuine_dual = len(turns) == 2 and (len(orig_explicit) >= 2 or len(orig_sents) >= 2)
+    if is_genuine_dual:
+        t0 = " ".join(turns[0].split())
+        t1 = " ".join(turns[1].split())
+        if len(t0) + 2 <= max_chars_per_line and len(t1) + 2 <= max_chars_per_line:
+            return f"- {t0}\n- {t1}"
+    joined = " ".join(" ".join(t.split()) for t in turns if t.strip())
+    return format_balanced_lines(joined, max_chars_per_line=max_chars_per_line)
+
+
 def split_dual_speaker_segment(
     seg: Dict[str, Any],
     max_chars_per_line: int = 42,
@@ -284,8 +334,8 @@ def split_dual_speaker_segment(
 ) -> List[Dict[str, Any]]:
     """
     If `seg` contains multiple speakers (in `translated_text` or `original_text`),
-    split it into separate consecutive single-speaker segment dicts.
-    Otherwise return `[seg]` (with any lone dialogue dash cleaned if appropriate).
+    split it into separate consecutive single-speaker segment dicts when duration and syntax allow;
+    otherwise format lines cleanly with `\\n` inside a single subtitle block.
     """
     seg_type = seg.get("segment_type") or "DIALOGUE"
     if seg_type == "ON_SCREEN":
@@ -297,6 +347,18 @@ def split_dual_speaker_segment(
     if translated:
         header, trans_turns = extract_speaker_turns(translated)
         orig_header, _ = extract_speaker_turns(original)
+        if (
+            len(trans_turns) >= 2
+            and header is None
+            and orig_header is None
+            and not _can_time_slice_turns(float(seg["start_time"]), float(seg["end_time"]), trans_turns, original)
+        ):
+            kept = dict(seg)
+            kept["translated_text"] = _format_turns_in_single_block(trans_turns, original, max_chars_per_line)
+            kept["cps"] = calculate_cps(
+                kept["translated_text"], max(0.1, float(kept["end_time"]) - float(kept["start_time"]))
+            )
+            return [kept]
         if len(trans_turns) >= 2 or (header is not None and len(trans_turns) >= 1):
             orig_body = original
             if orig_header and original.lstrip().startswith(orig_header):
@@ -338,6 +400,18 @@ def split_dual_speaker_segment(
 
     # Also check if untranslated `original_text` itself has multiple speaker turns or a bracketed header
     orig_header, orig_turns = extract_speaker_turns(original)
+    if (
+        not translated
+        and len(orig_turns) >= 2
+        and orig_header is None
+        and not _can_time_slice_turns(float(seg["start_time"]), float(seg["end_time"]), orig_turns, original)
+    ):
+        kept = dict(seg)
+        kept["original_text"] = _format_turns_in_single_block(orig_turns, original, max_chars_per_line)
+        kept["cps"] = calculate_cps(
+            kept["original_text"], max(0.1, float(kept["end_time"]) - float(kept["start_time"]))
+        )
+        return [kept]
     if not translated and (len(orig_turns) >= 2 or (orig_header is not None and len(orig_turns) >= 1)):
         timings = allocate_turn_timings(
             float(seg["start_time"]),

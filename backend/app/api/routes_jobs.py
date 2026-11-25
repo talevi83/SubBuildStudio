@@ -238,11 +238,17 @@ def _job_to_response(
         video_duration=job.video_duration,
         audio_streams=streams,
         selected_audio_stream=job.selected_audio_stream,
+        transcription_provider=getattr(job, "transcription_provider", "faster_whisper") or "faster_whisper",
         whisper_model=job.whisper_model,
+        vocal_isolation=bool(getattr(job, "vocal_isolation", False)),
+        vocal_isolation_mode=getattr(job, "vocal_isolation_mode", None) or ("on" if getattr(job, "vocal_isolation", False) else "off"),
         source_language=job.source_language,
         detected_language=job.detected_language,
         vad_filter=job.vad_filter,
+        condition_on_previous_text=bool(getattr(job, "condition_on_previous_text", False)),
+        initial_prompt=getattr(job, "initial_prompt", None),
         comms_boost=job.comms_boost,
+        comms_boost_mode=getattr(job, "comms_boost_mode", None) or ("on" if getattr(job, "comms_boost", False) else "off"),
         high_speech_sensitivity=getattr(job, "high_speech_sensitivity", False),
         use_embedded_subtitles=getattr(job, "use_embedded_subtitles", True),
         selected_subtitle_stream=getattr(job, "selected_subtitle_stream", None),
@@ -298,6 +304,24 @@ def _get_job_or_404(session: Session, job_id: str) -> Job:
 
 
 _GEMINI_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$")
+_VALID_TRANSCRIPTION_PROVIDERS = {"faster_whisper", "whisperx"}
+_VALID_AUDIO_MODES = {"off", "auto", "on"}
+
+
+def _validate_audio_mode(mode: Optional[str], legacy_flag: bool, field_name: str) -> str:
+    if mode is None or not str(mode).strip():
+        return "on" if legacy_flag else "off"
+    cleaned = str(mode).strip().lower()
+    if cleaned not in _VALID_AUDIO_MODES:
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}: {mode}")
+    return cleaned
+
+
+def _validate_transcription_provider(name: Optional[str]) -> str:
+    cleaned = (name or "faster_whisper").strip().lower()
+    if cleaned not in _VALID_TRANSCRIPTION_PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"Unknown transcription provider: {name}")
+    return cleaned
 
 
 def _validate_whisper_model(name: str) -> None:
@@ -317,6 +341,9 @@ def _validate_gemini_model(name: str) -> None:
 @router.post("", response_model=JobResponse)
 async def create_job(req: JobCreate, session: Session = Depends(get_session)):
     """Create a new subtitling job and start the processing pipeline in the background."""
+    transcription_provider = _validate_transcription_provider(req.transcription_provider)
+    vocal_mode = _validate_audio_mode(req.vocal_isolation_mode, bool(req.vocal_isolation), "vocal_isolation_mode")
+    comms_mode = _validate_audio_mode(req.comms_boost_mode, bool(req.comms_boost), "comms_boost_mode")
     _validate_whisper_model(req.whisper_model)
     if req.gemini_model:
         _validate_gemini_model(req.gemini_model)
@@ -352,10 +379,16 @@ async def create_job(req: JobCreate, session: Session = Depends(get_session)):
         status=JobStatus.QUEUED if is_queued else JobStatus.IDLE,
         current_stage="QUEUED" if is_queued else None,
         selected_audio_stream=req.selected_audio_stream,
+        transcription_provider=transcription_provider,
         whisper_model=req.whisper_model,
+        vocal_isolation=(vocal_mode == "on"),
+        vocal_isolation_mode=vocal_mode,
         source_language=req.source_language,
         vad_filter=req.vad_filter,
-        comms_boost=req.comms_boost,
+        condition_on_previous_text=bool(getattr(req, "condition_on_previous_text", False)),
+        initial_prompt=(req.initial_prompt.strip() if req.initial_prompt and req.initial_prompt.strip() else None),
+        comms_boost=(comms_mode == "on"),
+        comms_boost_mode=comms_mode,
         high_speech_sensitivity=req.high_speech_sensitivity,
         use_embedded_subtitles=req.use_embedded_subtitles,
         selected_subtitle_stream=req.selected_subtitle_stream,
@@ -711,7 +744,9 @@ async def diarize_job(
     target_language = job.target_language
 
     def _run_diarization():
-        speech_regions._extract(job.video_path, str(wav_path), stream, channels, job.comms_boost, 0.0, None)
+        # Always extract clean unfiltered audio (comms_boost=False, never Demucs vocals)
+        # so WeSpeaker voiceprints and F0 pitch stay undistorted.
+        speech_regions._extract(job.video_path, str(wav_path), stream, channels, False, 0.0, None)
         onnx_path = diarization.ensure_diarization_model()
         embedder = diarization.OnnxSpeakerEmbedder(onnx_path=onnx_path)
         timeline, speakers = diarization.diarize_audio_spans(
@@ -1007,6 +1042,10 @@ def _delete_single_job(session: Session, job: Job) -> Tuple[str, bool]:
     try:
         audio_path = settings.storage_dir / "audio" / f"{job_id}.wav"
         audio_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        (settings.storage_dir / "vocals" / f"{job_id}.vocals.wav").unlink(missing_ok=True)
     except OSError:
         pass
 

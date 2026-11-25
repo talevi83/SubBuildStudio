@@ -26,6 +26,7 @@ from app.pipeline.stages.refine_stage import RefineStage
 from app.pipeline.stages.sync_stage import SyncStage, sync_summary
 from app.pipeline.stages.transcribe_stage import TranscribeStage
 from app.pipeline.stages.translate_stage import TranslateStage
+from app.pipeline.stages.vocal_isolation_stage import VocalIsolationStage
 from app.providers.gemini_calls import FlexState
 from app.providers.translation.base import TranslatableSegment
 from app.utils.rtl_fixer import strip_directional_marks
@@ -56,6 +57,7 @@ ACTIVE_STATUSES = {
     JobStatus.QUEUED,
     JobStatus.PROBING,
     JobStatus.EXTRACTING_AUDIO,
+    JobStatus.VOCAL_ISOLATION,
     JobStatus.TRANSCRIBING,
     JobStatus.DIARIZING,
     JobStatus.SCANNING_ONSCREEN,
@@ -68,6 +70,7 @@ ACTIVE_STATUSES = {
 STAGE_WEIGHTS = {
     JobStatus.PROBING: 2,
     JobStatus.EXTRACTING_AUDIO: 6,
+    JobStatus.VOCAL_ISOLATION: 14,
     JobStatus.TRANSCRIBING: 62,
     JobStatus.DIARIZING: 10,
     JobStatus.SCANNING_ONSCREEN: 12,
@@ -336,6 +339,14 @@ class PipelineOrchestrator:
                     self._prior_usage_dict = json.loads(job.usage_json)
                 except Exception:
                     self._prior_usage_dict = None
+            from app.services.smart_audio_map import resolve_audio_modes
+
+            v_mode, c_mode = resolve_audio_modes(
+                vocal_isolation=bool(getattr(job, "vocal_isolation", False)),
+                vocal_isolation_mode=getattr(job, "vocal_isolation_mode", None),
+                comms_boost=bool(getattr(job, "comms_boost", False)),
+                comms_boost_mode=getattr(job, "comms_boost_mode", None),
+            )
             ctx = PipelineContext(
                 job_id=job.id,
                 video_path=job.video_path,
@@ -343,11 +354,18 @@ class PipelineOrchestrator:
                 duration=job.video_duration or 0.0,
                 audio_streams=streams,
                 selected_audio_stream=job.selected_audio_stream,
+                transcription_provider=getattr(job, "transcription_provider", "faster_whisper") or "faster_whisper",
+                effective_transcription_provider=getattr(job, "transcription_provider", "faster_whisper") or "faster_whisper",
+                vocal_isolation=(v_mode == "on"),
+                vocal_isolation_mode=v_mode,
                 whisper_model=job.whisper_model,
                 source_language=job.source_language,
                 detected_language=job.detected_language,
                 vad_filter=job.vad_filter,
-                comms_boost=job.comms_boost,
+                condition_on_previous_text=bool(getattr(job, "condition_on_previous_text", False)),
+                initial_prompt=getattr(job, "initial_prompt", None),
+                comms_boost=(c_mode == "on"),
+                comms_boost_mode=c_mode,
                 high_speech_sensitivity=getattr(job, "high_speech_sensitivity", False),
                 use_embedded_subtitles=getattr(job, "use_embedded_subtitles", True),
                 selected_subtitle_stream=getattr(job, "selected_subtitle_stream", None),
@@ -408,6 +426,16 @@ class PipelineOrchestrator:
             return ctx
 
     def _stages(self, ctx: PipelineContext) -> List[tuple]:
+        from app.services.smart_audio_map import resolve_audio_modes
+
+        v_mode, c_mode = resolve_audio_modes(
+            vocal_isolation=bool(getattr(ctx, "vocal_isolation", False)),
+            vocal_isolation_mode=getattr(ctx, "vocal_isolation_mode", None),
+            comms_boost=bool(getattr(ctx, "comms_boost", False)),
+            comms_boost_mode=getattr(ctx, "comms_boost_mode", None),
+        )
+        run_audio_conditioning = (v_mode in ("auto", "on") or c_mode == "auto")
+
         translate = TranslateStage(on_batch_persist=self._persist_translations)
         if self.mode == "translate":
             return [(JobStatus.TRANSLATING, translate)]
@@ -415,8 +443,10 @@ class PipelineOrchestrator:
             stages_sync: List[tuple] = [
                 (JobStatus.PROBING, ProbeStage()),
                 (JobStatus.EXTRACTING_AUDIO, AudioExtractionStage()),
-                (JobStatus.TRANSCRIBING, TranscribeStage()),
             ]
+            if run_audio_conditioning:
+                stages_sync.append((JobStatus.VOCAL_ISOLATION, VocalIsolationStage()))
+            stages_sync.append((JobStatus.TRANSCRIBING, TranscribeStage()))
             if ctx.detect_onscreen_text:
                 stages_sync.append((JobStatus.SCANNING_ONSCREEN, OnScreenTextStage()))
             stages_sync.append((JobStatus.SYNCING, SyncStage()))
@@ -424,8 +454,10 @@ class PipelineOrchestrator:
         stages: List[tuple] = [
             (JobStatus.PROBING, ProbeStage()),
             (JobStatus.EXTRACTING_AUDIO, AudioExtractionStage()),
-            (JobStatus.TRANSCRIBING, TranscribeStage()),
         ]
+        if run_audio_conditioning:
+            stages.append((JobStatus.VOCAL_ISOLATION, VocalIsolationStage()))
+        stages.append((JobStatus.TRANSCRIBING, TranscribeStage()))
         if ctx.enable_diarization:
             stages.append((JobStatus.DIARIZING, DiarizeStage()))
         if ctx.detect_onscreen_text:
@@ -498,12 +530,15 @@ class PipelineOrchestrator:
             logger.warning(f"Could not save Gemini usage: {e}")
 
     def _delete_audio(self) -> None:
-        wav = settings.storage_dir / "audio" / f"{self.job_id}.wav"
-        try:
-            if wav.exists():
-                wav.unlink()
-        except OSError as e:  # pragma: no cover - file locked on Windows etc.
-            logger.warning(f"Could not delete {wav}: {e}")
+        for candidate in (
+            settings.storage_dir / "audio" / f"{self.job_id}.wav",
+            settings.storage_dir / "vocals" / f"{self.job_id}.conditioned.wav",
+        ):
+            try:
+                if candidate.exists():
+                    candidate.unlink()
+            except OSError as e:  # pragma: no cover - file locked on Windows etc.
+                logger.warning(f"Could not delete {candidate}: {e}")
 
     async def _acquire_gpu(self, overall_pct: float) -> None:
         sem = _get_gpu_semaphore()
@@ -782,9 +817,14 @@ class PipelineOrchestrator:
                 weight = STAGE_WEIGHTS[stage_status]
                 base_pct = done_weight / total_weight * 100
 
-                if stage_status == JobStatus.TRANSCRIBING:
-                    if not ctx.embedded_dialogue_segments:
-                        await self._acquire_gpu(round(base_pct, 1))
+                if stage_status == JobStatus.VOCAL_ISOLATION:
+                    if not ctx.embedded_dialogue_segments or ctx.supplement_with_whisper or ctx.enable_diarization:
+                        if not self._gpu_held:
+                            await self._acquire_gpu(round(base_pct, 1))
+                elif stage_status == JobStatus.TRANSCRIBING:
+                    if not ctx.embedded_dialogue_segments or ctx.supplement_with_whisper:
+                        if not self._gpu_held:
+                            await self._acquire_gpu(round(base_pct, 1))
 
                 self._stage_progress_percent = 0.0
                 self._update_job(
@@ -872,8 +912,11 @@ class PipelineOrchestrator:
                         if ctx.speakers:
                             fields["speakers_json"] = json.dumps(ctx.speakers, ensure_ascii=False)
                         self._update_job(**fields)
-                    if any(s.get("id") is None for s in ctx.refined_segments):
-                        # Lines were split: the whole list replaces the stored rows, so keep edits first
+                    if (
+                        any(s.get("id") is None for s in ctx.refined_segments)
+                        or len(ctx.refined_segments) != len(self._known_text)
+                    ):
+                        # Lines were split or merged: the whole list replaces the stored rows, so keep edits first
                         self._adopt_user_edits(ctx.refined_segments)
                         self._save_segments(ctx.refined_segments)
                         await self._broadcast({
@@ -889,9 +932,10 @@ class PipelineOrchestrator:
             fallbacks = ctx.usage.flex_fallbacks() if hasattr(ctx.usage, "flex_fallbacks") else 0
             if fallbacks:
                 switched = sorted(getattr(ctx.flex_state, "disabled", ()) or ())
+                flex_ok = sum(s.flex_requests for s in ctx.usage.stages.values()) if hasattr(ctx.usage, "stages") else 0
                 warnings.append(
-                    f"Flex was busy: {fallbacks} Gemini request(s) ran on the Standard tier (full price)."
-                    + (f" After repeated failures the rest of the job used Standard for {', '.join(switched)}."
+                    f"Flex was busy on {fallbacks} Gemini request(s) (ran on Standard tier; {flex_ok} completed on Flex)."
+                    + (f" Flex was in cooldown at job end for {', '.join(switched)}."
                        if switched else "")
                 )
             warning = " ".join(warnings) or None

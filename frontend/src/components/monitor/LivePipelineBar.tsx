@@ -24,12 +24,14 @@ import {
   CheckCircle2,
   Cpu,
   Users,
+  Sparkles,
 } from 'lucide-react';
 import type { JobStatus, JobUsage, ModelUsage, SyncReport } from '../../types';
 
 const ALL_STAGES: ReadonlyArray<{ key: JobStatus; icon: React.ComponentType<{ className?: string }> }> = [
   { key: 'PROBING', icon: Search },
   { key: 'EXTRACTING_AUDIO', icon: Music },
+  { key: 'VOCAL_ISOLATION', icon: Sparkles },
   { key: 'TRANSCRIBING', icon: Mic },
   { key: 'DIARIZING', icon: Users },
   { key: 'SCANNING_ONSCREEN', icon: ScanText },
@@ -66,8 +68,14 @@ export const LivePipelineBar: React.FC = () => {
   // A translation-only run (Retranslate) shows just the translate step
   const translateOnly = status === 'TRANSLATING' && activeJob.segments.some((s) => s.id);
   const isSync = activeJob.job_kind === 'sync';
+  const hasAudioConditioning =
+    Boolean(activeJob.vocal_isolation) ||
+    activeJob.vocal_isolation_mode === 'auto' ||
+    activeJob.vocal_isolation_mode === 'on' ||
+    activeJob.comms_boost_mode === 'auto';
   const stages = ALL_STAGES.filter(
     (s) =>
+      (s.key !== 'VOCAL_ISOLATION' || hasAudioConditioning || status === 'VOCAL_ISOLATION') &&
       (isSync
         ? s.key !== 'DIARIZING' && s.key !== 'REFINING' && s.key !== 'TRANSLATING'
         : s.key !== 'SYNCING' &&
@@ -175,7 +183,28 @@ export const LivePipelineBar: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-3 text-xs flex-shrink-0">
-          {activeJob.comms_boost && (
+          {activeJob.transcription_provider === 'whisperx' && (
+            <div className="px-2.5 py-1 rounded bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 font-semibold text-[11px]">
+              WhisperX
+            </div>
+          )}
+          {(activeJob.vocal_isolation || activeJob.vocal_isolation_mode === 'on') && (
+            <div
+              className="px-2.5 py-1 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-300"
+              title={t('config.vocalIsolationTitle')}
+            >
+              {t('monitor.vocalIsolationBadge')}
+            </div>
+          )}
+          {(activeJob.vocal_isolation_mode === 'auto' || activeJob.comms_boost_mode === 'auto') && (
+            <div
+              className="px-2.5 py-1 rounded bg-teal-500/10 border border-teal-500/30 text-teal-300"
+              title={t('config.commsModeAuto')}
+            >
+              {t('monitor.smartAudioBadge')}
+            </div>
+          )}
+          {(activeJob.comms_boost || activeJob.comms_boost_mode === 'on') && (
             <div className="px-2.5 py-1 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-300" title={t('config.commsTitle')}>
               📻 {t('monitor.comms')}
             </div>
@@ -276,6 +305,9 @@ const aggregateModels = (usage: JobUsage): ModelUsage[] => {
       existing.input_tokens += st.input_tokens || 0;
       existing.output_tokens += st.output_tokens || 0;
       existing.thinking_tokens += st.thinking_tokens || 0;
+      existing.flex_requests = (existing.flex_requests || 0) + (st.flex_requests || 0);
+      existing.flex_fallbacks = (existing.flex_fallbacks || 0) + (st.flex_fallbacks || 0);
+      existing.standard_requests = (existing.standard_requests || 0) + (st.standard_requests || 0);
       existing.total_tokens += total;
       existing.cost_usd =
         existing.cost_usd === null || st.cost_usd === null ? null : (existing.cost_usd || 0) + (st.cost_usd || 0);
@@ -335,6 +367,20 @@ const UsageSummaryBar: React.FC<{ usage: JobUsage; isRunning: boolean; language:
               </span>
               <span className="text-zinc-500">·</span>
               <span className="text-zinc-300">{t('monitor.usageRequests', { count: m.requests })}</span>
+              {((m.flex_requests || 0) > 0 || (m.flex_fallbacks || 0) > 0) && (
+                <>
+                  <span className="text-zinc-500">·</span>
+                  <span className="text-[11px] text-emerald-300 font-mono" dir="ltr" data-testid={`usage-tier-${m.model}`}>
+                    {t('monitor.usageTierBreakdown', {
+                      flex: m.flex_requests || 0,
+                      fallback: m.flex_fallbacks || 0,
+                      standard:
+                        m.standard_requests ??
+                        Math.max(0, m.requests - (m.flex_requests || 0) - (m.flex_fallbacks || 0)),
+                    })}
+                  </span>
+                </>
+              )}
               {m.cost_usd !== null && (
                 <>
                   <span className="text-zinc-500">·</span>

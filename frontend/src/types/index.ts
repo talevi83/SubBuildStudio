@@ -3,6 +3,7 @@ export type JobStatus =
   | 'QUEUED'
   | 'PROBING'
   | 'EXTRACTING_AUDIO'
+  | 'VOCAL_ISOLATION'
   | 'TRANSCRIBING'
   | 'DIARIZING'
   | 'SCANNING_ONSCREEN'
@@ -13,11 +14,15 @@ export type JobStatus =
   | 'FAILED'
   | 'CANCELLED';
 
+export type TranscriptionProvider = 'faster_whisper' | 'whisperx';
+export type AudioProcessingMode = 'off' | 'auto' | 'on';
+
 export const ACTIVE_STATUSES: JobStatus[] = [
   'IDLE',
   'QUEUED',
   'PROBING',
   'EXTRACTING_AUDIO',
+  'VOCAL_ISOLATION',
   'TRANSCRIBING',
   'DIARIZING',
   'SCANNING_ONSCREEN',
@@ -160,11 +165,17 @@ export interface Job {
   video_duration?: number | null;
   audio_streams: AudioStreamInfo[];
   selected_audio_stream: number;
+  transcription_provider?: TranscriptionProvider;
   whisper_model: string;
+  vocal_isolation?: boolean;
+  vocal_isolation_mode?: AudioProcessingMode;
   source_language?: string | null;
   detected_language?: string | null;
   vad_filter: boolean;
+  condition_on_previous_text?: boolean;
+  initial_prompt?: string | null;
   comms_boost: boolean;
+  comms_boost_mode?: AudioProcessingMode;
   high_speech_sensitivity?: boolean;
   use_embedded_subtitles?: boolean;
   selected_subtitle_stream?: number | null;
@@ -229,6 +240,8 @@ export interface HardwareInfo {
   recommended_compute_type: string;
   /** Linux AppImage: an NVIDIA card is there, but its CUDA libraries are not downloaded yet */
   gpu_libs_missing?: boolean;
+  whisperx_available?: boolean;
+  vocal_isolation_available?: boolean;
 }
 
 /** The Linux AppImage's optional NVIDIA libraries (GET /api/system/gpu-libs) */
@@ -278,6 +291,9 @@ export interface SystemInfo {
   gemini_model: string;
   gemini_models: string[];
   providers?: Record<string, ProviderSummary>;
+  transcription_providers?: TranscriptionProvider[];
+  whisperx_available?: boolean;
+  vocal_isolation_available?: boolean;
   whisper_default_model: string;
   whisper_models: string[];
   max_cps_warning: number;
@@ -334,10 +350,16 @@ export type IngestMode = 'transcribe' | 'sync';
 
 export interface JobConfig {
   selected_audio_stream: number;
+  transcription_provider?: TranscriptionProvider;
   whisper_model: string;
+  vocal_isolation?: boolean;
+  vocal_isolation_mode?: AudioProcessingMode;
   source_language: string;
   vad_filter: boolean;
+  condition_on_previous_text?: boolean;
+  initial_prompt?: string;
   comms_boost: boolean;
+  comms_boost_mode?: AudioProcessingMode;
   high_speech_sensitivity?: boolean;
   use_embedded_subtitles?: boolean;
   selected_subtitle_stream?: number | null;
@@ -612,6 +634,7 @@ export interface StageUsage {
   cost_usd: number | null;
   flex_requests?: number;
   flex_fallbacks?: number;
+  standard_requests?: number;
 }
 
 export interface ModelUsage extends StageUsage {

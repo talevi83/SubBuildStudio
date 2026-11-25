@@ -102,8 +102,11 @@ def collect(session: Session, active_ids: Set[str], older_than_days: Optional[fl
         if p.name not in active_ids:
             out["temp"].add(p, _tree_size(p))
 
-    # cache: speech-region caches used by "re-check timing" (re-computed when needed)
+    # cache: speech-region caches and isolated vocals (re-computed when needed)
     for p in _children(root / "regions"):
+        if _job_id_of(p.name) not in active_ids:
+            out["cache"].add(p, _tree_size(p))
+    for p in _children(root / "vocals"):
         if _job_id_of(p.name) not in active_ids:
             out["cache"].add(p, _tree_size(p))
 
@@ -178,6 +181,7 @@ def _delete_job(session: Session, job: Job) -> None:
     if running_embed is not None:
         ve.cancel_task(running_embed)
     (settings.storage_dir / "audio" / f"{job_id}.wav").unlink(missing_ok=True)
+    (settings.storage_dir / "vocals" / f"{job_id}.vocals.wav").unlink(missing_ok=True)
     session.delete(job)
     session.commit()
     delete_job_log(job_id)

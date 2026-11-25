@@ -33,7 +33,44 @@ class DiarizeStage(PipelineStage):
         if not getattr(ctx, "enable_diarization", False):
             return
 
-        wav_path = Path(ctx.audio_wav_path) if ctx.audio_wav_path else (settings.storage_dir / "audio" / f"{ctx.job_id}.wav")
+        # Always prefer the clean, un-separated extracted WAV (`raw_audio_wav_path`) over Demucs /
+        # conditioned audio so separation phase artifacts never corrupt WeSpeaker voiceprints or F0 pitch.
+        raw_candidate = Path(ctx.raw_audio_wav_path) if getattr(ctx, "raw_audio_wav_path", None) else None
+        if raw_candidate is not None and raw_candidate.is_file():
+            wav_path = raw_candidate
+        else:
+            wav_path = Path(ctx.audio_wav_path) if ctx.audio_wav_path else (settings.storage_dir / "audio" / f"{ctx.job_id}.wav")
+
+        # If integrated WhisperX diarization already clustered speakers, enrich with voice pitch
+        # (non-fatal) and ensure segments carry speaker labels instead of re-running ONNX clustering.
+        has_integrated_speakers = bool(ctx.speakers) and (
+            bool(ctx.diarization_timeline)
+            or any(getattr(s, "speaker", None) for s in (ctx.raw_segments or []))
+        )
+        if has_integrated_speakers:
+            if ctx.diarization_timeline and wav_path.is_file():
+                try:
+                    from app.pipeline.voice_gender import label_speakers_by_voice
+
+                    await asyncio.to_thread(label_speakers_by_voice, wav_path, ctx.diarization_timeline, ctx.speakers)
+                except Exception as exc:
+                    logger.info(f"Voice gender estimate skipped for {ctx.job_id}: {exc}")
+            if (
+                ctx.raw_segments
+                and ctx.diarization_timeline
+                and not any(getattr(s, "speaker", None) for s in ctx.raw_segments)
+            ):
+                ctx.raw_segments = split_raw_segments_by_speaker(ctx.raw_segments, ctx.diarization_timeline)
+            if on_progress:
+                await on_progress(
+                    100.0,
+                    None,
+                    None,
+                    f"Detected {len(ctx.speakers)} speaker(s) via integrated diarization",
+                    None,
+                )
+            return
+
         if not wav_path.is_file():
             msg = "Speaker diarization skipped: extracted audio file is not available."
             ctx.warnings.append(msg)
@@ -120,6 +157,14 @@ class DiarizeStage(PipelineStage):
                     except Exception as exc:
                         logger.info(f"Voice gender estimate skipped for {ctx.job_id}: {exc}")
                 ctx.speakers = speakers
+                from app.pipeline.diarization import assess_diarization
+
+                quality = assess_diarization(speakers, timeline)
+                ctx.diarization_quality = quality
+                logger.info(
+                    f"Diarization for {ctx.job_id}: {quality['speakers']} speaker(s) with >=2% of the speech"
+                    + (f"; {'; '.join(quality['reasons'])}" if quality["reasons"] else "")
+                )
             if ctx.raw_segments and timeline:
                 ctx.raw_segments = split_raw_segments_by_speaker(ctx.raw_segments, timeline)
 

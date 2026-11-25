@@ -24,13 +24,14 @@ from typing import Any, Dict, List, Optional
 from app.core.config import settings
 from app.models.db_models import SegmentType
 from app.pipeline.context import RawSegment
-from app.utils.srt_formatter import calculate_cps, split_long_lines
+from app.utils.srt_formatter import calculate_cps, format_balanced_lines, split_long_lines
 from app.utils.text_rules import (
     BREAK_BEFORE_WORDS,
     WEAK_END_WORDS,
     bare,
     ends_clause,
     ends_sentence,
+    has_spoken_content,
 )
 
 # Pauses (seconds) that end a sentence even without punctuation
@@ -40,6 +41,16 @@ _SEGMENT_PAUSE = 0.6
 _CHAIN_GAP = 0.5
 # Maximum time a subtitle may appear before the first word is spoken
 _MAX_LEAD_IN = 0.3
+# A speaker change with less silence than this and no punctuation is a diarization flicker, not a
+# turn: people do not hand over mid-phrase without a pause ("Every night I" / "see a lot of devils")
+_FALSE_TURN_GAP = 0.25
+# An unfinished sentence may continue after a dramatic pause this long ("lot of devils" ... 1.8s ...
+# "coming for us.") and still belongs in the same subtitle, within the line and duration limits
+_CONTINUATION_MAX_GAP = 4.0
+# Across a detected speaker change, only a clearly continuing sentence (lower-case start) may merge
+_CROSS_SPEAKER_CONTINUATION_GAP = 1.5
+# Overlap (seconds) that marks a repeated boundary word as a chunking duplicate rather than a stutter
+_DUPLICATE_OVERLAP = 0.02
 
 
 @dataclass
@@ -208,6 +219,12 @@ def _orphan_head(words: List[Any]) -> List[Any]:
     return []
 
 
+def _different_speakers(a: RawSegment, b: RawSegment) -> bool:
+    """True when both segments carry a known speaker and they differ: their words never move across."""
+    sa, sb = getattr(a, "speaker", None), getattr(b, "speaker", None)
+    return bool(sa and sb and sa != sb)
+
+
 def reattach_orphan_tails(raw_segments: List[RawSegment], max_gap: float = 4.0) -> List[RawSegment]:
     """Move a 1..3 word sentence ending stranded at the start of segment `b` back to segment `a`.
 
@@ -221,7 +238,7 @@ def reattach_orphan_tails(raw_segments: List[RawSegment], max_gap: float = 4.0) 
     for a, b in zip(out, out[1:]):
         if not a.words or not b.words:
             continue
-        if a.words[-1].word.strip().endswith(_TERMINAL_PUNCT):
+        if a.words[-1].word.strip().endswith(_TERMINAL_PUNCT) or _different_speakers(a, b):
             continue
         gap = float(b.words[0].start) - float(a.words[-1].end)
         if gap > max_gap:
@@ -268,7 +285,7 @@ def reattach_orphan_leads(raw_segments: List[RawSegment], min_gap: float = _SEGM
         if not a.words or not b.words:
             continue
         gap = float(b.words[0].start) - float(a.words[-1].end)
-        if gap <= min_gap:
+        if gap <= min_gap or _different_speakers(a, b):
             continue
         tail = _orphan_tail(a.words)
         if not tail:
@@ -332,6 +349,21 @@ def _tokens_from_raw(raw_segments: List[RawSegment]) -> List[_Tok]:
         if seg_toks:
             seg_toks[-1].seg_end = True
         toks.extend(seg_toks)
+
+    # Chunked/aligned decoding can emit the boundary word twice with overlapping timestamps
+    # ("sending" | "sending"). A real stutter is spoken twice, one after the other, so only an
+    # overlapping repeat is dropped.
+    deduped: List[_Tok] = []
+    for tok in toks:
+        if deduped:
+            prev = deduped[-1]
+            key = bare(tok.text).lower()
+            if key and key == bare(prev.text).lower() and tok.start < prev.end - _DUPLICATE_OVERLAP:
+                prev.end = max(prev.end, tok.end)
+                prev.seg_end = prev.seg_end or tok.seg_end
+                continue
+        deduped.append(tok)
+    toks = deduped
 
     # Keep the timeline monotonic
     for prev, cur in zip(toks, toks[1:]):
@@ -405,7 +437,10 @@ def _split_units(toks: List[_Tok]) -> List[List[_Tok]]:
             and gap < _SEGMENT_PAUSE
             and not tok.seg_end
         )
-        speaker_switch = bool(tok.speaker and nxt.speaker and tok.speaker != nxt.speaker)
+        speaker_switch = bool(
+            tok.speaker and nxt.speaker and tok.speaker != nxt.speaker
+            and (ends_sentence(tok.text) or ends_clause(tok.text) or gap >= _FALSE_TURN_GAP)
+        )
         if (
             speaker_switch
             or gap >= _HARD_PAUSE
@@ -497,19 +532,113 @@ def _split_unit(toks: List[_Tok], max_line: int, max_duration: float) -> List[Li
 
 
 # ---------------------------------------------------------------------------
-# 5. Merge dangling fragments
+# 5. Merge dangling fragments & micro-segments
 # ---------------------------------------------------------------------------
 
+_MICRO_MERGE_MAX_GAP = 0.4
+_SHORT_SENTENCE_CHARS = 20
+_MIN_DURATION_BUFFER = 0.05
+
+
+def _dominant_speaker(toks: List[_Tok]) -> Optional[str]:
+    dur_by_sp: Dict[str, float] = {}
+    for t in toks:
+        if t.speaker:
+            dur_by_sp[t.speaker] = dur_by_sp.get(t.speaker, 0.0) + max(0.05, t.end - t.start)
+    return max(dur_by_sp.items(), key=lambda kv: kv[1])[0] if dur_by_sp else None
+
+
+def _has_terminal_sentence_end(text: str) -> bool:
+    """True if `text` ends with terminal sentence punctuation (`.`, `?`, `!`), excluding cut-off ellipses."""
+    flat = " ".join((text or "").split())
+    if not flat:
+        return False
+    stripped = flat.rstrip("\"'”’׳״)]}")
+    if stripped.endswith(("...", "…")):
+        return False
+    words = flat.split()
+    if not words:
+        return False
+    if ends_sentence(words[-1]):
+        last_clean = words[-1].rstrip("\"'”’׳״)]}")
+        return not last_clean.endswith(("...", "…"))
+    return False
+
+
+def _has_dialogue_turns(text: str) -> bool:
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if any(ln.startswith(("-", "–", "—")) for ln in lines):
+        return True
+    return " -" in f" {text or ''}"
+
+
+def _is_bracketed_cue(text: str) -> bool:
+    s = (text or "").strip()
+    return (s.startswith("[") and s.endswith("]")) or (s.startswith("(") and s.endswith(")"))
+
+
 def _is_fragment(block: _Block) -> bool:
+    if _is_bracketed_cue(block.text):
+        return False
     words = block.text.split()
-    return len(words) <= 2 and not ends_sentence(block.toks[-1].text)
+    return len(words) <= 2 and not _has_terminal_sentence_end(block.text)
 
 
-def _can_merge(a: _Block, b: _Block, max_line: int, max_duration: float) -> bool:
+def _continues_sentence(a_text: str, b_text: str) -> bool:
+    """True when `b_text` reads as the rest of the unfinished sentence `a_text`.
+
+    `a_text` must end with no sentence or clause punctuation at all, and `b_text` must start in
+    lower case or follow a word that cannot end a sentence ("the", "to", "of", ...).
+    Scripts without letter case only qualify through the weak-word rule.
+    """
+    a_words = (a_text or "").split()
+    b_flat = (b_text or "").lstrip()
+    if not a_words or not b_flat:
+        return False
+    last = a_words[-1]
+    if ends_sentence(last) or ends_clause(last) or last.endswith(("-", "—", "–")):
+        return False
+    if _is_bracketed_cue(a_text) or _is_bracketed_cue(b_text) or b_flat.startswith(("-", "–", "—")):
+        return False
+    first = b_flat[0]
+    return first.islower() or bare(last).lower() in WEAK_END_WORDS
+
+
+def _lowercase_continuation(a_text: str, b_text: str) -> bool:
+    b_flat = (b_text or "").lstrip()
+    return bool(b_flat) and b_flat[0].islower() and _continues_sentence(a_text, b_text)
+
+
+def _can_merge(a: _Block, b: _Block, max_line: int, max_duration: float, allow_speaker_change: bool = False) -> bool:
+    if _is_bracketed_cue(a.text) or _is_bracketed_cue(b.text):
+        return False
+    sp_a, sp_b = _dominant_speaker(a.toks), _dominant_speaker(b.toks)
+    if sp_a and sp_b and sp_a != sp_b and not allow_speaker_change:
+        return False
+    combined = _join(a.toks + b.toks)
+    if _has_dialogue_turns(a.text) or _has_dialogue_turns(b.text):
+        return False
     return (
-        _fits_two_lines(_join(a.toks + b.toks), max_line)
+        len(combined) <= 2 * max_line
+        and _fits_two_lines(combined, max_line)
         and b.speech_end - a.speech_start <= max_duration
     )
+
+
+def _should_merge_micro_pair(cur_text: str, nxt_text: str, gap: float, max_gap: float = _MICRO_MERGE_MAX_GAP,
+                             short_sentence_chars: int = _SHORT_SENTENCE_CHARS) -> bool:
+    """True when consecutive cues are close enough and grammatically eligible to merge."""
+    if gap > max_gap + 1e-6 or gap < -0.03:
+        return False
+    if _is_bracketed_cue(cur_text) or _is_bracketed_cue(nxt_text):
+        return False
+    cur_flat = " ".join(cur_text.split())
+    nxt_flat = " ".join(nxt_text.split())
+    if not cur_flat or not nxt_flat:
+        return False
+    if _has_terminal_sentence_end(cur_flat):
+        return len(cur_flat) < short_sentence_chars and len(nxt_flat) < short_sentence_chars
+    return True
 
 
 def _merge_fragments(blocks: List[_Block], max_line: int, max_duration: float) -> List[_Block]:
@@ -523,13 +652,19 @@ def _merge_fragments(blocks: List[_Block], max_line: int, max_duration: float) -
             nxt = blocks[i + 1] if i + 1 < len(blocks) else None
             if nxt is not None:
                 gap = nxt.speech_start - cur.speech_end
-                if _is_fragment(cur) and gap <= 1.0 and _can_merge(cur, nxt, max_line, max_duration):
+                continuation = _continues_sentence(cur.text, nxt.text) and gap <= _CONTINUATION_MAX_GAP
+                cross_speaker = _lowercase_continuation(cur.text, nxt.text) and gap <= _CROSS_SPEAKER_CONTINUATION_GAP
+                if (
+                    (_is_fragment(cur) and gap <= 1.0)
+                    or _should_merge_micro_pair(cur.text, nxt.text, gap)
+                    or continuation
+                ) and _can_merge(cur, nxt, max_line, max_duration, allow_speaker_change=cross_speaker):
                     out.append(_Block(cur.toks + nxt.toks))
                     i += 2
                     changed = True
                     continue
             # A dangling fragment that can't join the next block may join the previous one
-            if out and _is_fragment(cur) and not ends_sentence(out[-1].toks[-1].text):
+            if out and _is_fragment(cur) and not _has_terminal_sentence_end(out[-1].text):
                 prev_block = out[-1]
                 if cur.speech_start - prev_block.speech_end <= 1.0 and _can_merge(prev_block, cur, max_line, max_duration):
                     out[-1] = _Block(prev_block.toks + cur.toks)
@@ -595,6 +730,342 @@ def _retime(
 
 
 # ---------------------------------------------------------------------------
+# 7. Post-processing pass on subtitle segment dicts
+# ---------------------------------------------------------------------------
+
+def _join_segment_texts(a_text: str, b_text: str) -> str:
+    a_flat = " ".join((a_text or "").split())
+    b_flat = " ".join((b_text or "").split())
+    if not a_flat:
+        return b_flat
+    if not b_flat:
+        return a_flat
+    if _is_unspaced_script(a_flat[-1]) and _is_unspaced_script(b_flat[0]):
+        return f"{a_flat}{b_flat}"
+    return f"{a_flat} {b_flat}"
+
+
+def merge_micro_segments(
+    segments: List[Dict[str, Any]],
+    max_gap: float = _MICRO_MERGE_MAX_GAP,
+    max_chars_per_line: int = 42,
+    short_sentence_chars: int = _SHORT_SENTENCE_CHARS,
+    max_duration: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """Merge consecutive short spoken segments separated by <= `max_gap` seconds.
+
+    Merges segment `i` and `i+1` when:
+      1. Both are spoken cues of the same `segment_type` (never `ON_SCREEN` or dual-speaker turns)
+         and do not carry conflicting `speaker` IDs.
+      2. The gap between `end_time` of `i` and `start_time` of `i+1` is <= `max_gap` (and, if
+         word-level timestamps are present on both, the true speech gap is also <= `max_gap`).
+      3. Combined text fits standard two-line subtitle limits (`<= 2 * max_chars_per_line` and
+         breakable into 2 lines of `<= max_chars_per_line` each).
+      4. Segment `i` does not end with terminal sentence punctuation (`.`, `?`, `!`) unless
+         both segments are very short (`< short_sentence_chars` characters each).
+    """
+    if len(segments) < 2:
+        return [dict(s) for s in segments]
+
+    eff_max_dur = settings.max_subtitle_duration if max_duration is None else max_duration
+    work = [dict(s) for s in segments]
+    changed = True
+    while changed:
+        changed = False
+        out: List[Dict[str, Any]] = []
+        i = 0
+        while i < len(work):
+            cur = work[i]
+            nxt = work[i + 1] if i + 1 < len(work) else None
+            if nxt is not None:
+                cur_type = cur.get("segment_type") or SegmentType.DIALOGUE.value
+                nxt_type = nxt.get("segment_type") or SegmentType.DIALOGUE.value
+                cur_sp = cur.get("speaker")
+                nxt_sp = nxt.get("speaker")
+                cur_text = cur.get("original_text") or ""
+                nxt_text = nxt.get("original_text") or ""
+                time_gap = float(nxt["start_time"]) - float(cur["end_time"])
+                cur_words = cur.get("words") or []
+                nxt_words = nxt.get("words") or []
+                speech_gap = (
+                    float(nxt_words[0]["s"]) - float(cur_words[-1]["e"])
+                    if (cur_words and nxt_words)
+                    else time_gap
+                )
+                combined = _join_segment_texts(cur_text, nxt_text)
+                total_dur = float(nxt["end_time"]) - float(cur["start_time"])
+
+                if (
+                    cur_type == SegmentType.DIALOGUE.value
+                    and nxt_type == SegmentType.DIALOGUE.value
+                    and not (cur_sp and nxt_sp and cur_sp != nxt_sp)
+                    and not _has_dialogue_turns(cur_text)
+                    and not _has_dialogue_turns(nxt_text)
+                    and not _is_bracketed_cue(cur_text)
+                    and not _is_bracketed_cue(nxt_text)
+                    and total_dur <= eff_max_dur
+                    and len(combined) <= 2 * max_chars_per_line
+                    and _fits_two_lines(combined, max_chars_per_line)
+                    and _should_merge_micro_pair(cur_text, nxt_text, time_gap, max_gap, short_sentence_chars)
+                    and _should_merge_micro_pair(cur_text, nxt_text, speech_gap, max_gap, short_sentence_chars)
+                ):
+                    formatted = format_balanced_lines(combined, max_chars_per_line=max_chars_per_line)
+                    merged_seg = dict(cur)
+                    merged_seg["start_time"] = round(float(cur["start_time"]), 3)
+                    merged_seg["end_time"] = round(float(nxt["end_time"]), 3)
+                    merged_seg["original_text"] = formatted
+                    if cur.get("translated_text") and nxt.get("translated_text"):
+                        merged_trans = _join_segment_texts(cur["translated_text"], nxt["translated_text"])
+                        merged_seg["translated_text"] = format_balanced_lines(
+                            merged_trans, max_chars_per_line=max_chars_per_line
+                        )
+                    else:
+                        merged_seg["translated_text"] = cur.get("translated_text") or nxt.get("translated_text")
+                    merged_seg["confidence"] = round(
+                        (float(cur.get("confidence", 1.0)) + float(nxt.get("confidence", 1.0))) / 2.0, 2
+                    )
+                    merged_seg["words"] = (list(cur_words) + list(nxt_words)) if (cur_words and nxt_words) else None
+                    merged_seg["speaker"] = cur_sp or nxt_sp
+                    dur = max(0.1, merged_seg["end_time"] - merged_seg["start_time"])
+                    merged_seg["cps"] = calculate_cps(merged_seg.get("translated_text") or formatted, dur)
+                    out.append(merged_seg)
+                    i += 2
+                    changed = True
+                    continue
+            out.append(cur)
+            i += 1
+        work = out
+
+    for idx, seg in enumerate(work, start=1):
+        seg["index"] = idx
+    return work
+
+
+def merge_subsecond_cues(
+    segments: List[Dict[str, Any]],
+    min_duration: Optional[float] = None,
+    max_gap: float = 0.35,
+    max_chars_per_line: int = 42,
+    max_duration: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """Merge sub-1.0s spoken dialogue fragments into an adjacent cue when `gap <= max_gap`.
+
+    Prevents single-word micro-splits (e.g. 0.7s `'לך'` / `'אל אביך.'` or `'תסתכל'` / `'על'` / `'לי!'`)
+    while formatting merged text cleanly with `\\n` inside a single subtitle block.
+    """
+    if len(segments) < 2:
+        return [dict(s) for s in segments]
+
+    eff_min_dur = settings.min_subtitle_duration if min_duration is None else min_duration
+    eff_max_dur = settings.max_subtitle_duration if max_duration is None else max_duration
+    work = [dict(s) for s in segments]
+
+    def _can_pair_merge(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+        a_type = a.get("segment_type") or SegmentType.DIALOGUE.value
+        b_type = b.get("segment_type") or SegmentType.DIALOGUE.value
+        if a_type != SegmentType.DIALOGUE.value or b_type != SegmentType.DIALOGUE.value:
+            return False
+        a_orig = a.get("original_text") or ""
+        b_orig = b.get("original_text") or ""
+        a_trans = a.get("translated_text") or ""
+        b_trans = b.get("translated_text") or ""
+        a_active = a_trans or a_orig
+        b_active = b_trans or b_orig
+        if not a_active.strip() or not b_active.strip():
+            return False
+        if _is_bracketed_cue(a_active) or _is_bracketed_cue(b_active) or _is_bracketed_cue(a_orig) or _is_bracketed_cue(b_orig):
+            return False
+        if _has_dialogue_turns(a_active) or _has_dialogue_turns(b_active):
+            return False
+
+        time_gap = float(b["start_time"]) - float(a["end_time"])
+        if time_gap > max_gap + 1e-6 or time_gap < -0.03:
+            return False
+        a_words = a.get("words") or []
+        b_words = b.get("words") or []
+        if a_words and b_words:
+            speech_gap = float(b_words[0]["s"]) - float(a_words[-1]["e"])
+            if speech_gap > max_gap + 1e-6 or speech_gap < -0.03:
+                return False
+
+        a_dur = float(a["end_time"]) - float(a["start_time"])
+        b_dur = float(b["end_time"]) - float(b["start_time"])
+        if a_dur >= eff_min_dur and b_dur >= eff_min_dur:
+            return False
+        if float(b["end_time"]) - float(a["start_time"]) > eff_max_dur:
+            return False
+
+        a_flat = " ".join(a_active.split())
+        b_flat = " ".join(b_active.split())
+        a_sp, b_sp = a.get("speaker"), b.get("speaker")
+        if a_sp and b_sp and a_sp != b_sp:
+            # Allow merging across a speaker flip ONLY when one side is a 1-word unpunctuated mid-phrase fragment
+            one_word_midphrase = (
+                (len(a_flat.split()) == 1 and not _has_terminal_sentence_end(a_flat))
+                or (len(b_flat.split()) == 1 and not _has_terminal_sentence_end(b_flat))
+            ) and time_gap <= 0.25
+            if not one_word_midphrase:
+                return False
+
+        # Do not glue two independent longer sentences together if the first already ended a full sentence
+        if _has_terminal_sentence_end(a_flat) and not (len(a_flat) < _SHORT_SENTENCE_CHARS and len(b_flat) < _SHORT_SENTENCE_CHARS):
+            return False
+
+        if a_orig and b_orig:
+            comb_orig = _join_segment_texts(a_orig, b_orig)
+            if len(comb_orig) > 2 * max_chars_per_line or not _fits_two_lines(comb_orig, max_chars_per_line):
+                return False
+        if a_trans and b_trans:
+            comb_trans = _join_segment_texts(a_trans, b_trans)
+            if len(comb_trans) > 2 * max_chars_per_line or not _fits_two_lines(comb_trans, max_chars_per_line):
+                return False
+        return True
+
+    def _do_merge(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
+        merged = dict(a)
+        merged.pop("id", None)  # Force DB segment refresh when merged after initial persistence
+        merged["start_time"] = round(float(a["start_time"]), 3)
+        merged["end_time"] = round(float(b["end_time"]), 3)
+        comb_orig = _join_segment_texts(a.get("original_text") or "", b.get("original_text") or "")
+        merged["original_text"] = format_balanced_lines(comb_orig, max_chars_per_line=max_chars_per_line)
+        if a.get("translated_text") and b.get("translated_text"):
+            comb_trans = _join_segment_texts(a["translated_text"], b["translated_text"])
+            merged["translated_text"] = format_balanced_lines(comb_trans, max_chars_per_line=max_chars_per_line)
+        else:
+            raw_tr = a.get("translated_text") or b.get("translated_text")
+            merged["translated_text"] = (
+                format_balanced_lines(raw_tr, max_chars_per_line=max_chars_per_line) if raw_tr else None
+            )
+        merged["translation_failed"] = bool(a.get("translation_failed") and b.get("translation_failed"))
+        a_w, b_w = a.get("words") or [], b.get("words") or []
+        merged["words"] = (list(a_w) + list(b_w)) if (a_w and b_w) else None
+        a_dur = max(0.05, float(a["end_time"]) - float(a["start_time"]))
+        b_dur = max(0.05, float(b["end_time"]) - float(b["start_time"]))
+        merged["speaker"] = (a.get("speaker") if a_dur >= b_dur else b.get("speaker")) or a.get("speaker") or b.get("speaker")
+        dur = max(0.1, merged["end_time"] - merged["start_time"])
+        merged["cps"] = calculate_cps(merged.get("translated_text") or merged["original_text"], dur)
+        return merged
+
+    changed = True
+    while changed:
+        changed = False
+        out: List[Dict[str, Any]] = []
+        i = 0
+        while i < len(work):
+            cur = work[i]
+            nxt = work[i + 1] if i + 1 < len(work) else None
+            if nxt is not None and _can_pair_merge(cur, nxt):
+                out.append(_do_merge(cur, nxt))
+                i += 2
+                changed = True
+                continue
+            if out and (float(cur["end_time"]) - float(cur["start_time"]) < eff_min_dur) and _can_pair_merge(out[-1], cur):
+                out[-1] = _do_merge(out[-1], cur)
+                i += 1
+                changed = True
+                continue
+            out.append(cur)
+            i += 1
+        work = out
+
+    for idx, seg in enumerate(work, start=1):
+        seg["index"] = idx
+    return work
+
+
+def enforce_min_duration(
+    segments: List[Dict[str, Any]],
+    min_duration: Optional[float] = None,
+    buffer_sec: float = _MIN_DURATION_BUFFER,
+    max_chars_per_line: int = 42,
+) -> List[Dict[str, Any]]:
+    """Ensure every spoken subtitle lasts at least `min_duration` (up to next start - `buffer_sec`)
+    and format lines cleanly into at most 2 balanced lines."""
+    if not segments:
+        return []
+
+    eff_min_dur = settings.min_subtitle_duration if min_duration is None else min_duration
+    result = [dict(s) for s in segments]
+
+    spoken_indices = [
+        idx for idx, s in enumerate(result)
+        if (s.get("segment_type") or SegmentType.DIALOGUE.value) != SegmentType.ON_SCREEN.value
+    ]
+
+    for pos, seg_idx in enumerate(spoken_indices):
+        seg = result[seg_idx]
+        orig = seg.get("original_text") or ""
+        if orig:
+            seg["original_text"] = format_balanced_lines(orig, max_chars_per_line=max_chars_per_line)
+        trans = seg.get("translated_text")
+        if trans:
+            seg["translated_text"] = format_balanced_lines(trans, max_chars_per_line=max_chars_per_line)
+
+        start = float(seg["start_time"])
+        end = float(seg["end_time"])
+        if end - start < eff_min_dur:
+            ceiling = (
+                float(result[spoken_indices[pos + 1]]["start_time"]) - buffer_sec
+                if pos + 1 < len(spoken_indices)
+                else float("inf")
+            )
+            if ceiling > end:
+                end = min(start + eff_min_dur, ceiling)
+            # If still shorter than eff_min_dur and there is room before start_time, allow a short lead-in
+            if end - start < eff_min_dur:
+                floor = (
+                    float(result[spoken_indices[pos - 1]]["end_time"]) + buffer_sec
+                    if pos > 0
+                    else 0.0
+                )
+                needed = eff_min_dur - (end - start)
+                lead = min(_MAX_LEAD_IN, needed, max(0.0, start - floor))
+                if lead > 0:
+                    start -= lead
+
+        seg["start_time"] = round(max(0.0, start), 3)
+        seg["end_time"] = round(max(seg["start_time"] + 0.1, end), 3)
+        text_for_cps = seg.get("translated_text") or seg.get("original_text") or ""
+        seg["cps"] = calculate_cps(text_for_cps, max(0.1, seg["end_time"] - seg["start_time"]))
+
+    for idx, seg in enumerate(result, start=1):
+        seg["index"] = idx
+    return result
+
+
+def postprocess_subtitle_segments(
+    segments: List[Dict[str, Any]],
+    max_gap: float = _MICRO_MERGE_MAX_GAP,
+    min_duration: Optional[float] = None,
+    buffer_sec: float = _MIN_DURATION_BUFFER,
+    max_chars_per_line: int = 42,
+    short_sentence_chars: int = _SHORT_SENTENCE_CHARS,
+    max_duration: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """Run micro-segment & sub-second merging followed by minimum duration enforcement and 2-line balancing."""
+    merged = merge_micro_segments(
+        segments,
+        max_gap=max_gap,
+        max_chars_per_line=max_chars_per_line,
+        short_sentence_chars=short_sentence_chars,
+        max_duration=max_duration,
+    )
+    merged = merge_subsecond_cues(
+        merged,
+        min_duration=min_duration,
+        max_gap=min(max_gap, 0.35),
+        max_chars_per_line=max_chars_per_line,
+        max_duration=max_duration,
+    )
+    return enforce_min_duration(
+        merged,
+        min_duration=min_duration,
+        buffer_sec=buffer_sec,
+        max_chars_per_line=max_chars_per_line,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -618,13 +1089,17 @@ def refine_raw_segments(
     min_gap = settings.min_gap_seconds if min_gap is None else min_gap
     prepared = reattach_orphan_tails(reattach_orphan_leads(split_at_pauses(raw_segments)))
     toks = _collapse_repetitions(_tokens_from_raw(prepared))
+    # A standalone "." / "..." token aligned to a breath would otherwise glue onto real words
+    # and stretch the neighbouring cue across silence.
+    toks = [t for t in toks if has_spoken_content(t.text)] if any(has_spoken_content(t.text) for t in toks) else []
     if not toks:
         return []
 
     blocks: List[_Block] = []
     for unit in _split_units(toks):
         for part in _split_unit(unit, max_chars_per_line, max_duration):
-            if _join(part):
+            # A block of bare punctuation (".", ". .", "...") is an ASR breath/noise artifact
+            if has_spoken_content(_join(part)):
                 blocks.append(_Block(part))
 
     blocks = _merge_fragments(blocks, max_chars_per_line, max_duration)
@@ -632,18 +1107,14 @@ def refine_raw_segments(
 
     refined: List[Dict[str, Any]] = []
     for b in blocks:
-        text = split_long_lines(b.text, max_chars_per_line=max_chars_per_line)
+        text = format_balanced_lines(b.text, max_chars_per_line=max_chars_per_line)
         start, end = round(max(0.0, b.start), 3), round(b.end, 3)
         words_payload = [
             {"w": t.text.strip(), "s": round(max(0.0, t.start), 3), "e": round(max(t.start, t.end), 3)}
             for t in b.toks
             if t.text.strip()
         ]
-        dur_by_sp: Dict[str, float] = {}
-        for t in b.toks:
-            if t.speaker:
-                dur_by_sp[t.speaker] = dur_by_sp.get(t.speaker, 0.0) + max(0.05, t.end - t.start)
-        dominant_sp = max(dur_by_sp.items(), key=lambda kv: kv[1])[0] if dur_by_sp else None
+        dominant_sp = _dominant_speaker(b.toks)
         refined.append({
             "index": len(refined) + 1,
             "start_time": start,
@@ -657,6 +1128,19 @@ def refine_raw_segments(
             "words": words_payload or None,
             "speaker": dominant_sp,
         })
+
+    refined = merge_micro_segments(
+        refined,
+        max_gap=_MICRO_MERGE_MAX_GAP,
+        max_chars_per_line=max_chars_per_line,
+        max_duration=max_duration,
+    )
     from app.utils.speaker_split import split_dual_speaker_segments
 
-    return split_dual_speaker_segments(refined, max_chars_per_line=max_chars_per_line, min_gap=min_gap)
+    split_segs = split_dual_speaker_segments(refined, max_chars_per_line=max_chars_per_line, min_gap=min_gap)
+    return enforce_min_duration(
+        split_segs,
+        min_duration=min_duration,
+        buffer_sec=max(_MIN_DURATION_BUFFER, min_gap),
+        max_chars_per_line=max_chars_per_line,
+    )

@@ -458,12 +458,20 @@ const ModelCard: React.FC<{
                 const nextProv = e.target.value as AIProvider;
                 const best = pickBestModelForProvider(catalog, providers, keys, nextProv, step);
                 const nextModel = best?.id || '';
-                const nextThinking =
-                  nextProv === 'google' && best?.thinking.includes(value.thinking)
-                    ? value.thinking
-                    : nextProv === 'google' && best?.default_level && best.thinking.includes(best.default_level as ThinkingLevel)
-                      ? (best.default_level as ThinkingLevel)
-                      : 'default';
+                const supportedLevels = best?.thinking || ['default'];
+                const pickTaskThinking = (): ThinkingLevel => {
+                  if (value.thinking !== 'default' && supportedLevels.includes(value.thinking)) {
+                    return value.thinking;
+                  }
+                  if (step === 'glossary') {
+                    return 'default';
+                  }
+                  for (const pref of ['minimal', 'low', 'off'] as ThinkingLevel[]) {
+                    if (supportedLevels.includes(pref)) return pref;
+                  }
+                  return 'default';
+                };
+                const nextThinking = pickTaskThinking();
                 onChange({
                   provider: nextProv,
                   model: nextModel,
@@ -482,15 +490,16 @@ const ModelCard: React.FC<{
             </select>
           </label>
 
-          {activeProvider === 'google' ? (
+          {activeProvider === 'google' || levels.length > 1 ? (
             <label className="text-[11px] text-zinc-400 space-y-1">
               <span className="block font-medium flex items-center gap-1">
                 <Brain className="w-3 h-3" />
                 {t('settings.thinking')}
               </span>
               <select
-                value={value.thinking}
+                value={levels.includes(value.thinking) ? value.thinking : 'default'}
                 aria-label={`${title} — ${t('settings.thinking')}`}
+                data-testid={`${testId}-thinking`}
                 onChange={(e) => onChange({ ...value, thinking: e.target.value as ThinkingLevel })}
                 className={selectClass}
                 disabled={levels.length === 1}
@@ -532,7 +541,18 @@ const ModelCard: React.FC<{
               disabled={options.length === 0 && !value.model}
               onChange={(e) => {
                 const next = options.find((m) => m.id === e.target.value);
-                const thinking = next?.thinking.includes(value.thinking) ? value.thinking : 'default';
+                const nextLevels = next?.thinking || ['default'];
+                let thinking: ThinkingLevel = 'default';
+                if (value.thinking !== 'default' && nextLevels.includes(value.thinking)) {
+                  thinking = value.thinking;
+                } else if (step !== 'glossary') {
+                  for (const pref of ['minimal', 'low', 'off'] as ThinkingLevel[]) {
+                    if (nextLevels.includes(pref)) {
+                      thinking = pref;
+                      break;
+                    }
+                  }
+                }
                 onChange({
                   ...value,
                   provider: activeProvider,
@@ -561,7 +581,7 @@ const ModelCard: React.FC<{
           </label>
         </div>
 
-        {activeProvider === 'google' && providerKeys.length > 1 && (
+        {((activeProvider === 'google' && providerKeys.length > 1) || (activeProvider !== 'google' && levels.length > 1)) && (
           <label className="block text-[11px] text-zinc-400 space-y-1">
             <span className="block font-medium">{t('settings.keyLabel')}</span>
             <select
@@ -570,6 +590,7 @@ const ModelCard: React.FC<{
               data-testid={`${testId}-key`}
               onChange={(e) => handleKeyChange(e.target.value)}
               className={selectClass}
+              disabled={providerKeys.length === 0}
             >
               <option value="">{t('settings.keyDefaultAuto')}</option>
               {providerKeys.map((k) => (

@@ -50,7 +50,7 @@ APPDIR = os.environ.get("SUBBUILD_APPDIR") if LINUX else None
 # Set by the AppImage runtime: the .AppImage file itself (what a restart has to run again)
 APPIMAGE = os.environ.get("APPIMAGE") if APPDIR else None
 STARTUP_TIMEOUT = 180  # seconds; the first start preloads the CUDA libraries, which can be slow
-ACTIVE_STATUSES = {"QUEUED", "PROBING", "EXTRACTING_AUDIO", "TRANSCRIBING",
+ACTIVE_STATUSES = {"QUEUED", "PROBING", "EXTRACTING_AUDIO", "VOCAL_ISOLATION", "TRANSCRIBING",
                    "DIARIZING", "SCANNING_ONSCREEN", "REFINING", "TRANSLATING", "SYNCING"}
 WINDOW_SIZE = (1440, 900)
 MIN_WINDOW_SIZE = (1024, 640)

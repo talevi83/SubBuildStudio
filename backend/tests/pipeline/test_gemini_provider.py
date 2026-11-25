@@ -42,7 +42,7 @@ async def test_missing_indices_are_retried_then_flagged(monkeypatch):
     def behaviour(payload, call):
         items = payload["target_batch"]
         # Always drop index 2; translate everything else
-        return {"translations": [{"index": it["index"], "translated_text": f"T{it['index']}"} for it in items if it["index"] != 2]}
+        return {"translations": [{"index": it["id"], "translated_text": f"T{it['id']}"} for it in items if it["id"] != 2]}
 
     t = _translator(behaviour, monkeypatch)
     segs = _segs(4)
@@ -50,7 +50,7 @@ async def test_missing_indices_are_retried_then_flagged(monkeypatch):
     assert [s.translated_text for s in segs] == ["T1", None, "T3", "T4"]
     assert [s.translation_failed for s in segs] == [False, True, False, False]
     # Retries only re-sent the missing segment
-    retried = [r for r in t.client.models.requests if [i["index"] for i in r["target_batch"]] == [2]]
+    retried = [r for r in t.client.models.requests if [i["id"] for i in r["target_batch"]] == [2]]
     assert len(retried) == t.max_retries - 1
 
 
@@ -71,7 +71,7 @@ async def test_context_comes_from_full_job_when_retrying_subset(monkeypatch):
 
     def behaviour(payload, call):
         seen.append(payload)
-        return {"translations": [{"index": it["index"], "translated_text": "X"} for it in payload["target_batch"]]}
+        return {"translations": [{"index": it["id"], "translated_text": "X"} for it in payload["target_batch"]]}
 
     t = _translator(behaviour, monkeypatch)
     everything = _segs(10)
@@ -80,8 +80,8 @@ async def test_context_comes_from_full_job_when_retrying_subset(monkeypatch):
     subset = [everything[6]]
     subset[0].translated_text = None
     await t.translate_segments(subset, "English", "Hebrew", context_segments=everything)
-    prev = [p["index"] for p in seen[0]["previous_context"]]
-    nxt = [p["index"] for p in seen[0]["lookahead_context"]]
+    prev = [p["id"] for p in seen[0]["previous_context"]]
+    nxt = [p["id"] for p in seen[0]["lookahead_context"]]
     assert prev == [2, 3, 4, 5, 6] and nxt == [8, 9, 10]
     assert seen[0]["previous_context"][-1]["translated_text"] == "done 6"
 
@@ -103,8 +103,8 @@ async def test_cut_off_translations_are_asked_again(monkeypatch):
     def behaviour(payload, call):
         items = payload["target_batch"]
         if call == 1:  # the model stops mid-word for one line
-            return {"translations": [{"index": it["index"], "translated_text": "המתן לנ" if it["index"] == 2 else f"T{it['index']}"} for it in items]}
-        return {"translations": [{"index": it["index"], "translated_text": f"T{it['index']} full translation"} for it in items]}
+            return {"translations": [{"index": it["id"], "translated_text": "המתן לנ" if it["id"] == 2 else f"T{it['id']}"} for it in items]}
+        return {"translations": [{"index": it["id"], "translated_text": f"T{it['id']} full translation"} for it in items]}
 
     t = _translator(behaviour, monkeypatch)
     segs = _segs(3)

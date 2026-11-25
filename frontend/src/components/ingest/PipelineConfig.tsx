@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import type { OnscreenPosition } from '../../types';
+import type { OnscreenPosition, TranscriptionProvider } from '../../types';
 import { api } from '../../services/api';
 import { useJobStore } from '../../store/useJobStore';
 import { useUiStore } from '../../store/useUiStore';
@@ -192,9 +192,34 @@ export const PipelineConfig: React.FC = () => {
         <div className="space-y-4 p-4 rounded-xl bg-sunken border border-line">
           <div className="flex items-center gap-2 text-xs font-semibold text-zinc-200 border-b border-line pb-2">
             <Mic className="w-4 h-4 text-indigo-400" />
-            {t('config.whisperTitle')}
+            {pipelineConfig.transcription_provider === 'whisperx' ? t('config.whisperxTitle') : t('config.whisperTitle')}
           </div>
           <div className="space-y-3 text-xs">
+            <div>
+              <label htmlFor="transcription-provider-select" className="block text-zinc-400 mb-1 font-medium">
+                {t('config.transcriptionEngineLabel')}
+              </label>
+              <select
+                id="transcription-provider-select"
+                data-testid="transcription-provider-select"
+                value={pipelineConfig.transcription_provider ?? 'faster_whisper'}
+                onChange={(e) =>
+                  updatePipelineConfig({ transcription_provider: e.target.value as TranscriptionProvider })
+                }
+                className={selectClass}
+              >
+                <option value="faster_whisper">{t('config.engineFasterWhisper')}</option>
+                <option value="whisperx">{t('config.engineWhisperX')}</option>
+              </select>
+              {pipelineConfig.transcription_provider === 'whisperx' && (
+                <div className="mt-1.5 space-y-1 text-[11px] leading-snug">
+                  <p className="text-indigo-300/90" dir="auto">{t('config.engineWhisperXHint')}</p>
+                  {systemInfo?.whisperx_available === false && (
+                    <p className="text-amber-300" dir="auto">{t('config.engineWhisperXFallbackNote')}</p>
+                  )}
+                </div>
+              )}
+            </div>
             <div>
               <label className="block text-zinc-400 mb-1 font-medium">{t('config.whisperModel')}</label>
               <select
@@ -276,6 +301,107 @@ export const PipelineConfig: React.FC = () => {
                 className="w-4 h-4 rounded border-zinc-700 text-indigo-600 focus:ring-indigo-500 bg-zinc-800 cursor-pointer"
               />
             </label>
+
+            {(() => {
+              const vocalMode =
+                pipelineConfig.vocal_isolation_mode ?? (pipelineConfig.vocal_isolation ? 'on' : 'off');
+              const isActive = vocalMode !== 'off';
+              return (
+                <div
+                  className={`p-2.5 rounded-lg border transition-colors space-y-2 ${
+                    isActive
+                      ? 'bg-indigo-500/10 border-indigo-500/40'
+                      : 'bg-surface border-line hover:border-zinc-600'
+                  }`}
+                >
+                  <label className="flex items-start justify-between gap-3 cursor-pointer">
+                    <span className="min-w-0">
+                      <span className="text-zinc-200 font-semibold block">{t('config.vocalIsolationTitle')}</span>
+                      <span className="text-[11px] text-zinc-400 block mt-0.5 leading-relaxed">
+                        {t('config.vocalIsolationDesc')}
+                      </span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      data-testid="vocal-isolation-toggle"
+                      aria-checked={isActive}
+                      checked={isActive}
+                      onChange={(e) => {
+                        const nextMode = e.target.checked ? 'on' : 'off';
+                        updatePipelineConfig({
+                          vocal_isolation: nextMode === 'on',
+                          vocal_isolation_mode: nextMode,
+                        });
+                      }}
+                      className="sr-only peer"
+                    />
+                    <span
+                      className={`relative mt-0.5 inline-flex h-5 w-9 flex-shrink-0 rounded-full transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-500 ${
+                        isActive ? 'bg-indigo-600' : 'bg-zinc-700'
+                      }`}
+                      aria-hidden
+                    >
+                      <span
+                        className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${
+                          isActive ? 'start-4.5' : 'start-0.5'
+                        }`}
+                      />
+                    </span>
+                  </label>
+                  <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-line/60">
+                    <span className="text-[11px] text-zinc-400">{t('config.audioModeLabel')}</span>
+                    <select
+                      data-testid="vocal-isolation-mode-select"
+                      value={vocalMode}
+                      onChange={(e) => {
+                        const m = e.target.value as 'off' | 'auto' | 'on';
+                        updatePipelineConfig({
+                          vocal_isolation: m === 'on',
+                          vocal_isolation_mode: m,
+                        });
+                      }}
+                      className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-[11px] text-zinc-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                    >
+                      <option value="off">{t('config.audioModeOff')}</option>
+                      <option value="auto">{t('config.vocalModeAuto')}</option>
+                      <option value="on">{t('config.audioModeOn')}</option>
+                    </select>
+                  </div>
+                  {isActive && systemInfo?.vocal_isolation_available === false && (
+                    <p className="text-[11px] text-amber-300 leading-snug" dir="auto">
+                      {t('config.vocalIsolationFallbackNote')}
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
+
+            <div className="pt-2 border-t border-line/60">
+              <label
+                htmlFor="transcription-context-glossary"
+                className="text-zinc-300 mb-1 font-medium flex items-center gap-1.5"
+              >
+                <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                {t('config.contextGlossaryLabel')}
+              </label>
+              <textarea
+                id="transcription-context-glossary"
+                data-testid="transcription-context-glossary"
+                rows={2}
+                dir="auto"
+                value={pipelineConfig.initial_prompt ?? pipelineConfig.context_notes ?? ''}
+                onChange={(e) =>
+                  updatePipelineConfig({
+                    initial_prompt: e.target.value,
+                    context_notes: e.target.value,
+                  })
+                }
+                placeholder={t('config.contextGlossaryPlaceholder')}
+                className="w-full bg-surface border border-line rounded-lg p-2 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-indigo-500 resize-none"
+              />
+              <p className="mt-1 text-[11px] text-zinc-500 leading-snug">{t('config.contextGlossaryHint')}</p>
+            </div>
 
             {dialogueTrack && (
               <div
@@ -538,8 +664,13 @@ export const PipelineConfig: React.FC = () => {
                 <textarea
                   rows={2}
                   dir="auto"
-                  value={pipelineConfig.context_notes || ''}
-                  onChange={(e) => updatePipelineConfig({ context_notes: e.target.value })}
+                  value={pipelineConfig.context_notes ?? pipelineConfig.initial_prompt ?? ''}
+                  onChange={(e) =>
+                    updatePipelineConfig({
+                      context_notes: e.target.value,
+                      initial_prompt: e.target.value,
+                    })
+                  }
                   placeholder={t('config.notesPlaceholder')}
                   className="w-full bg-surface border border-line rounded-lg p-2 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-indigo-500 resize-none"
                 />
@@ -607,13 +738,47 @@ export const PipelineConfig: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <FeatureToggle
-          icon="📻"
-          title={t('config.commsTitle')}
-          description={t('config.commsDescription')}
-          checked={pipelineConfig.comms_boost}
-          onChange={(v) => updatePipelineConfig({ comms_boost: v })}
-        />
+        {(() => {
+          const commsMode = pipelineConfig.comms_boost_mode ?? (pipelineConfig.comms_boost ? 'on' : 'off');
+          const commsActive = commsMode !== 'off';
+          return (
+            <FeatureToggle
+              icon="📻"
+              title={t('config.commsTitle')}
+              description={t('config.commsDescription')}
+              checked={commsActive}
+              onChange={(v) => {
+                const nextMode = v ? 'auto' : 'off';
+                updatePipelineConfig({
+                  comms_boost: false,
+                  comms_boost_mode: nextMode,
+                });
+              }}
+            >
+              {commsActive && (
+                <div className="mt-3 pt-2.5 border-t border-indigo-500/20 flex items-center justify-between gap-2 text-xs">
+                  <span className="text-zinc-300 font-medium">{t('config.audioModeLabel')}</span>
+                  <select
+                    data-testid="comms-boost-mode-select"
+                    value={commsMode}
+                    onChange={(e) => {
+                      const m = e.target.value as 'off' | 'auto' | 'on';
+                      updatePipelineConfig({
+                        comms_boost: m === 'on',
+                        comms_boost_mode: m,
+                      });
+                    }}
+                    className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                  >
+                    <option value="auto">{t('config.commsModeAuto')}</option>
+                    <option value="on">{t('config.commsModeOn')}</option>
+                    <option value="off">{t('config.audioModeOff')}</option>
+                  </select>
+                </div>
+              )}
+            </FeatureToggle>
+          );
+        })()}
         <FeatureToggle
           icon="🗣️"
           title={t('config.diarization')}

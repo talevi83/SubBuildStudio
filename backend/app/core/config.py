@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     gemini_api_key: Optional[str] = None
     # Gemini 2.5 models are only served to keys that used them before (Google, 2026); current defaults:
     gemini_model: str = "gemini-3.8-flash"
-    gemini_batch_size: int = 120
+    gemini_batch_size: int = 35
     # Models offered in the UI when the live model list can't be fetched from the API
     gemini_models: List[str] = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"]
     # Model used to read on-screen text from sampled video frames
@@ -38,13 +38,18 @@ class Settings(BaseSettings):
     addressee_autofix: bool = True
     addressee_autofix_max_rows: int = 40
 
-    # Whisper Settings
+    # Whisper & Transcription Provider Settings
+    transcription_provider: str = "faster_whisper"  # "faster_whisper" or "whisperx"
     whisper_default_model: str = "medium"
     whisper_device: str = "auto"          # "auto", "cuda", or "cpu"
     whisper_compute_type: str = "auto"    # "auto", "float16", or "int8"
     # >0 enables faster-whisper's BatchedInferencePipeline on CUDA (much faster, more VRAM).
     # 0 = classic sequential decoding.
     whisper_batch_size: int = 8
+    whisperx_batch_size: int = 8          # Default batch size for WhisperX batched ASR (safe for 8GB VRAM)
+    vocal_isolation: bool = False         # Optional pre-transcription Demucs / audio-separator vocal isolation
+    vocal_isolation_model: str = "htdemucs"
+    hf_token: Optional[str] = None        # Optional HuggingFace token for integrated WhisperX pyannote diarization
     whisper_models: List[str] = [
         "tiny",
         "base",
@@ -56,6 +61,13 @@ class Settings(BaseSettings):
     ]
     # How many jobs may use the GPU (transcription) at the same time
     max_concurrent_transcriptions: int = 1
+    # Anti-hallucination & VAD defaults for faster-whisper transcription
+    whisper_condition_on_previous_text: bool = False
+    whisper_compression_ratio_threshold: float = 2.4
+    whisper_log_prob_threshold: float = -1.0
+    whisper_no_speech_threshold: float = 0.6
+    whisper_min_silence_duration_ms: int = 500
+    whisper_speech_pad_ms: int = 200
     # Re-listen (Whisper without VAD) to stretches no subtitle covers: recovers speech the voice
     # detector misses under gunfire, engines, music and radio filtering
     whisper_gap_recovery: bool = True
@@ -175,5 +187,6 @@ settings = Settings()
 settings.storage_dir.mkdir(parents=True, exist_ok=True)
 (settings.storage_dir / "uploads").mkdir(parents=True, exist_ok=True)
 (settings.storage_dir / "audio").mkdir(parents=True, exist_ok=True)
+(settings.storage_dir / "vocals").mkdir(parents=True, exist_ok=True)
 (settings.storage_dir / "exports").mkdir(parents=True, exist_ok=True)
 (settings.storage_dir / "frames").mkdir(parents=True, exist_ok=True)

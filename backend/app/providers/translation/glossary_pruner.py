@@ -62,11 +62,24 @@ def _character_matches(char: Dict[str, Any], window_cf: str, window_tokens: set[
     return False
 
 
-def _term_matches(term: Dict[str, Any], window_cf: str) -> bool:
+def _term_matches(term: Dict[str, Any], window_cf: str, window_tokens: Optional[set[str]] = None) -> bool:
+    if term.get("locked"):
+        return True
     source = (term.get("source") or "").strip()
     if not source:
         return False
-    return source.casefold() in window_cf
+    src_cf = source.casefold()
+    if src_cf in window_cf:
+        return True
+    if window_tokens:
+        for tok in re.findall(r"[^\W_]+", src_cf):
+            if len(tok) >= 4:
+                if tok in window_tokens:
+                    return True
+                stem = tok.rstrip("s")
+                if len(stem) >= 4 and any(wt.startswith(stem) for wt in window_tokens):
+                    return True
+    return False
 
 
 def prune_glossary_for_batch(
@@ -78,10 +91,10 @@ def prune_glossary_for_batch(
 ) -> Optional[Dict[str, Any]]:
     """
     Return a filtered shallow copy of `glossary` tailored to a single translation batch:
-      - First `max_core_characters` characters (main cast).
+      - First `max_core_characters` characters (main cast) plus any `locked` user characters.
       - Any additional character whose full name or name token (>= 3 chars) appears
         case-insensitively in `batch_texts` + `previous_context` + `lookahead_context`.
-      - Any terminology item whose `source` term appears case-insensitively in that window.
+      - Any `locked` user terminology item or terminology item matching that window.
 
     Does not mutate `glossary`. Returns None if `glossary` is None or empty.
     """
@@ -97,14 +110,14 @@ def prune_glossary_for_batch(
     for idx, char in enumerate(all_chars):
         if not isinstance(char, dict):
             continue
-        if idx < core_cutoff or _character_matches(char, window_cf, window_tokens):
+        if char.get("locked") or idx < core_cutoff or _character_matches(char, window_cf, window_tokens):
             pruned_chars.append(dict(char))
 
     all_terms = list(glossary.get("terms") or [])
     pruned_terms = [
         dict(term)
         for term in all_terms
-        if isinstance(term, dict) and _term_matches(term, window_cf)
+        if isinstance(term, dict) and _term_matches(term, window_cf, window_tokens)
     ]
 
     pruned: Dict[str, Any] = dict(glossary)

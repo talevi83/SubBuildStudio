@@ -111,7 +111,7 @@ def test_saved_settings_with_retired_models_are_migrated(client: TestClient):
     }))
     s = client.get("/api/settings").json()["settings"]
     assert s["translation"] == {"provider": "google", "model": "gemini-3.8-flash", "key_id": None, "thinking": "low", "flex": False}
-    assert s["glossary"] == {"provider": "google", "model": "gemini-3.5-flash-lite", "key_id": None, "thinking": "low", "flex": False}
+    assert s["glossary"] == {"provider": "google", "model": "gemini-3.5-flash-lite", "key_id": None, "thinking": "default", "flex": False}
     assert s["vision"] == {"provider": "google", "model": "gemini-3.8-flash", "key_id": None, "thinking": "low", "flex": False}  # 3.8 has no "minimal"
     assert s["vision_media_resolution"] == "high"
     assert json.loads(path.read_text())["glossary"]["model"] == "gemini-3.5-flash-lite"  # written back
@@ -123,7 +123,7 @@ def test_estimate_endpoint(client: TestClient):
     assert set(est["stages"]) == {"glossary", "translation", "onscreen", "foreign"}
     assert est["stages"]["foreign"]["frames"] == 540  # 10% of 45 min, 2 crops per second
     assert est["segments"] == 630
-    assert est["stages"]["translation"]["requests"] == 6
+    assert est["stages"]["translation"]["requests"] == 18  # ceil(630 / 35)
     assert est["stages"]["onscreen"]["frames"] == min(settings.onscreen_max_frames, 675)  # capped by ONSCREEN_MAX_FRAMES
     assert 0 < est["total_cost_usd"] < 1
     assert est["total_cost_usd"] == pytest.approx(sum(s["cost_usd"] for s in est["stages"].values()), abs=1e-3)
@@ -154,7 +154,7 @@ class _FakeGenAI:
         self.configs.append((model, config))
         if contents.startswith("{"):
             items = json.loads(contents)["target_batch"]
-            body = {"translations": [{"index": i["index"], "translated_text": "שלום"} for i in items]}
+            body = {"translations": [{"index": i["id"], "translated_text": "שלום"} for i in items]}
         else:
             body = {"summary": "s", "characters": [], "terms": [], "register_notes": ""}
         usage = types.SimpleNamespace(prompt_token_count=1000, candidates_token_count=200, thoughts_token_count=300)
@@ -281,7 +281,7 @@ def test_glossary_model_failure_is_reported_but_translation_continues(client: Te
                 raise Exception("404 NOT_FOUND: model not available for new users")
             items = json.loads(contents)["target_batch"]
             return types.SimpleNamespace(text=json.dumps({"translations": [
-                {"index": i["index"], "translated_text": "בסדר"} for i in items]}), usage_metadata=None)
+                {"index": i["id"], "translated_text": "בסדר"} for i in items]}), usage_metadata=None)
 
     def make(self, ctx):
         tr = GeminiTranslator(api_key="k", model_name="gemini-3.8-flash", glossary_model="gemini-2.5-flash-lite", usage=ctx.usage)

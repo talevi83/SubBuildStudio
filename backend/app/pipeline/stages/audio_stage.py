@@ -214,6 +214,16 @@ class AudioExtractionStage(PipelineStage):
         stream = next((s for s in ctx.audio_streams if s.index == ctx.selected_audio_stream), None)
         channels = stream.channels if stream else 2
 
+        from app.services.smart_audio_map import resolve_audio_modes
+
+        _, c_mode = resolve_audio_modes(
+            vocal_isolation=bool(getattr(ctx, "vocal_isolation", False)),
+            vocal_isolation_mode=getattr(ctx, "vocal_isolation_mode", None),
+            comms_boost=bool(getattr(ctx, "comms_boost", False)),
+            comms_boost_mode=getattr(ctx, "comms_boost_mode", None),
+        )
+        effective_global_comms = (c_mode == "on")
+
         async def _percent(pct: float) -> None:
             if on_progress:
                 await on_progress(pct, None, None, f"Extracting audio... {pct:.0f}%", None)
@@ -226,15 +236,18 @@ class AudioExtractionStage(PipelineStage):
             duration=ctx.duration,
             on_percent=_percent,
             ctx=ctx,
-            comms_boost=ctx.comms_boost,
+            comms_boost=effective_global_comms,
         )
 
         ctx.audio_wav_path = str(output_wav)
+        ctx.raw_audio_wav_path = str(output_wav)
         if on_progress:
             notes = []
             if channels >= 6:
                 notes.append("dialogue-focused surround downmix")
-            if ctx.comms_boost:
+            if effective_global_comms:
                 notes.append("tactical comms boost")
+            elif c_mode == "auto":
+                notes.append("clean base for Smart Audio Map")
             suffix = f" ({', '.join(notes)})" if notes else ""
             await on_progress(100.0, None, None, f"Audio extraction completed{suffix}", None)

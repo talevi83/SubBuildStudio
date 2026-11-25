@@ -17,9 +17,15 @@ from typing import Optional
 from app.core.config import settings
 from app.models.db_models import SegmentType
 from app.pipeline.context import PipelineContext
-from app.pipeline.segmentation import refine_raw_segments
+from app.pipeline.segmentation import (
+    enforce_min_duration,
+    merge_micro_segments,
+    merge_subsecond_cues,
+    refine_raw_segments,
+)
 from app.pipeline.stages.base import PipelineStage, ProgressCallback
 from app.pipeline.timeline_merge import classify_comms, merge_foreign, merge_timeline
+from app.utils.text_rules import has_spoken_content
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +79,17 @@ class RefineStage(PipelineStage):
             )
             foreign_audio = refine_raw_segments(ctx.foreign_audio_segments, max_chars_per_line=settings.max_chars_per_line)
             spoken = merge_foreign(spoken, ctx.foreign_spans, ctx.foreign_ocr_segments, foreign_audio)
+            spoken = merge_micro_segments(
+                spoken,
+                max_chars_per_line=settings.max_chars_per_line,
+                max_duration=settings.max_subtitle_duration,
+            )
+
+        if not ctx.embedded_dialogue_segments:
+            before = len(spoken)
+            spoken = [s for s in spoken if has_spoken_content(s.get("original_text") or "")]
+            if len(spoken) != before:
+                logger.info(f"RefineStage: dropped {before - len(spoken)} punctuation-only cue(s)")
 
         comms = classify_comms(spoken) if ctx.comms_boost else 0
         spoken = split_dual_speaker_segments(
@@ -80,6 +97,20 @@ class RefineStage(PipelineStage):
             max_chars_per_line=settings.max_chars_per_line,
             min_gap=settings.min_gap_seconds,
         )
+        if not ctx.embedded_dialogue_segments:
+            spoken = merge_subsecond_cues(
+                spoken,
+                min_duration=settings.min_subtitle_duration,
+                max_gap=0.35,
+                max_chars_per_line=settings.max_chars_per_line,
+                max_duration=settings.max_subtitle_duration,
+            )
+            spoken = enforce_min_duration(
+                spoken,
+                min_duration=settings.min_subtitle_duration,
+                buffer_sec=0.05,
+                max_chars_per_line=settings.max_chars_per_line,
+            )
         foreign = sum(1 for s in spoken if s.get("segment_type") == SegmentType.FOREIGN.value)
         allow_overlap = getattr(ctx, "allow_onscreen_overlap", True)
         ctx.refined_segments = merge_timeline(

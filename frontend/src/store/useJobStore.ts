@@ -30,10 +30,14 @@ const CONFIG_STORAGE_KEY = 'subbuild.pipelineConfig';
 
 const DEFAULT_CONFIG: JobConfig = {
   selected_audio_stream: 0,
+  transcription_provider: 'faster_whisper',
   whisper_model: 'medium',
+  vocal_isolation: false,
+  vocal_isolation_mode: 'off',
   source_language: 'auto',
   vad_filter: true,
   comms_boost: false,
+  comms_boost_mode: 'off',
   high_speech_sensitivity: false,
   use_embedded_subtitles: true,
   selected_subtitle_stream: null,
@@ -50,6 +54,7 @@ const DEFAULT_CONFIG: JobConfig = {
   enable_translation: true,
   target_language: 'Hebrew',
   gemini_api_key_override: '',
+  initial_prompt: '',
   context_notes: '',
 };
 
@@ -74,6 +79,7 @@ function saveConfig(config: JobConfig) {
       gemini_api_key_override: _key,
       selected_audio_stream: _stream,
       selected_subtitle_stream: _subStream,
+      initial_prompt: _prompt,
       context_notes: _notes,
       glossary_profile: _series,
       ...rest

@@ -19,7 +19,7 @@ MOVIE_DURATION_SECONDS = 120 * 60    # 2-hour feature film
 
 # Token volume assumptions matching model_catalog.estimate_job_cost
 _SEGMENTS_PER_MIN = 14
-_TRANSLATION_BATCH = 120
+_TRANSLATION_BATCH = 35
 _SYS_PROMPT_TOKENS = 1900
 _TR_IN_PER_SEG = 36
 _TR_OUT_PER_SEG = 32
@@ -125,6 +125,11 @@ class PricingRule:
     warnings: Tuple[Tuple[str, str], ...] = ()
     rank: int = 50
     note: str = ""
+    input_long_per_m: Optional[float] = None
+    output_long_per_m: Optional[float] = None
+    promo_until: Optional[date] = None
+    post_promo_input_per_m: Optional[float] = None
+    post_promo_output_per_m: Optional[float] = None
 
 
 _RULES: Tuple[PricingRule, ...] = (
@@ -183,6 +188,17 @@ _RULES: Tuple[PricingRule, ...] = (
         recommended_for=("vision",),
         rank=35,
         note="Ultra-fast low-cost tier suited for on-screen OCR scanning.",
+    ),
+    PricingRule(
+        "openai",
+        ("gpt-5.6-luna", "gpt-5-luna", "gpt-5.4-luna", "gpt-5.5-luna"),
+        "GPT-5.6 Luna",
+        0.20,
+        1.20,
+        supports_vision=True,
+        recommended_for=("vision",),
+        rank=33,
+        note="High-volume low-cost GPT-5.6 Luna tier suited for on-screen OCR scanning.",
     ),
     PricingRule(
         "openai",
@@ -341,6 +357,71 @@ _RULES: Tuple[PricingRule, ...] = (
     # ---- Anthropic Claude ----
     PricingRule(
         "anthropic",
+        ("claude-sonnet-5-5", "claude-sonnet-5"),
+        "Claude Sonnet 5.5",
+        2.00,
+        10.00,
+        supports_vision=True,
+        recommended_for=("translation", "glossary"),
+        rank=9,
+        note="Flagship Claude 5.5 Sonnet for natural Hebrew translation, speaker register, and glossary consistency.",
+    ),
+    PricingRule(
+        "anthropic",
+        ("claude-haiku-5-5", "claude-haiku-5"),
+        "Claude Haiku 5.5",
+        0.10,
+        0.50,
+        supports_vision=True,
+        recommended_for=("translation", "glossary", "vision"),
+        rank=13,
+        note="Ultra-fast and cost-effective Claude 5.5 tier with strong JSON compliance and vision.",
+        input_long_per_m=0.50,
+        output_long_per_m=2.50,
+    ),
+    PricingRule(
+        "anthropic",
+        ("claude-opus-5-5",),
+        "Claude Opus 5.5",
+        4.00,
+        20.00,
+        supports_vision=True,
+        recommended_for=("translation",),
+        rank=20,
+        note="Frontier Claude 5.5 Opus quality for nuanced dialogue translation.",
+    ),
+    PricingRule(
+        "anthropic",
+        ("claude-opus-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8"),
+        "Claude Opus 5 / 4.5+",
+        5.00,
+        25.00,
+        supports_vision=True,
+        rank=23,
+        note="Frontier Claude Opus tier for nuanced translation.",
+    ),
+    PricingRule(
+        "anthropic",
+        ("claude-fable-5-2",),
+        "Claude Fable 5.2",
+        8.00,
+        40.00,
+        supports_vision=True,
+        rank=27,
+        note="Specialized long-form creative Claude Fable 5.2 tier.",
+    ),
+    PricingRule(
+        "anthropic",
+        ("claude-fable-5", "claude-fable-5-1"),
+        "Claude Fable 5",
+        10.00,
+        50.00,
+        supports_vision=True,
+        rank=28,
+        note="Specialized long-form creative Claude Fable 5 tier.",
+    ),
+    PricingRule(
+        "anthropic",
         ("claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-4"),
         "Claude Sonnet 4.5",
         3.00,
@@ -363,7 +444,7 @@ _RULES: Tuple[PricingRule, ...] = (
     ),
     PricingRule(
         "anthropic",
-        ("claude-opus-4-1", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4"),
+        ("claude-opus-4-1", "claude-opus-4"),
         "Claude Opus 4",
         15.00,
         75.00,
@@ -391,6 +472,51 @@ _RULES: Tuple[PricingRule, ...] = (
         note="Text-only fast Claude model for glossary extraction.",
     ),
     # ---- Fallback Gemini family rules for newly discovered IDs not in model_catalog.CATALOG ----
+    PricingRule(
+        "google",
+        ("gemini-4-hydrogen",),
+        "Gemini 4 Hydrogen",
+        1.50,
+        7.50,
+        supports_vision=True,
+        thinking=("low", "medium", "high"),
+        default_thinking="medium",
+        supports_flex=True,
+        recommended_for=("translation", "glossary", "vision"),
+        rank=12,
+        note="High-efficiency Gemini 4 tier for fast translation, glossary, and OCR.",
+    ),
+    PricingRule(
+        "google",
+        ("gemini-4-neon",),
+        "Gemini 4 Neon",
+        3.00,
+        15.00,
+        supports_vision=True,
+        thinking=("low", "medium", "high"),
+        default_thinking="medium",
+        supports_flex=True,
+        recommended_for=("translation", "glossary"),
+        rank=17,
+        note="Balanced mid-tier Gemini 4 model.",
+    ),
+    PricingRule(
+        "google",
+        ("gemini-4-carbon",),
+        "Gemini 4 Carbon",
+        2.00,
+        10.00,
+        supports_vision=True,
+        thinking=("low", "medium", "high"),
+        default_thinking="medium",
+        supports_flex=True,
+        recommended_for=("translation",),
+        rank=19,
+        note="Frontier Gemini 4 reasoning tier for nuanced translation.",
+        promo_until=date(2026, 11, 30),
+        post_promo_input_per_m=4.00,
+        post_promo_output_per_m=20.00,
+    ),
     PricingRule(
         "google",
         ("gemini-2.5-pro",),
@@ -609,7 +735,7 @@ def estimated_image_tokens(
             return 425 if high else 85
         if mid.startswith(("gpt-4.1-mini", "gpt-5")) and "mini" in mid:
             return 390 if high else 235
-        if mid.startswith(("gpt-4.1-nano", "gpt-5")) and "nano" in mid:
+        if mid.startswith(("gpt-4.1-nano", "gpt-5")) and ("nano" in mid or "luna" in mid):
             return 590 if high else 355
         if mid.startswith("gpt-6"):
             if "mini" in mid:
@@ -680,7 +806,11 @@ def _benchmark_cost_for_duration(
         return round(total, 4)
 
     # Translation + glossary benchmark
-    batch_sz = 50 if provider in ("openai", "anthropic") else (40 if provider == "ollama" else _TRANSLATION_BATCH)
+    batch_sz = (
+        min(_TRANSLATION_BATCH, 40)
+        if provider in ("openai", "anthropic")
+        else (min(_TRANSLATION_BATCH, 30) if provider == "ollama" else _TRANSLATION_BATCH)
+    )
     gl_in = _GL_IN_BASE + segments * _GL_IN_PER_SEG
     gl_cost = _cost(1, gl_in, _GL_OUT)
     tr_batches = ceil(segments / batch_sz)
@@ -689,6 +819,31 @@ def _benchmark_cost_for_duration(
     if task == "glossary":
         return round(gl_cost, 4)
     return round(gl_cost + tr_cost, 4)
+
+
+def _rule_prices_on(
+    rule: PricingRule,
+    day: Optional[date] = None,
+) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], Optional[Dict[str, Any]]]:
+    today = day or date.today()
+    in_p = rule.input_per_m
+    out_p = rule.output_per_m
+    price_change: Optional[Dict[str, Any]] = None
+    if (
+        rule.promo_until is not None
+        and rule.post_promo_input_per_m is not None
+        and rule.post_promo_output_per_m is not None
+    ):
+        if today > rule.promo_until:
+            in_p = rule.post_promo_input_per_m
+            out_p = rule.post_promo_output_per_m
+        else:
+            price_change = {
+                "after": rule.promo_until.isoformat(),
+                "input_per_m": rule.post_promo_input_per_m,
+                "output_per_m": rule.post_promo_output_per_m,
+            }
+    return in_p, out_p, rule.input_long_per_m, rule.output_long_per_m, price_change
 
 
 def pricing_for_model(
@@ -709,7 +864,8 @@ def pricing_for_model(
         return 0.0, 0.0, None, None, True
     rule = _match_rule(provider, model_id)
     if rule is not None:
-        return rule.input_per_m, rule.output_per_m, None, None, rule.is_local
+        in_p, out_p, in_long, out_long, _ = _rule_prices_on(rule, day=day)
+        return in_p, out_p, in_long, out_long, rule.is_local
     return None, None, None, None, False
 
 
@@ -798,20 +954,34 @@ def build_model_entry(
             note = "Runs 100% locally via Ollama ($0.00 API cost)."
     elif rule is not None:
         label = rule.label if clean_id == rule.prefixes[0] else f"{rule.label} ({clean_id})"
-        thinking = ["default", *rule.thinking]
-        default_level = rule.default_thinking
+        low_id = clean_id.lower()
+        if rule.thinking:
+            thinking = ["default", *rule.thinking]
+            default_level = rule.default_thinking
+        elif provider == "openai" and low_id.startswith(("gpt-5", "gpt-6")):
+            thinking = ["default", "minimal", "low", "medium", "high"]
+            default_level = "low"
+        elif provider == "openai" and low_id.startswith(("o1", "o3", "o4")):
+            thinking = ["default", "low", "medium", "high"]
+            default_level = "low"
+        elif provider == "anthropic" and low_id.startswith(("claude-haiku-5", "claude-sonnet-5", "claude-opus-5", "claude-fable")):
+            thinking = ["default", "off", "low", "medium", "high"]
+            default_level = "off"
+        else:
+            thinking = ["default"]
+            default_level = rule.default_thinking
         supports_flex = rule.supports_flex
         supports_media_res = provider == "google" and not clean_id.startswith("gemini-2.")
         note = rule.note
         rank = rule.rank
         recommended_for = list(rule.recommended_for)
         warnings_by_task = dict(rule.warnings)
-        low_id = clean_id.lower()
+        _, _, _, _, price_change = _rule_prices_on(rule, day=day)
         if provider == "google":
             if "flash-lite" in low_id:
                 suitable_tasks = ["glossary", "vision"]
-            elif "pro" in low_id:
-                suitable_tasks = ["translation"]
+            elif "pro" in low_id or "carbon" in low_id:
+                suitable_tasks = ["translation", "glossary"]
             else:
                 suitable_tasks = ["translation", "glossary", "vision"]
         elif provider == "openai":
@@ -824,8 +994,8 @@ def build_model_entry(
         elif provider == "anthropic":
             if "claude-3-5-haiku" in low_id:
                 suitable_tasks = ["glossary"]
-            elif "opus" in low_id:
-                suitable_tasks = ["translation"]
+            elif "opus" in low_id or "fable" in low_id:
+                suitable_tasks = ["translation", "glossary"]
             else:
                 suitable_tasks = ["translation", "glossary"] + (["vision"] if rule.supports_vision else [])
         else:

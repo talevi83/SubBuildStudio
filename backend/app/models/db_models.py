@@ -10,6 +10,7 @@ class JobStatus(str, Enum):
     QUEUED = "QUEUED"
     PROBING = "PROBING"
     EXTRACTING_AUDIO = "EXTRACTING_AUDIO"
+    VOCAL_ISOLATION = "VOCAL_ISOLATION"
     TRANSCRIBING = "TRANSCRIBING"
     DIARIZING = "DIARIZING"
     SCANNING_ONSCREEN = "SCANNING_ONSCREEN"
@@ -74,12 +75,18 @@ class Job(SQLModel, table=True):
     video_duration: Optional[float] = None
     audio_streams_json: Optional[str] = None  # JSON encoded list of discovered audio streams
     selected_audio_stream: int = Field(default=0)
+    transcription_provider: str = Field(default="faster_whisper")
     whisper_model: str = Field(default="medium")
+    vocal_isolation: bool = Field(default=False)
+    vocal_isolation_mode: str = Field(default="off")  # "off", "auto", or "on"
     source_language: Optional[str] = Field(default="auto")
     detected_language: Optional[str] = None  # ISO code reported by Whisper
     vad_filter: bool = Field(default=True)
+    condition_on_previous_text: bool = Field(default=False)
+    initial_prompt: Optional[str] = None
     # Radio/walkie-talkie friendly audio filtering and Whisper decoding
     comms_boost: bool = Field(default=False)
+    comms_boost_mode: str = Field(default="off")  # "off", "auto", or "on"
     # High speech sensitivity: relaxed VAD & decoding thresholds to catch whispers
     high_speech_sensitivity: bool = Field(default=False)
     # Extract embedded text-based full dialogue subtitles instead of running Whisper

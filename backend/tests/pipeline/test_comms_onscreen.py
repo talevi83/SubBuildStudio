@@ -416,7 +416,17 @@ async def test_whisper_comms_decoding_parameters(monkeypatch):
     plain = _FakeModel()
     monkeypatch.setattr(fw, "_load_model", lambda *a: plain)
     await fw.FasterWhisperTranscriber("tiny", device="cpu").transcribe("a.wav")
-    assert "vad_parameters" not in plain.calls[0] and "initial_prompt" not in plain.calls[0]
+    assert plain.calls[0]["vad_parameters"] == {"min_silence_duration_ms": 500, "speech_pad_ms": 200}
+    assert plain.calls[0]["compression_ratio_threshold"] == 2.4
+    assert plain.calls[0]["log_prob_threshold"] == -1.0
+    assert plain.calls[0]["no_speech_threshold"] == 0.6
+    assert plain.calls[0]["condition_on_previous_text"] is False
+    assert "initial_prompt" not in plain.calls[0]
+
+    no_vad = _FakeModel()
+    monkeypatch.setattr(fw, "_load_model", lambda *a: no_vad)
+    await fw.FasterWhisperTranscriber("tiny", device="cpu", vad_filter=False).transcribe("a.wav")
+    assert "vad_parameters" not in no_vad.calls[0] and "initial_prompt" not in no_vad.calls[0]
 
 
 # ---------------------------------------------------------------------------

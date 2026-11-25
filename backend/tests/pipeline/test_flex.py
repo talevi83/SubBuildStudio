@@ -308,3 +308,38 @@ async def test_slow_flex_answers_also_switch_to_standard(no_sleep, monkeypatch):
     assert "m" in state.disabled
     await gc.generate_content(client, model="m", contents="x", config=_config(), flex=True, flex_state=state)
     assert [_tier(c[2]) for c in client.calls] == ["flex", "flex", None]
+
+
+def test_check_flex_falls_back_to_standard_on_busy_and_still_fails_on_404(client: TestClient, monkeypatch):
+    import app.api.routes_settings as rs
+
+    calls = []
+
+    class _RoutingClient:
+        def __init__(self):
+            self.models = self
+
+        def generate_content(self, model, contents, config):
+            tier = _tier(config)
+            calls.append((model, tier))
+            if model == "gemini-3.8-flash" and tier == "flex":
+                raise Exception("503 UNAVAILABLE. The model is overloaded.")
+            if model == "gemini-3.6-flash":
+                raise Exception("404 NOT_FOUND. Model not found.")
+            return types.SimpleNamespace(text="OK")
+
+    monkeypatch.setattr(rs, "_make_client", lambda key: _RoutingClient())
+    body = {"api_key": "k", "settings": {
+        "translation": {"model": "gemini-3.8-flash", "thinking": "low", "flex": True},
+        "glossary": {"model": "gemini-3.6-flash", "thinking": "default", "flex": True},
+        "vision": {"model": "gemini-3.5-flash-lite", "thinking": "minimal", "flex": False},
+        "vision_media_resolution": "low"}}
+    data = client.post("/api/settings/check", json=body).json()
+    assert data["steps"]["translation"]["ok"] is True
+    assert data["steps"]["glossary"]["ok"] is False and "404" in data["steps"]["glossary"]["error"]
+    assert data["steps"]["vision"]["ok"] is True
+    assert ("gemini-3.8-flash", "flex") in calls
+    assert ("gemini-3.8-flash", None) in calls
+    assert ("gemini-3.6-flash", "flex") in calls
+    assert ("gemini-3.6-flash", None) not in calls
+    assert ("gemini-3.5-flash-lite", None) in calls

@@ -59,10 +59,16 @@ class ProbeResponse(BaseModel):
 
 class JobConfig(RequestModel):
     selected_audio_stream: int = 0
+    transcription_provider: str = "faster_whisper"
     whisper_model: str = "medium"
+    vocal_isolation: bool = False
+    vocal_isolation_mode: Optional[str] = None
     source_language: Optional[str] = "auto"
     vad_filter: bool = True
+    condition_on_previous_text: bool = False
+    initial_prompt: Optional[str] = None
     comms_boost: bool = False
+    comms_boost_mode: Optional[str] = None
     high_speech_sensitivity: bool = False
     use_embedded_subtitles: bool = True
     selected_subtitle_stream: Optional[int] = None
@@ -332,11 +338,17 @@ class JobResponse(BaseModel):
     video_duration: Optional[float] = None
     audio_streams: List[AudioStreamInfo] = []
     selected_audio_stream: int = 0
+    transcription_provider: str = "faster_whisper"
     whisper_model: str = "medium"
+    vocal_isolation: bool = False
+    vocal_isolation_mode: str = "off"
     source_language: Optional[str] = "auto"
     detected_language: Optional[str] = None
     vad_filter: bool = True
+    condition_on_previous_text: bool = False
+    initial_prompt: Optional[str] = None
     comms_boost: bool = False
+    comms_boost_mode: str = "off"
     high_speech_sensitivity: bool = False
     use_embedded_subtitles: bool = True
     selected_subtitle_stream: Optional[int] = None
@@ -432,6 +444,9 @@ class SystemInfoResponse(BaseModel):
     gemini_model: str
     gemini_models: List[str] = []
     providers: Dict[str, Any] = {}
+    transcription_providers: List[str] = ["faster_whisper", "whisperx"]
+    whisperx_available: bool = False
+    vocal_isolation_available: bool = False
     whisper_default_model: str
     whisper_models: List[str] = []
     max_cps_warning: float = 20.0

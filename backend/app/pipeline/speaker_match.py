@@ -43,7 +43,7 @@ class SpeakerCharacterMatch(BaseModel):
     target_name: str = ""
     gender: Literal["male", "female", "unknown"] = "unknown"
     confidence: Literal["high", "medium", "low"] = "low"
-    evidence: str = ""
+    evidence: str = Field(default="", description="Concise 5-12 word reason citing a dialogue clue.")
     merge_into_speaker_id: str = ""
 
 
@@ -288,7 +288,8 @@ def format_speaker_identity(
     if label and not _DEFAULT_SPEAKER_LABEL_RE.match(label):
         parts.append(label)
     if gender in ("male", "female"):
-        parts.append(gender)
+        # A pitch-based gender is an estimate; the translator may overrule it from the dialogue
+        parts.append(f"{gender} by voice" if info.get("gender_source") == "voice" else gender)
     return f"{speaker_id} ({', '.join(parts)})" if parts else speaker_id
 
 
@@ -471,12 +472,16 @@ async def _call_ai_speaker_matcher(
     cfg = app_settings.glossary if app_settings.glossary.model else app_settings.translation
     if not cfg.model:
         return None
+    from app.core.user_settings import preferred_thinking
+
+    # Keep thinking low/minimal and max_output_tokens=16384 so thinking tokens never truncate SpeakerMatchResponse JSON
+    matcher_thinking = preferred_thinking(cfg.provider, cfg.model, "translation")
     spec = resolve_provider_spec(
         cfg.provider,
         cfg.model,
         key_id=cfg.key_id,
         api_key_override=api_key_override if cfg.provider == "google" else None,
-        thinking=cfg.thinking,
+        thinking=matcher_thinking,
         flex=bool(cfg.flex),
     )
     if not spec.api_key and not spec.is_local:
@@ -489,7 +494,7 @@ async def _call_ai_speaker_matcher(
         "Rules:\n"
         "1. Cross-reference who speaks to whom, who gets addressed by name and replies next, character roles, and tone.\n"
         f"2. Set `character_name` (from KNOWN CHARACTERS or clearly identified role), `target_name` (in {target_language}), "
-        "`gender` ('male', 'female', or 'unknown'), `confidence` ('high', 'medium', or 'low'), and a short `evidence`.\n"
+        "`gender` ('male', 'female', or 'unknown'), `confidence` ('high', 'medium', or 'low'), and a brief `evidence` (<=12 words).\n"
         "3. Return 'high' or 'medium' ONLY when conversational context strongly supports the match. "
         "If unsure, leave `character_name` empty ('') and `confidence`='low' — NEVER guess wildly.\n"
         "4. Only set `merge_into_speaker_id` when two clusters unmistakably belong to the exact same person "
@@ -501,6 +506,7 @@ async def _call_ai_speaker_matcher(
         prompt=dossier,
         schema_cls=SpeakerMatchResponse,
         temperature=0.1,
+        max_output_tokens=16384,
         usage=usage,
         stage="glossary",
         flex_state=flex_state,

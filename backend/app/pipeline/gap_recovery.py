@@ -15,38 +15,32 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-MIN_GAP = 0.85           # seconds of uncovered audio worth re-listening to
+MIN_GAP = 1.2            # seconds of uncovered audio worth re-listening to
 EDGE = 0.15              # keep away from the neighbours' first/last words
-MIN_LEVEL_DB = -48.0     # quieter than this (RMS, dBFS) is treated as silence
+MIN_LEVEL_DB = -42.0     # quieter than this (RMS, dBFS) is treated as silence
 MAX_CLIP = 28.0          # split long gaps so each clip fits one Whisper window
 MAX_WORD_COVER = 1.2     # clamp single words stretched across silence so they don't hide gaps
 
-# Acceptance thresholds for recovered lines.
-# `avg_logprob` and `no_speech_prob` come from faster-whisper per decoding window, so every line in
-# a noisy 30s clip shares the same (poor) values: a confident "Clear!" under gunfire reports the
-# window's logprob of -1.4. Word probabilities are the only per-line signal, so the logprob
-# threshold is relaxed when the window clearly contains speech (low no_speech) and the words are sure.
-MIN_AVG_LOGPROB = -1.0
-NOISY_MIN_AVG_LOGPROB = -1.5  # allowed when no_speech is low and the words are confident
-NOISY_MAX_NO_SPEECH = 0.3
-NOISY_MIN_WORD_PROB = 0.6
-MAX_NO_SPEECH = 0.75   # judged per 30s window here, so less telling
+# Strict acceptance thresholds for recovered lines (decoded without VAD).
+# Require `no_speech_prob < 0.30`, `avg_logprob > -0.55`, and `mean_word_prob > 0.65` so orchestral
+# music, crowd noise, and broadcast silence cannot slip hallucinated dialogue into the transcript.
+MIN_AVG_LOGPROB = -0.55
+MAX_NO_SPEECH = 0.30
 MAX_COMPRESSION = 2.4
-MIN_WORD_PROB = 0.5
+MIN_WORD_PROB = 0.65
 MIN_DURATION = 0.2
-# Short lines ("Okay.", "Fire!") are where hallucinations hide: a bit stricter
+# Short lines ("Okay.", "Marcy, please!") are where hallucinations hide: held to an even tighter bar
 SHORT_WORDS = 3
-SHORT_MIN_AVG_LOGPROB = -0.9
-SHORT_MIN_WORD_PROB = 0.5
-SHORT_MAX_NO_SPEECH = 0.7
+SHORT_MIN_AVG_LOGPROB = -0.50
+SHORT_MIN_WORD_PROB = 0.68
+SHORT_MAX_NO_SPEECH = 0.25
 # A line stretched over far more audio than its words need is Whisper bridging silence
 STRETCH_PER_WORD = 2.0
 STRETCH_SLACK = 2.0
 
 # Shouted commands in action scenes: one or two words, usually over gunfire, often repeated
-# ("Fire! ... Fire! ... Fire!"). Word timestamps for a shout can be under 0.2s and the word
-# probability under noise is mediocre, so these get their own, looser rules — and a repeat of
-# the neighbouring line is expected rather than suspicious.
+# ("Fire! ... Fire! ... Fire!"). Word timestamps for a shout can be under 0.2s, so duration is
+# allowed below MIN_DURATION while still enforcing strict speech & logprob bounds.
 COMMAND_WORDS = {
     "fire", "move", "go", "clear", "stop", "hold", "down", "contact", "grenade", "ready", "aim",
     "cover", "reload", "moving", "set", "freeze", "breach", "push", "back", "run", "duck", "incoming",
@@ -57,16 +51,18 @@ COMMAND_PHRASES = {
     "hands up", "drop it", "fall back", "take cover", "head shot", "on me", "move out", "let's go",
     "cover me", "moving up", "go go go", "move move", "stop stop", "fire fire",
 }
-COMMAND_MIN_WORD_PROB = 0.3
-COMMAND_MAX_NO_SPEECH = 0.5
+COMMAND_MIN_WORD_PROB = 0.65
+COMMAND_MAX_NO_SPEECH = 0.30
+COMMAND_MIN_AVG_LOGPROB = -0.55
 
 # A prompt/hotword list echoed back as "speech" (seen with radio hotwords on silence)
 _PROMPT_WORDS = {"over", "copy", "roger", "wilco", "sitrep", "klicks", "callsign", "actual", "say", "again", "radio", "check"}
+_PROMPT_STOPWORDS = {
+    "the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "for", "with", "from", "by",
+    "is", "are", "was", "were", "it", "this", "that", "as", "be",
+}
 
 # Whisper's well-known inventions on non-speech audio (normalized, lower case, no punctuation)
-# "Thank you." is Whisper's favourite invention on breaths and silence (large-v3-turbo decodes
-# it dozens of times per episode), and broadcast fillers ("We'll be right back") are a close
-# second. Real thank-yous the VAD heard are in the main pass; in a gap they are near-certain fakes.
 _HALLUCINATIONS = {
     "thank you for watching", "thanks for watching", "thank you so much for watching",
     "please subscribe", "subscribe to my channel", "like and subscribe",
@@ -75,9 +71,56 @@ _HALLUCINATIONS = {
     "thank you", "thanks", "thank you very much", "thank you so much",
     "we'll be right back", "be right back", "we'll see you next time", "i'll see you next time",
     "see you next time", "see you in the next video", "see you in the next one",
+    "all rights reserved",
 }
+# Broadcast/watermark hallucination patterns safe to block in BOTH primary and gap-recovery passes.
+# These are specific enough to never occur in real dialogue, so they may match anywhere in a segment.
+_WATERMARK_PATTERNS = [
+    re.compile(r"[©®™]"),
+    re.compile(r"\bbf[\s\-]*watch\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:amara\.org|opensubtitles|subscene|addic7ed|podnapisi|castingwords|yify|yts\.mx)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:www\.[a-z0-9\-]+\.[a-z]{2,}|[a-z0-9\-]+\.(?:org|net)/)\b", re.IGNORECASE),
+]
+# Credit lines ("Subtitles by ...", "Synced and corrected by ...", "Copyright 2021"). They are only a
+# watermark when the WHOLE short segment is the credit line: the same verbs appear in real dialogue
+# ("The cord not yet cut, they ripped from me.", "The letter was transcribed by a monk").
+_CREDIT_LINE_RE = re.compile(
+    r"^\W*(?:"
+    r"(?:subtitles?|captions?|subtitled|captioned|transcript(?:ion)?|transcribed|translated|"
+    r"synced|synchro(?:nized)?|resynced|corrected|ripped|encoded)"
+    r"(?:\s+and\s+(?:synced|corrected|edited|encoded|timed))?"
+    r"\s+by\b"
+    r"|copyright\b"
+    r"|(?:bf[\s\-]*watch\s+)?tv\s*(?:19|20)\d{2}\W*$"
+    r")",
+    re.IGNORECASE,
+)
+_CREDIT_LINE_MAX_WORDS = 8
+# YouTube-style outros. Real dialogue can say "Thank you for watching" too, so these are only treated
+# as hallucinations near the very end of the media (or when the position is unknown, e.g. a lone
+# gap-recovery clip judged on its own).
+_OUTRO_PHRASES = frozenset({
+    "thank you for watching",
+    "thanks for watching",
+    "thank you so much for watching",
+    "please subscribe",
+    "subscribe to my channel",
+    "like and subscribe",
+})
+# Phrases that are pure subtitle-community credits: never dialogue, so position does not matter
+_CREDIT_PHRASES = frozenset({
+    "subtitles by the amara org community",
+    "transcription by castingwords",
+})
+OUTRO_TAIL_MIN_SECONDS = 180.0   # the outro window is at least the last 3 minutes ...
+OUTRO_TAIL_FRACTION = 0.04       # ... or the last 4% of the media, whichever is longer ...
+OUTRO_TAIL_MAX_SECONDS = 420.0   # ... but never more than the last 7 minutes
 _HALLUCINATION_PATTERNS = [
-    re.compile(r"\b(subtitles?|captions?|transcri\w+|amara|subscribe)\b"),
+    re.compile(r"\b(subtitles?|captions?|transcri\w+|amara|opensubtitles|subscene|addic7ed|subscribe|copyright)\b"),
+    re.compile(r"\b(bf\s*watch|watch\s*tv|tv\s*(?:19|20)\d{2})\b"),
     re.compile(r"\b(link in|in the description|description below|check out my|my channel|next video)\b"),
 ]
 _MUSIC = re.compile(r"[♪♫]")
@@ -85,6 +128,43 @@ _MUSIC = re.compile(r"[♪♫]")
 
 def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s']", " ", text.lower())).strip()
+
+
+def in_outro_window(start: Optional[float], media_duration: Optional[float]) -> bool:
+    """True when `start` lies inside the final minutes of the media (where outro artifacts live).
+
+    Unknown position or duration counts as inside, so callers without timing keep the old behaviour.
+    """
+    if start is None or not media_duration or media_duration <= 0:
+        return True
+    tail = min(OUTRO_TAIL_MAX_SECONDS, max(OUTRO_TAIL_MIN_SECONDS, OUTRO_TAIL_FRACTION * float(media_duration)))
+    return float(start) >= float(media_duration) - tail
+
+
+def is_watermark_hallucination(
+    text: str,
+    start: Optional[float] = None,
+    media_duration: Optional[float] = None,
+) -> bool:
+    """True when `text` is a known broadcast/subtitle watermark or a YouTube outro artifact.
+
+    Rules, from strictest to loosest:
+    * unmistakable watermark tokens (``©``, subtitle-site names, URLs) match anywhere;
+    * credit lines ("Subtitles by ...", "Copyright 2021") must be the whole, short segment;
+    * outro phrases ("Thanks for watching") must be the whole segment AND sit in the final
+      minutes of the media when `start` and `media_duration` are given.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if any(p.search(raw) for p in _WATERMARK_PATTERNS):
+        return True
+    norm = normalize(raw)
+    if norm in _CREDIT_PHRASES:
+        return True
+    if _CREDIT_LINE_RE.search(raw) and len(norm.split()) <= _CREDIT_LINE_MAX_WORDS:
+        return True
+    return norm in _OUTRO_PHRASES and in_outro_window(start, media_duration)
 
 
 def find_gaps(
@@ -143,27 +223,40 @@ def rejection_reason(
     word_probs: Sequence[float],
     duration: float,
     neighbours: Sequence[str] = (),
+    prompt_text: Optional[str] = None,
 ) -> Optional[str]:
     """None if a recovered line looks like real speech, else a short reason (for the job log)."""
     norm = normalize(text)
     if _MUSIC.search(text):
         return "known hallucination (music notes)"
+    if is_watermark_hallucination(text):
+        return "known hallucination (watermark)"
     if not norm:
         return "empty"
     if norm in _HALLUCINATIONS or any(p.search(norm) for p in _HALLUCINATION_PATTERNS):
         return "known hallucination"
     if len(set(norm.split()) & _PROMPT_WORDS) >= 4:
         return "echo of the prompt words"
+    if prompt_text:
+        prompt_norm = normalize(prompt_text)
+        prompt_vocab = {w for w in prompt_norm.split() if len(w) >= 3 and w not in _PROMPT_STOPWORDS}
+        line_vocab = [w for w in norm.split() if len(w) >= 3 and w not in _PROMPT_STOPWORDS]
+        if prompt_norm and norm == prompt_norm:
+            return "echo of the prompt words"
+        if len(line_vocab) >= 4 and prompt_vocab and sum(1 for w in line_vocab if w in prompt_vocab) >= max(4, int(0.8 * len(line_vocab))):
+            return "echo of the prompt words"
     words = norm.split()
     mean_word_prob = float(np.mean(word_probs)) if word_probs else None
     if duration > STRETCH_PER_WORD * len(words) + STRETCH_SLACK:
         return f"stretched over {duration:.1f}s for {len(words)} word(s)"
 
     if is_command(norm):
-        # Shouts: judged by the words themselves; the window stats are dominated by the noise
-        if no_speech_prob is not None and no_speech_prob > COMMAND_MAX_NO_SPEECH:
+        # Shouts may be shorter than MIN_DURATION and repeat a neighbour, yet must pass strict speech gates
+        if avg_logprob is not None and avg_logprob <= COMMAND_MIN_AVG_LOGPROB:
+            return f"low confidence (logprob {avg_logprob:.2f})"
+        if no_speech_prob is not None and no_speech_prob >= COMMAND_MAX_NO_SPEECH:
             return f"probably not speech (no_speech {no_speech_prob:.2f})"
-        if mean_word_prob is not None and mean_word_prob < COMMAND_MIN_WORD_PROB:
+        if mean_word_prob is not None and mean_word_prob <= COMMAND_MIN_WORD_PROB:
             return f"unsure words (mean {mean_word_prob:.2f})"
         return None
 
@@ -173,27 +266,13 @@ def rejection_reason(
     min_logprob = SHORT_MIN_AVG_LOGPROB if short else MIN_AVG_LOGPROB
     max_no_speech = SHORT_MAX_NO_SPEECH if short else MAX_NO_SPEECH
     min_word_prob = SHORT_MIN_WORD_PROB if short else MIN_WORD_PROB
-    if (
-        short
-        and avg_logprob is not None
-        and avg_logprob >= -0.75
-        and no_speech_prob is not None
-        and no_speech_prob <= 0.25
-    ):
-        min_word_prob = 0.35
-    noisy_speech = (
-        no_speech_prob is not None and no_speech_prob <= NOISY_MAX_NO_SPEECH
-        and mean_word_prob is not None and mean_word_prob >= NOISY_MIN_WORD_PROB
-    )
-    if noisy_speech:
-        min_logprob = NOISY_MIN_AVG_LOGPROB
-    if avg_logprob is not None and avg_logprob < min_logprob:
+    if avg_logprob is not None and avg_logprob <= min_logprob:
         return f"low confidence (logprob {avg_logprob:.2f})"
-    if no_speech_prob is not None and no_speech_prob > max_no_speech:
+    if no_speech_prob is not None and no_speech_prob >= max_no_speech:
         return f"probably not speech (no_speech {no_speech_prob:.2f})"
     if compression_ratio is not None and compression_ratio > MAX_COMPRESSION:
         return f"repetitive (compression {compression_ratio:.1f})"
-    if mean_word_prob is not None and mean_word_prob < min_word_prob:
+    if mean_word_prob is not None and mean_word_prob <= min_word_prob:
         return f"unsure words (mean {mean_word_prob:.2f})"
     # "Go, go, go!" / "It's okay, it's okay" are real; hallucinated loops run much longer
     if len(words) >= 8 and len(set(words)) <= len(words) // 4:

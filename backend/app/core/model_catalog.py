@@ -202,7 +202,12 @@ def family_of(model_id: str) -> str:
 def supports_flex(model_id: str) -> bool:
     """Catalog models say so explicitly; unknown (custom) models are allowed to try."""
     info = get_model(model_id)
-    return info.flex if info else True
+    if info is not None:
+        return info.flex
+    from app.core.provider_catalog import _match_rule
+
+    rule = _match_rule("google", model_id)
+    return rule.supports_flex if rule is not None else True
 
 
 def validate_flex(model_id: str, flex: bool) -> bool:
@@ -213,7 +218,12 @@ def validate_flex(model_id: str, flex: bool) -> bool:
 
 def allowed_thinking(model_id: str) -> Tuple[str, ...]:
     info = get_model(model_id)
-    return ("default",) + (info.thinking if info else ())
+    if info is not None:
+        return ("default",) + info.thinking
+    from app.core.provider_catalog import _match_rule
+
+    rule = _match_rule("google", model_id)
+    return ("default",) + (rule.thinking if rule is not None else ())
 
 
 def validate_thinking(model_id: str, level: str) -> str:
@@ -317,13 +327,15 @@ class StageUsage:
     thinking_tokens: int = 0
     cost_usd: Optional[float] = 0.0
     flex_requests: int = 0      # requests billed on the Flex tier
-    flex_fallbacks: int = 0     # Flex was busy, so the request ran on Standard (full price)
+    flex_fallbacks: int = 0     # Flex was busy/cooling down, so the request ran on Standard (full price)
+    standard_requests: int = 0  # requests sent directly on the Standard tier
 
     def add(self, other: "StageUsage") -> None:
         self.model = other.model or self.model
         self.requests += other.requests
         self.flex_requests += other.flex_requests
         self.flex_fallbacks += other.flex_fallbacks
+        self.standard_requests += other.standard_requests
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
         self.thinking_tokens += other.thinking_tokens
@@ -404,13 +416,28 @@ class UsageTracker:
         thinking_tokens: int = 0,
         flex: bool = False,
         fell_back: bool = False,
+        cost_usd: Optional[float] = None,
     ) -> None:
-        """Add one API response's raw token counts for any provider."""
-        cost = request_cost(model, input_tokens, output_tokens + thinking_tokens, flex=flex, provider=provider)
+        """Add one API response's raw token counts for any provider.
+
+        `cost_usd` overrides the price computed from the counts (e.g. Anthropic prompt-cache reads
+        and writes, which are billed at their own rates).
+        """
+        cost = cost_usd if cost_usd is not None else request_cost(
+            model, input_tokens, output_tokens + thinking_tokens, flex=flex, provider=provider
+        )
         self.stages.setdefault(stage, StageUsage()).add(
-            StageUsage(model=model, requests=1, input_tokens=input_tokens, output_tokens=output_tokens,
-                       thinking_tokens=thinking_tokens, cost_usd=cost, flex_requests=int(flex),
-                       flex_fallbacks=int(fell_back))
+            StageUsage(
+                model=model,
+                requests=1,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                thinking_tokens=thinking_tokens,
+                cost_usd=cost,
+                flex_requests=int(flex),
+                flex_fallbacks=int(fell_back),
+                standard_requests=int(not flex and not fell_back),
+            )
         )
 
     def record_local_ai(
@@ -553,7 +580,7 @@ def estimate_job_cost(
     detect_onscreen_text: bool,
     app_settings: Any,
     glossary_pass: bool = True,
-    translation_batch_size: int = 120,
+    translation_batch_size: int = 35,
     system_prompt_tokens: int = 1900,
     frame_interval: float = 2.0,
     max_frames: int = 360,
@@ -580,7 +607,9 @@ def estimate_job_cost(
                 flex=getattr(g, "flex", False), provider=g_prov)
         t = app_settings.translation
         t_prov = getattr(t, "provider", "google")
-        eff_batch = 50 if t_prov in ("openai", "anthropic") else (40 if t_prov == "ollama" else translation_batch_size)
+        from app.providers.translation.gemini_provider import default_batch_size_for_model
+
+        eff_batch = default_batch_size_for_model(t_prov, t.model, translation_batch_size)
         batches = ceil(segments / eff_batch)
         per_batch_in = (system_prompt_tokens + (350 if glossary_pass else 0)
                         + eff_batch * _TRANSLATION_TOKENS_PER_SEGMENT_IN + 8 * 40)

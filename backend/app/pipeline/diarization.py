@@ -23,6 +23,18 @@ MODEL_URL = (
 )
 # Below this many voice windows, a lone window is a speaker, not noise (see cluster_embeddings)
 MIN_WINDOWS_FOR_NOISE_ABSORPTION = 8
+# Average-linkage cosine distance below which two windows are the same voice (CAM++ embeddings)
+CLUSTER_THRESHOLD = 0.66
+# Cosine distance below which two cluster CENTROIDS are the same voice (see assign_window_speakers)
+CENTROID_MERGE_THRESHOLD = 0.32  # calibrated on job_320de88c99: 0.66 merged 14 voices into 3
+MAX_AUTO_SPEAKERS = 16
+# Long-film mega-cluster re-split thresholds (calibrated on job_5b4c9f644a, where 63% of speech
+# pooled into 2 wide clusters at 0.66 and caused assess_diarization to quarantine all speaker IDs)
+LONG_RECORDING_SECONDS = 45 * 60          # re-split only applies to feature-length audio
+RESPLIT_MIN_CLUSTER_SHARE = 0.18          # a cluster holding more than this share of anchor windows is suspect
+RESPLIT_MIN_WINDOWS = 40
+RESPLIT_THRESHOLDS = (0.60, 0.56, 0.52)   # progressively tighter average-linkage thresholds
+RESPLIT_MIN_SUBCLUSTER_SHARE = 0.10       # a sub-voice must hold >=10% of the parent cluster
 SPEAKER_PALETTE = (
     "#38BDF8",
     "#F472B6",
@@ -375,12 +387,197 @@ def _read_wav_float32(wav_path: Path) -> Tuple[np.ndarray, int]:
     return pcm, sr
 
 
+def _resplit_oversized_clusters(
+    emb: np.ndarray,
+    labels: List[str],
+    windows: Sequence[Tuple[float, float]],
+    *,
+    cancel_flag: Optional[threading.Event] = None,
+) -> List[str]:
+    """Split mega-clusters that pooled distinct voices in feature-length films (>= 45 min).
+
+    Runs a single pass over oversized anchor clusters using progressively tighter thresholds,
+    accepting a split only when >= 2 substantial sub-clusters emerge with at least one centroid
+    pair separated by >= CENTROID_MERGE_THRESHOLD.
+    """
+    if not windows or len(labels) < RESPLIT_MIN_WINDOWS:
+        return list(labels)
+    span = max(float(e) for _, e in windows) - min(float(s) for s, _ in windows)
+    if span < LONG_RECORDING_SECONDS:
+        return list(labels)
+
+    total_windows = len(labels)
+    counts: Dict[str, int] = {}
+    for lbl in labels:
+        counts[lbl] = counts.get(lbl, 0) + 1
+
+    out = list(labels)
+    for lbl, count in counts.items():
+        share = count / total_windows
+        if count < RESPLIT_MIN_WINDOWS or share <= RESPLIT_MIN_CLUSTER_SHARE:
+            continue
+
+        members = [i for i, cur in enumerate(labels) if cur == lbl]
+        emb_sub = emb[members]
+        min_sub = max(3, RESPLIT_MIN_SUBCLUSTER_SHARE * count)
+
+        accepted: Optional[Tuple[float, List[Tuple[List[int], np.ndarray]]]] = None
+        for thr in RESPLIT_THRESHOLDS:
+            sub_labels = cluster_embeddings(emb_sub, threshold=thr, cancel_flag=cancel_flag)
+            groups: Dict[str, List[int]] = {}
+            for local_idx, sub_lbl in enumerate(sub_labels):
+                groups.setdefault(sub_lbl, []).append(local_idx)
+            significant = [grp for grp in groups.values() if len(grp) >= min_sub]
+            if len(significant) < 2:
+                continue
+
+            pairs: List[Tuple[List[int], np.ndarray]] = []
+            for grp in significant:
+                c = np.mean(emb_sub[grp], axis=0).astype(np.float32)
+                c /= max(float(np.linalg.norm(c)), 1e-12)
+                pairs.append((grp, c))
+
+            distinct = any(
+                (1.0 - float(pairs[a][1] @ pairs[b][1])) >= CENTROID_MERGE_THRESHOLD
+                for a in range(len(pairs))
+                for b in range(a + 1, len(pairs))
+            )
+            if distinct:
+                accepted = (thr, pairs)
+                break
+
+        if accepted is None:
+            continue
+
+        used_thr, sig_pairs = accepted
+        sig_pairs.sort(key=lambda item: (-len(item[0]), min(item[0])))
+        new_lbls = [lbl] + [f"{lbl}_r{k}" for k in range(1, len(sig_pairs))]
+        centroid_mat = np.vstack([c for _, c in sig_pairs])
+
+        assigned_locals = set()
+        for idx_grp, (grp, _) in enumerate(sig_pairs):
+            target_lbl = new_lbls[idx_grp]
+            for local_idx in grp:
+                out[members[local_idx]] = target_lbl
+                assigned_locals.add(local_idx)
+
+        for local_idx in range(len(members)):
+            if local_idx in assigned_locals:
+                continue
+            v = np.asarray(emb_sub[local_idx], dtype=np.float32)
+            v_norm = float(np.linalg.norm(v))
+            if v_norm > 1e-12:
+                v = v / v_norm
+            best_col = int(np.argmax(centroid_mat @ v))
+            out[members[local_idx]] = new_lbls[best_col]
+
+        logger.info(
+            f"Re-split an oversized speaker cluster ({share:.0%} of anchor windows) into "
+            f"{len(sig_pairs)} voices at threshold {used_thr:.2f}"
+        )
+
+    return out
+
+
+def assign_window_speakers(
+    emb_mat: np.ndarray,
+    windows: Sequence[Tuple[float, float]],
+    *,
+    threshold: float = CLUSTER_THRESHOLD,
+    merge_threshold: float = CENTROID_MERGE_THRESHOLD,
+    min_speakers: Optional[int] = None,
+    max_speakers: Optional[int] = None,
+    cancel_flag: Optional[threading.Event] = None,
+    on_progress: Optional[Callable[[float], None]] = None,
+) -> List[Optional[str]]:
+    """Cluster window embeddings into speakers; one label (or None = unassigned) per window.
+
+    Two-stage reliable-anchor clustering: cluster longer (>= 1.1s) utterances first with average
+    linkage at `threshold`, re-split oversized mega-clusters in long films (>= 45 min), prune
+    singleton noise shards, merge near-duplicate centroids at `merge_threshold`, then project every
+    window onto the nearest centroid.
+
+    `merge_threshold` must be much stricter than `threshold`: a centroid is the mean of many
+    windows, so centroids of two different people sit far closer together than any two of their
+    windows do. Reusing the clustering threshold there collapsed a 2-hour ensemble film into
+    3 "speakers" (job_320de88c99).
+    """
+    n = int(emb_mat.shape[0])
+    if n == 0:
+        return []
+    reliable_indices = [i for i, (ws, we) in enumerate(windows) if (we - ws) >= 1.1]
+    if len(reliable_indices) < 4:
+        reliable_indices = list(range(n))
+
+    M_reliable = emb_mat[reliable_indices]
+    rel_labels = cluster_embeddings(
+        M_reliable,
+        threshold=threshold,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
+        cancel_flag=cancel_flag,
+        on_progress=(lambda cp: on_progress(85.0 + cp * 0.12)) if on_progress else None,
+    )
+    rel_labels = _resplit_oversized_clusters(
+        M_reliable,
+        rel_labels,
+        [windows[i] for i in reliable_indices],
+        cancel_flag=cancel_flag,
+    )
+
+    by_lbl: Dict[str, List[np.ndarray]] = {}
+    for pos, lbl in enumerate(rel_labels):
+        by_lbl.setdefault(lbl, []).append(M_reliable[pos])
+
+    min_support = 3 if len(reliable_indices) >= 40 else (2 if len(reliable_indices) >= 15 else 1)
+    major_clusters = [(lbl, vecs) for lbl, vecs in by_lbl.items() if len(vecs) >= min_support]
+    if not major_clusters:
+        major_clusters = list(by_lbl.items())
+    if max_speakers is None and len(major_clusters) > MAX_AUTO_SPEAKERS:
+        major_clusters = sorted(major_clusters, key=lambda kv: len(kv[1]), reverse=True)[:MAX_AUTO_SPEAKERS]
+
+    centroids: List[List[Any]] = []
+    for lbl, vecs in major_clusters:
+        c = np.mean(vecs, axis=0).astype(np.float32)
+        c /= max(float(np.linalg.norm(c)), 1e-12)
+        centroids.append([lbl, c, len(vecs)])
+
+    floor_k = max(1, int(min_speakers)) if min_speakers is not None else 1
+    while len(centroids) > floor_k:
+        best_i, best_j, best_d = -1, -1, merge_threshold
+        for i in range(len(centroids)):
+            for j in range(i + 1, len(centroids)):
+                d = 1.0 - float(centroids[i][1] @ centroids[j][1])
+                if d < best_d:
+                    best_i, best_j, best_d = i, j, d
+        if best_i < 0:
+            break
+        na, nb = centroids[best_i][2], centroids[best_j][2]
+        merged_c = (na * centroids[best_i][1] + nb * centroids[best_j][1]) / float(na + nb)
+        merged_c /= max(float(np.linalg.norm(merged_c)), 1e-12)
+        centroids[best_i][1] = merged_c
+        centroids[best_i][2] = na + nb
+        centroids.pop(best_j)
+
+    assign_limit = min(threshold + 0.12, 0.80)
+    centroid_mat = np.vstack([c[1] for c in centroids])
+    centroid_labels = [c[0] for c in centroids]
+    norms = np.maximum(np.linalg.norm(emb_mat, axis=1, keepdims=True), 1e-12)
+    dists = np.clip(1.0 - ((emb_mat / norms) @ centroid_mat.T), 0.0, 2.0)
+    labels: List[Optional[str]] = []
+    for win_idx in range(n):
+        best_col = int(np.argmin(dists[win_idx]))
+        labels.append(centroid_labels[best_col] if float(dists[win_idx, best_col]) < assign_limit else None)
+    return labels
+
+
 def diarize_audio_spans(
     wav_path: Path,
     spans: Sequence[Tuple[float, float]],
     *,
     embedder: Optional[OnnxSpeakerEmbedder] = None,
-    threshold: float = 0.66,
+    threshold: float = CLUSTER_THRESHOLD,
+    merge_threshold: float = CENTROID_MERGE_THRESHOLD,
     min_speakers: Optional[int] = None,
     max_speakers: Optional[int] = None,
     cancel_flag: Optional[threading.Event] = None,
@@ -442,69 +639,21 @@ def diarize_audio_spans(
             on_progress(((idx + 1) / total_w) * 85.0)
 
     emb_mat = np.vstack(embeddings)
-
-    # Two-stage reliable-anchor clustering: cluster longer (>= 1.1s) utterances first,
-    # prune singleton noise shards, merge close centroids, then project all windows.
-    reliable_indices = [i for i, (ws, we) in enumerate(windows) if (we - ws) >= 1.1]
-    if len(reliable_indices) < 4:
-        reliable_indices = list(range(len(windows)))
-
-    M_reliable = emb_mat[reliable_indices]
-    rel_labels = cluster_embeddings(
-        M_reliable,
+    window_labels = assign_window_speakers(
+        emb_mat,
+        windows,
         threshold=threshold,
+        merge_threshold=merge_threshold,
         min_speakers=min_speakers,
         max_speakers=max_speakers,
         cancel_flag=cancel_flag,
-        on_progress=(lambda cp: on_progress(85.0 + cp * 0.12)) if on_progress else None,
+        on_progress=on_progress,
     )
 
-    by_lbl: Dict[str, List[np.ndarray]] = {}
-    for pos, lbl in enumerate(rel_labels):
-        by_lbl.setdefault(lbl, []).append(M_reliable[pos])
-
-    min_support = 3 if len(reliable_indices) >= 40 else (2 if len(reliable_indices) >= 15 else 1)
-    major_clusters = [(lbl, vecs) for lbl, vecs in by_lbl.items() if len(vecs) >= min_support]
-    if not major_clusters:
-        major_clusters = list(by_lbl.items())
-    if max_speakers is None and len(major_clusters) > 16:
-        major_clusters = sorted(major_clusters, key=lambda kv: len(kv[1]), reverse=True)[:16]
-
-    centroids: List[List[Any]] = []
-    for lbl, vecs in major_clusters:
-        c = np.mean(vecs, axis=0).astype(np.float32)
-        c /= max(float(np.linalg.norm(c)), 1e-12)
-        centroids.append([lbl, c, len(vecs)])
-
-    floor_k = max(1, int(min_speakers)) if min_speakers is not None else 1
-    while len(centroids) > floor_k:
-        best_i, best_j, best_d = -1, -1, threshold
-        for i in range(len(centroids)):
-            for j in range(i + 1, len(centroids)):
-                d = 1.0 - float(centroids[i][1] @ centroids[j][1])
-                if d < best_d:
-                    best_i, best_j, best_d = i, j, d
-        if best_i < 0:
-            break
-        na, nb = centroids[best_i][2], centroids[best_j][2]
-        merged_c = (na * centroids[best_i][1] + nb * centroids[best_j][1]) / float(na + nb)
-        merged_c /= max(float(np.linalg.norm(merged_c)), 1e-12)
-        centroids[best_i][1] = merged_c
-        centroids[best_i][2] = na + nb
-        centroids.pop(best_j)
-
-    assign_limit = min(threshold + 0.12, 0.80)
-    centroid_mat = np.vstack([c[1] for c in centroids])
-    centroid_labels = [c[0] for c in centroids]
-    dists = np.clip(1.0 - (emb_mat @ centroid_mat.T), 0.0, 2.0)
-
     timeline: List[Dict[str, Any]] = []
-    for win_idx, (ws, we) in enumerate(windows):
-        best_col = int(np.argmin(dists[win_idx]))
-        best_dist = float(dists[win_idx, best_col])
-        if best_dist >= assign_limit:
+    for (ws, we), sp in zip(windows, window_labels):
+        if sp is None:
             continue
-        sp = centroid_labels[best_col]
         if timeline and timeline[-1]["speaker"] == sp and ws - timeline[-1]["end"] <= 1.2:
             timeline[-1]["end"] = max(timeline[-1]["end"], round(we, 3))
         else:
@@ -534,6 +683,55 @@ def diarize_audio_spans(
     if on_progress:
         on_progress(100.0)
     return timeline, speakers
+
+
+# Diarization quality gates (see assess_diarization)
+MIN_SPEAKER_SHARE = 0.02          # speakers below 2% of diarized speech are not counted as "real"
+MAX_MIXED_SPEECH_SHARE = 0.60     # more mixed-voice speech than this: nothing about speakers is trustworthy
+COLLAPSE_RATIO = 0.5              # fewer real speakers than half the named characters: clusters collapsed
+COLLAPSE_MIN_CHARACTERS = 4
+
+
+def assess_diarization(
+    speakers: Optional[Dict[str, Dict[str, Any]]],
+    timeline: Sequence[Dict[str, Any]],
+    characters: Optional[Sequence[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """How far speaker ids can be trusted for gender and listener inference.
+
+    Returns `{"reliable": bool, "untrusted": [speaker ids], "reasons": [str], "speakers": n}`:
+    * `untrusted` lists speakers whose voice pitch spread shows several people (`voice_mixed`);
+    * `reliable` is False when the clustering as a whole collapsed — far fewer speakers than the
+      glossary names characters (job_320de88c99: 3 speakers for 11 characters) — or when most of
+      the speech sits in mixed clusters. Then every speaker id is untrusted.
+    """
+    reasons: List[str] = []
+    profiles = speakers or {}
+    seconds: Dict[str, float] = {}
+    for t in timeline or ():
+        sid = str(t.get("speaker") or "")
+        if sid:
+            seconds[sid] = seconds.get(sid, 0.0) + max(0.0, float(t["end"]) - float(t["start"]))
+    total = sum(seconds.values())
+    real = [sid for sid, sec in seconds.items() if total and sec / total >= MIN_SPEAKER_SHARE]
+    untrusted = sorted(
+        sid for sid, prof in profiles.items() if isinstance(prof, dict) and prof.get("voice_mixed")
+    )
+    mixed_share = (sum(seconds.get(sid, 0.0) for sid in untrusted) / total) if total else 0.0
+    named = [c for c in (characters or ()) if isinstance(c, dict) and str(c.get("name") or "").strip()]
+
+    reliable = True
+    if total and mixed_share > MAX_MIXED_SPEECH_SHARE:
+        reliable = False
+        reasons.append(f"{mixed_share:.0%} of the speech is in clusters that pool several voices")
+    if len(named) >= COLLAPSE_MIN_CHARACTERS and real and len(real) < COLLAPSE_RATIO * len(named):
+        reliable = False
+        reasons.append(f"{len(real)} speaker(s) found for {len(named)} named characters")
+    if not reliable:
+        untrusted = sorted(set(profiles) | set(seconds))
+    elif untrusted:
+        reasons.append(f"{len(untrusted)} speaker(s) pool several voices: {', '.join(untrusted)}")
+    return {"reliable": reliable, "untrusted": untrusted, "reasons": reasons, "speakers": len(real)}
 
 
 def _dominant_speaker(start: float, end: float, timeline: Sequence[Dict[str, Any]]) -> Optional[str]:
@@ -615,15 +813,43 @@ def split_raw_segments_by_speaker(
             else:
                 runs.append((sp, [w]))
 
-        # Merge any 1-word switch run back into adjacent run so fleeting flickers never fragment cues
+        # Absorb 1-word flickers in both directions and split only on genuine speaker turns
+        # (>= 2 words and >= 0.85s on both sides, separated by sentence punctuation or >= 0.45s pause).
+        from app.utils.text_rules import ends_sentence
+
+        def _run_dur(rw: List[TranscribedWord]) -> float:
+            return max(0.05, float(rw[-1].end) - float(rw[0].start)) if rw else 0.0
+
+        # If the opening run is a 1-word flicker before a longer run, fold it into the second run
+        if len(runs) >= 2 and len(runs[0][1]) < 2:
+            runs = [(runs[1][0], runs[0][1] + runs[1][1]), *runs[2:]]
+
         merged_runs: List[Tuple[Optional[str], List[TranscribedWord]]] = []
         for sp, r_words in runs:
-            if merged_runs and len(r_words) < 2:
-                prev_sp, prev_words = merged_runs[-1]
-                merged_runs[-1] = (prev_sp, prev_words + r_words)
-            else:
+            if not merged_runs:
                 merged_runs.append((sp, r_words))
+                continue
+            prev_sp, prev_words = merged_runs[-1]
+            pause = float(r_words[0].start) - float(prev_words[-1].end)
+            can_split = (
+                len(prev_words) >= 2
+                and len(r_words) >= 2
+                and _run_dur(prev_words) >= 0.85
+                and _run_dur(r_words) >= 0.85
+                and (ends_sentence(prev_words[-1].word.strip()) or pause >= 0.45)
+            )
+            if can_split:
+                merged_runs.append((sp, r_words))
+            else:
+                dom_sp = prev_sp if _run_dur(prev_words) >= _run_dur(r_words) else (sp or prev_sp)
+                merged_runs[-1] = (dom_sp, prev_words + r_words)
 
+        # Words inherit the speaker of the run they were merged into: a 1-word flicker that did not
+        # justify a split must not survive on the word and split the sentence later in segmentation
+        # (job_320de88c99: "Our" SPEAKER_01 / "king is indisposed." SPEAKER_03).
+        for run_sp, r_words in merged_runs:
+            for w in r_words:
+                w.speaker = run_sp
         if len(merged_runs) <= 1:
             sp = merged_runs[0][0] if merged_runs else _dominant_speaker(seg.start_time, seg.end_time, timeline)
             out.append(

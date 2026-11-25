@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "subbuild-studio-backend"
+version = "1.5.0"
+description = "SubBuild Studio backend for local transcription, vocal isolation, and AI subtitle translation."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.163.0,<1",
+    "uvicorn[standard]>=0.54.0",
+    "sqlmodel>=0.0.50,<0.1",
+    "faster-whisper>=1.2.1,<2",
+    "google-genai>=3.3.0,<4",
+    "pydantic-settings>=2.16.3,<3",
+    "python-multipart>=0.0.33",
+    "httpx>=0.28.1",
+    "Pillow>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=1.5.0",
+]
+vocal-isolation = [
+    "demucs>=4.0.1",
+    "audio-separator>=0.28.0",
+]
+whisperx = [
+    "whisperx>=3.3.0",
+]
+audio-extras = [
+    "demucs>=4.0.1",
+    "audio-separator>=0.28.0",
+    "whisperx>=3.3.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]

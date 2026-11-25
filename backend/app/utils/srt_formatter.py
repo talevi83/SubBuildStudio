@@ -82,6 +82,32 @@ def split_long_lines(text: str, max_chars_per_line: int = 42) -> str:
     return f"{' '.join(words[:best_i])}\n{' '.join(words[best_i:])}"
 
 
+def format_balanced_lines(text: str, max_chars_per_line: int = 42) -> str:
+    """Normalize subtitle text into at most 2 visually balanced lines while preserving speaker turns."""
+    if not text or not text.strip():
+        return ""
+    raw_lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not raw_lines:
+        return ""
+    # Preserve explicit dual-speaker turns ("- Speaker A\n- Speaker B")
+    if len(raw_lines) >= 2 and any(ln.startswith(("-", "–", "—")) for ln in raw_lines):
+        if len(raw_lines) <= 2:
+            return "\n".join(raw_lines)
+        # Collapse extra continuation lines onto the second turn so we never exceed 2 lines
+        turns: List[str] = []
+        for ln in raw_lines:
+            if ln.startswith(("-", "–", "—")) and len(turns) < 2:
+                turns.append(ln)
+            elif turns:
+                turns[-1] = f"{turns[-1]} {ln.lstrip('-–— ').strip()}".strip()
+            else:
+                turns.append(ln)
+        return "\n".join(turns[:2])
+
+    flat = " ".join(" ".join(raw_lines).split())
+    return split_long_lines(flat, max_chars_per_line=max_chars_per_line)
+
+
 def _get_seg_attr(seg: Any, key: str, default: Any = None) -> Any:
     """Retrieve attribute from dict or object."""
     if isinstance(seg, dict):

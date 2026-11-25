@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 
 
+_NON_GOOGLE_THINKING = ("default", "off", "minimal", "low", "medium", "high")
+
+
 class GeminiCallSettings(BaseModel):
     provider: ProviderName = "google"
     model: str
@@ -36,6 +39,10 @@ class GeminiCallSettings(BaseModel):
         else:
             if self.flex:
                 raise ValueError(f"Flex service tier is only supported for Google Gemini, not '{self.provider}'")
+            norm = (self.thinking or "default").strip().lower()
+            if norm not in _NON_GOOGLE_THINKING:
+                raise ValueError(f"Unsupported thinking level '{self.thinking}' for provider '{self.provider}'")
+            self.thinking = norm
         return self
 
 
@@ -68,15 +75,37 @@ class AppSettings(BaseModel):
         return self
 
 
-# Cheapest sensible thinking level per task (thinking tokens are billed as output)
-_PREFERRED_THINKING = {"translation": ("low",), "glossary": ("low",), "vision": ("minimal", "low")}
+# Cheapest sensible thinking level per task: routine batch translation and vision OCR use
+# minimal/low so thinking tokens (billed as output) do not dominate job cost, while the single
+# whole-show glossary pass keeps "default" reasoning depth for character & gender analysis.
+_PREFERRED_THINKING = {
+    "translation": ("minimal", "low", "off"),
+    "glossary": ("default",),
+    "vision": ("minimal", "low", "off"),
+}
 
 
 def _thinking_for(model: str, task: str, current: str = "default") -> str:
     allowed = allowed_thinking(model)
     if current != "default" and current in allowed:
         return current
-    return next((lvl for lvl in _PREFERRED_THINKING[task] if lvl in allowed), "default")
+    prefs = _PREFERRED_THINKING.get(task, ("low",))
+    return next((lvl for lvl in prefs if lvl in allowed), "default")
+
+
+def preferred_thinking(provider: str, model: str, task: str, current: str = "default") -> str:
+    """Return the recommended per-stage thinking level for `(provider, model, task)`."""
+    prov = (provider or "google").strip().lower()
+    if prov == "google":
+        return _thinking_for(model, task, current=current)
+    if current and current != "default" and current in _NON_GOOGLE_THINKING:
+        return current
+    low = (model or "").strip().lower()
+    if prov == "openai" and low.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4")):
+        if task == "glossary":
+            return "default"
+        return "minimal" if low.startswith(("gpt-5", "gpt-6")) else "low"
+    return "default"
 
 
 def _defaults() -> AppSettings:
@@ -165,7 +194,7 @@ def sync_defaults_with_discovered(catalog: Optional[list] = None) -> AppSettings
                 provider=cur_call.provider,
                 model=chosen["id"],
                 key_id=cur_call.key_id,
-                thinking=_thinking_for(chosen["id"], task) if cur_call.provider == "google" else "default",
+                thinking=preferred_thinking(cur_call.provider, chosen["id"], task),
                 flex=False,
             )
             changed = True
@@ -183,7 +212,7 @@ def sync_defaults_with_discovered(catalog: Optional[list] = None) -> AppSettings
                     provider=target_prov,
                     model=target_model,
                     key_id=None,
-                    thinking=_thinking_for(target_model, task) if target_prov == "google" else "default",
+                    thinking=preferred_thinking(target_prov, target_model, task),
                     flex=False,
                 )
                 changed = True

@@ -5,7 +5,9 @@ bottom-third crops for burned-in subtitles.
 """
 import asyncio
 import bisect
+import logging
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -14,6 +16,8 @@ from app.core.config import settings
 from app.pipeline.context import PipelineCancelled, PipelineContext
 from app.pipeline.stages.audio_stage import get_ffmpeg_bin
 from app.core.ffmpeg_safety import safe_input
+
+logger = logging.getLogger(__name__)
 
 # Grayscale thumbnails used to measure frame-to-frame change (scene cuts / chyron overlays / static cards)
 _THUMB_W, _THUMB_H = 64, 36
@@ -70,6 +74,7 @@ async def sample_frames(ctx: PipelineContext, interval: Optional[float] = None) 
         "-map", "[o1]", "-q:v", "5", str(out_dir / "f_%06d.jpg"),
         "-map", "[o2]", "-f", "rawvideo", str(thumbs_path),
     ]
+    started = time.monotonic()
     process = await asyncio.create_subprocess_exec(
         *command, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
     )
@@ -90,6 +95,10 @@ async def sample_frames(ctx: PipelineContext, interval: Optional[float] = None) 
         raise RuntimeError(f"Frame sampling failed: {err[-500:]}")
 
     jpgs = sorted(out_dir.glob("f_*.jpg"))
+    logger.info(
+        f"Frame sampling for {ctx.job_id}: ffmpeg decoded the video into {len(jpgs)} frame(s) "
+        f"every {interval:g}s in {time.monotonic() - started:.1f}s"
+    )
     thumbs = thumbs_path.read_bytes() if thumbs_path.exists() else b""
     size = _THUMB_W * _THUMB_H
     top_k = max(1, size // 20)  # ~5% of frame area (catches lower-third chyron / title overlays)

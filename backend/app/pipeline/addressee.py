@@ -50,7 +50,8 @@ CONF_ONE_NEIGHBOUR = 0.55
 CONF_NEAREST = 0.45
 CONF_LOCAL_AI = 0.65
 CONF_CAP = 0.97
-# A listener whose gender is known only from the pitch of their voice
+# A listener whose gender is known only from the pitch of their voice: high-confidence clean voice
+# pitch still qualifies, while medium-confidence pitch stays a guess (< HIGH).
 VOICE_FACTOR = {"high": 0.95, "medium": 0.8}
 VOICE_FACTOR_DEFAULT = 0.8
 
@@ -266,11 +267,14 @@ def _vocative_re(words: str) -> "re.Pattern[str]":
 
 _NAME = r"[A-Z][A-Za-z'\-]+"
 _MASC_STRONG_RE = _vocative_re(
-    r"sir|my\s+lord|my\s+king|(?-i:Mr\.?\s+" + _NAME + r")|dad|daddy|father|papa|grandpa|grandfather|son|brother|uncle|mister"
+    r"sir|sire|my\s+lord|my\s+king|your\s+(?:majesty|grace|highness)|"
+    r"(?-i:(?:Mr\.?|Lord|King|Father|Brother|Master|Sir)\s+" + _NAME + r")|"
+    r"dad|daddy|father|papa|grandpa|grandfather|son|brother|uncle|husband|priest|parson|vicar|abbot|bishop|master|mister"
 )
 _FEM_STRONG_RE = _vocative_re(
-    r"ma['’]?am|madam|my\s+lady|my\s+queen|(?-i:(?:Mrs|Ms|Miss)\.?\s+" + _NAME + r")|mom|mommy|mum|mother|mama|"
-    r"grandma|grandmother|sister|aunt|auntie"
+    r"ma['’]?am|madam|madame|milady|my\s+lady|my\s+queen|"
+    r"(?-i:(?:Mrs|Ms|Miss|Lady|Queen|Sister|Mother)\.?\s+" + _NAME + r")|"
+    r"mom|mommy|mum|mother|mama|grandma|grandmother|daughter|sister|aunt|auntie|wife|mistress"
 )
 _MASC_WEAK_RE = re.compile(
     _vocative_re(r"bro|dude|pal|buddy|king|boy").pattern + r"|(?:^hey\s+|,\s*)\bman\b(?:\s*[,!?.]|$)",
@@ -424,7 +428,7 @@ def _turn_candidate(
 
     prev_sp, prev_gap = "", float("inf")
     j, steps = i - 1, 0
-    while j >= 0 and steps < 4:
+    while j >= 0 and steps < 8:
         cand_sp = _speaker_of(dialogue[j])
         gap = float(_seg_get(dialogue[j + 1], "start_time", 0.0)) - float(_seg_get(dialogue[j], "end_time", 0.0))
         if not cand_sp:
@@ -433,7 +437,7 @@ def _turn_candidate(
             if gap <= max_turn_gap:
                 prev_sp, prev_gap = cand_sp, max(0.0, gap)
             break
-        if gap > 2.5:
+        if gap > 3.5:
             break
         j -= 1
         steps += 1
@@ -654,6 +658,66 @@ def resolve_addressees(
         group_present = any(direct[p] is not None and direct[p].number == "plural" for p in range(lo, hi))
         dyad = len(participants) == 2 and unlabeled * 5 <= (hi - lo) and not named_outsider and not group_present
 
+        # Count turns per speaker in this exchange and identify established scene interlocutors
+        # so a single 1-3 word bystander interjection ("No kings.") cannot hijack an ongoing
+        # confrontation's addressee, and pooled/quarantined speakers (`sp == ""`) inherit clear
+        # scene-wide singular interlocutor consensus instead of falling back to `unresolved`.
+        turn_counts: Dict[str, int] = {}
+        turn_words: Dict[str, int] = {}
+        for pos_idx, sid_val in enumerate(ids):
+            if sid_val:
+                turn_counts[sid_val] = turn_counts.get(sid_val, 0) + 1
+                w_cnt = len(re.findall(r"[A-Za-z\u0590-\u05FF']+", texts[lo + pos_idx]))
+                turn_words[sid_val] = turn_words.get(sid_val, 0) + w_cnt
+
+        established_targets: List[AddresseeRecord] = []
+        for p in range(lo, hi):
+            ev = direct[p]
+            if ev is not None and ev.confidence >= HIGH and ev.number == "singular" and ev.gender in ("male", "female"):
+                established_targets.append(ev)
+
+        scene_consensus: Optional[AddresseeRecord] = None
+        if not group_present:
+            gender_votes: Dict[str, List[Optional[AddresseeRecord]]] = {"male": [], "female": []}
+            for ev in established_targets:
+                gender_votes[ev.gender].append(ev)
+            for sid_val, cnt in turn_counts.items():
+                if cnt >= 2 or turn_words.get(sid_val, 0) >= 6:
+                    rec_sp = _from_speaker(sid_val, speakers, 0.66, "scene")
+                    if rec_sp is not None and rec_sp.gender in ("male", "female"):
+                        gender_votes[rec_sp.gender].append(rec_sp)
+            # Detect explicit royal/noble singular mentions ("the king", "the queen") anchoring the scene
+            exchange_blob = " ".join(texts[lo:hi])
+            has_king_anchor = bool(re.search(r"\b(?:the\s+king|your\s+majesty|my\s+lord)\b", exchange_blob, re.IGNORECASE))
+            has_queen_anchor = bool(re.search(r"\b(?:the\s+queen|my\s+lady|madam)\b", exchange_blob, re.IGNORECASE))
+            if has_king_anchor and not has_queen_anchor and not gender_votes["female"]:
+                gender_votes["male"].append(AddresseeRecord(gender="male", number="singular", confidence=0.68, source="scene"))
+            elif has_queen_anchor and not has_king_anchor and not gender_votes["male"]:
+                gender_votes["female"].append(AddresseeRecord(gender="female", number="singular", confidence=0.68, source="scene"))
+
+            if gender_votes["male"] and not gender_votes["female"]:
+                top_m = max(gender_votes["male"], key=lambda r: r.confidence if r else 0.0)
+                if top_m is not None:
+                    scene_consensus = AddresseeRecord(
+                        gender="male",
+                        number="singular",
+                        target=top_m.target,
+                        label=top_m.label,
+                        confidence=min(0.70, max(0.64, top_m.confidence * 0.92)),
+                        source="scene",
+                    )
+            elif gender_votes["female"] and not gender_votes["male"]:
+                top_f = max(gender_votes["female"], key=lambda r: r.confidence if r else 0.0)
+                if top_f is not None:
+                    scene_consensus = AddresseeRecord(
+                        gender="female",
+                        number="singular",
+                        target=top_f.target,
+                        label=top_f.label,
+                        confidence=min(0.70, max(0.64, top_f.confidence * 0.92)),
+                        source="scene",
+                    )
+
         for i in range(lo, hi):
             if not texts[i]:
                 continue
@@ -673,12 +737,40 @@ def resolve_addressees(
                     if prev_sp and prev_sp != sp and prev_ev is not None and prev_ev.target == sp and gap <= max_turn_gap:
                         candidates.append(_from_speaker(prev_sp, speakers, CONF_REPLY_TO_ADDRESS, "reply"))
                 turn = _turn_candidate(dialogue, i, speakers, max_turn_gap)
+                # Guard against a single brief bystander interjection (`<=4` words, 1 turn in exchange)
+                # overriding an established multi-turn interlocutor at low one-neighbour confidence.
+                if (
+                    turn is not None
+                    and turn.target
+                    and turn.confidence <= CONF_ONE_NEIGHBOUR + 1e-6
+                    and turn_counts.get(turn.target, 0) <= 1
+                    and turn_words.get(turn.target, 0) <= 4
+                ):
+                    established_other = [
+                        sid_o for sid_o in participants - {sp, turn.target}
+                        if turn_counts.get(sid_o, 0) >= 2 or turn_words.get(sid_o, 0) >= 6
+                    ]
+                    if len(established_other) == 1:
+                        alt = _from_speaker(established_other[0], speakers, 0.66, "scene")
+                        if alt is not None and alt.gender in ("male", "female"):
+                            candidates.append(alt)
+                            turn = None
                 candidates.append(turn)
                 if dyad and not _DUAL_SPEAKER_LINE_RE.search(str(_seg_get(dialogue[i], "original_text", "") or "")):
                     other = next(iter(participants - {sp}), "")
                     candidates.append(_from_speaker(other, speakers, CONF_DYAD, "dyad"))
                 if own is None or own.confidence < HIGH:
                     candidates.append(_carried(dialogue, direct, lo, hi, i))
+            elif (
+                (own is None or own.confidence < HIGH)
+                and scene_consensus is not None
+                and len(participants) >= 1
+                and needs_listener_gender(texts[i])
+            ):
+                # Quarantined/pooled speaker (`sp == ""`) inside a diarized exchange with unanimous
+                # singular addressee gender on a line that actually addresses a 2nd-person listener.
+                if not _DUAL_SPEAKER_LINE_RE.search(str(_seg_get(dialogue[i], "original_text", "") or "")):
+                    candidates.append(scene_consensus)
 
             # "yourself" is one person: a carried or guessed group does not apply to this line
             if _YOURSELF_RE.search(texts[i]):

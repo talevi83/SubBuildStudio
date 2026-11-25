@@ -18,6 +18,7 @@ The building blocks live next to this stage: `embedded_tracks` (layer 1), `frame
 """
 import asyncio
 import logging
+import time
 from typing import Any, List, Optional
 
 from app.core.config import settings
@@ -47,6 +48,29 @@ _SUB_MARGIN = READ_MARGIN     # always read this far before/after the foreign sp
 _SUB_EDGE = 3.0               # a subtitle this close to the scanned edge may continue past it...
 _SUB_EXTEND = 6.0             # ...so look this much further
 _SUB_MAX_EXTENSIONS = 3
+
+
+# Resolution used to screen frames before re-reading the hits at the user's setting (Cost-Saver)
+SCREENING_RESOLUTION = {"high": "medium", "medium": "low"}
+
+
+def screening_resolution(app_settings: Any) -> Optional[str]:
+    """Cheaper resolution for the first on-screen pass, or None for a single pass.
+
+    Only Gemini 3+ models bill images by `media_resolution`; other providers and Gemini 2.5 cost the
+    same at any setting, so a second pass would only add requests.
+    """
+    if not getattr(app_settings, "cost_saver_mode", False):
+        return None
+    vision = getattr(app_settings, "vision", None)
+    if vision is None or getattr(vision, "provider", "google") != "google":
+        return None
+    from app.core.model_catalog import media_resolution
+
+    screen = SCREENING_RESOLUTION.get(str(getattr(app_settings, "vision_media_resolution", "") or ""))
+    if screen is None or media_resolution(vision.model, screen) is None:
+        return None
+    return screen
 
 
 class OnScreenTextStage(PipelineStage):
@@ -155,8 +179,12 @@ class OnScreenTextStage(PipelineStage):
         stage: str,
         on_batch=None,
         sensitivity: int = 2,
+        resolution: Optional[str] = None,
     ):
-        """Send frames to Gemini Vision in concurrent batches. Returns (detections, failed_batches)."""
+        """Send frames to Gemini Vision in concurrent batches. Returns (detections, failed_batches).
+
+        `resolution` overrides the user's `vision_media_resolution` (used by the two-pass scan).
+        """
         from app.core.user_settings import load_settings
 
         app_settings = load_settings()
@@ -178,7 +206,7 @@ class OnScreenTextStage(PipelineStage):
                         detections.extend(await _gemini_detect(
                             client, model, batch,
                             thinking=app_settings.vision.thinking,
-                            resolution=app_settings.vision_media_resolution,
+                            resolution=resolution or app_settings.vision_media_resolution,
                             usage=ctx.usage,
                             instruction=instruction,
                             stage=stage,
@@ -207,10 +235,46 @@ class OnScreenTextStage(PipelineStage):
             ctx.warnings.append(f"Vision ({stage}): {failed} frame batch(es) failed — {errors[0][:300]}")
         return detections, failed
 
+    async def _scan_two_pass(self, ctx, client, frames, instruction, on_batch, sensitivity, app_settings):
+        """Screen frames at a cheaper resolution, then re-read only the frames that show text.
+
+        job_320de88c99 sent 488 frames at "high" (~1,170 tokens each) to find one title card.
+        With Cost-Saver on, Gemini 3+ vision models first screen every frame one resolution step
+        lower (SCREENING_RESOLUTION) and only the hits are read again at the user's resolution, so
+        the final text keeps full detail. If the confirmation pass fails, the screening result stands.
+        """
+        configured = app_settings.vision_media_resolution
+        screen_res = screening_resolution(app_settings)
+        if screen_res is None:
+            return await self._detect_batches(ctx, client, frames, instruction, "onscreen", on_batch, sensitivity=sensitivity)
+
+        screened, failed = await self._detect_batches(
+            ctx, client, frames, instruction, "onscreen", on_batch, sensitivity=sensitivity, resolution=screen_res
+        )
+        hit_times = {d.time for d in screened}
+        hits = [f for f in frames if f.time in hit_times]
+        logger.info(
+            f"On-screen screening at '{screen_res}': {len(hits)} of {len(frames)} frame(s) show text; "
+            f"re-reading them at '{configured}'"
+        )
+        if not hits:
+            return screened, failed
+        confirmed, confirm_failed = await self._detect_batches(
+            ctx, client, hits, instruction, "onscreen", None, sensitivity=sensitivity, resolution=configured
+        )
+        if confirm_failed:
+            # Keep the screening answer for frames whose confirmation batch did not come back
+            answered = {d.time for d in confirmed}
+            confirmed = confirmed + [d for d in screened if d.time not in answered]
+        return confirmed, failed
+
+
     async def _scan_frames(self, ctx: PipelineContext, client: Any, progress) -> None:
         if ctx.frame_task is None:
             ctx.frame_task = asyncio.ensure_future(sample_frames(ctx))
         await progress(5.0, "Sampling video frames...")
+        wait_started = time.monotonic()
+        sampling_was_done = bool(getattr(ctx.frame_task, "done", lambda: False)())
         task = asyncio.ensure_future(ctx.frame_task)
         out_dir = frames_dir(ctx.job_id)
         expected = max(1, int((ctx.duration or 0.0) / max(0.5, settings.onscreen_frame_interval)))
@@ -226,6 +290,8 @@ class OnScreenTextStage(PipelineStage):
                         pct = min(14.0, 5.0 + 9.0 * min(1.0, written / expected))
                         await progress(pct, f"Sampling video frames... ({written}/{expected})")
         frames: List[Frame] = await task
+        sampling_wait = time.monotonic() - wait_started
+        prefilter_secs = 0.0
         ctx.raise_if_cancelled()
 
         if ctx.embedded_dialogue_segments:
@@ -271,7 +337,9 @@ class OnScreenTextStage(PipelineStage):
             from app.pipeline.onscreen_prefilter import prefilter_frames
 
             before_count = len(selected)
+            prefilter_started = time.monotonic()
             clusters = await prefilter_frames(selected)
+            prefilter_secs = time.monotonic() - prefilter_started
             after_count = len(clusters)
             filtered_frames = max(0, before_count - after_count)
             if filtered_frames > 0 and ctx.usage is not None and hasattr(ctx.usage, "record_local_savings"):
@@ -315,8 +383,14 @@ class OnScreenTextStage(PipelineStage):
             await progress(15.0 + 50.0 * done / max(1, total), f"Scanned {done}/{total} frame batches")
 
         instruction = get_vision_system_instruction(sensitivity)
-        detections, failed = await self._detect_batches(
-            ctx, client, selected, instruction, "onscreen", on_batch, sensitivity=sensitivity
+        ai_started = time.monotonic()
+        detections, failed = await self._scan_two_pass(
+            ctx, client, selected, instruction, on_batch, sensitivity, app_settings
+        )
+        logger.info(
+            f"On-screen scan timing for {ctx.job_id}: frame sampling wait {sampling_wait:.1f}s "
+            f"(ffmpeg already finished: {sampling_was_done}), pre-filter {prefilter_secs:.1f}s, "
+            f"vision requests {time.monotonic() - ai_started:.1f}s for {len(selected)} frame(s)"
         )
         found = merge_frame_detections(
             detections,

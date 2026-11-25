@@ -20,6 +20,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{(_TEST_STORAGE / 'test.db').as_posix()
 os.environ["ALLOWED_HOSTS"] = '["localhost", "127.0.0.1", "testserver"]'
 # Never call the real Gemini API from tests
 os.environ["GEMINI_API_KEY"] = ""
+os.environ["GEMINI_BATCH_SIZE"] = "35"
 os.environ.setdefault("SUBBUILD_OFFLINE_DISCOVERY", "1")
 # Fixed session token (app.core.auth reads it at import); every TestClient sends it by default.
 # Tests that check the guard itself pass headers={"X-SubBuild-Token": ""} to go without it.
@@ -40,6 +41,19 @@ def _testclient_init_with_token(self, *args, headers=None, **kwargs):
 _starlette_testclient.TestClient.__init__ = _testclient_init_with_token
 
 _TESTS_ROOT = Path(__file__).resolve().parent
+# Prevent third-party packages installing a top-level `tests` package (e.g. pyannote-pipeline)
+# from shadowing `backend/tests` during pytest collection.
+import sys as _sys
+
+_BACKEND_ROOT = str(_TESTS_ROOT.parent)
+if _BACKEND_ROOT not in _sys.path or _sys.path[0] != _BACKEND_ROOT:
+    if _BACKEND_ROOT in _sys.path:
+        _sys.path.remove(_BACKEND_ROOT)
+    _sys.path.insert(0, _BACKEND_ROOT)
+_loaded_tests = _sys.modules.get("tests")
+if _loaded_tests is not None and not str(getattr(_loaded_tests, "__file__", "")).startswith(str(_TESTS_ROOT)):
+    for _k in [k for k in list(_sys.modules) if k == "tests" or k.startswith("tests.")]:
+        del _sys.modules[_k]
 _LAYER_MARKERS = {"unit", "api", "pipeline", "security"}
 _SMOKE_FILES = {
     "test_session_auth.py",

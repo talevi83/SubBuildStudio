@@ -102,6 +102,12 @@ _ADDED_COLUMNS = {
         "enable_diarization": "BOOLEAN NOT NULL DEFAULT 0",
         "speakers_json": "VARCHAR",
         "history_cursor": "INTEGER",
+        "condition_on_previous_text": "BOOLEAN NOT NULL DEFAULT 0",
+        "initial_prompt": "VARCHAR",
+        "transcription_provider": "VARCHAR NOT NULL DEFAULT 'faster_whisper'",
+        "vocal_isolation": "BOOLEAN NOT NULL DEFAULT 0",
+        "vocal_isolation_mode": "VARCHAR NOT NULL DEFAULT 'off'",
+        "comms_boost_mode": "VARCHAR NOT NULL DEFAULT 'off'",
     },
     "subtitle_segments": {
         "translation_failed": "BOOLEAN NOT NULL DEFAULT 0",

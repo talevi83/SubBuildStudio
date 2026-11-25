@@ -44,28 +44,146 @@ COMMS_VAD_PARAMETERS = dict(
 )
 COMMS_NO_SPEECH_THRESHOLD = 0.88
 COMMS_LOG_PROB_THRESHOLD = -1.25
-_MAX_NOTES_IN_PROMPT = 300
+DEFAULT_VAD_PARAMETERS = dict(
+    min_silence_duration_ms=500,
+    speech_pad_ms=200,
+)
+_MAX_NOTES_IN_PROMPT = 500
+_GENERIC_MEDIA_STEMS = {
+    "audio", "video", "movie", "clip", "sample", "test", "input", "output", "stream", "track",
+}
+_RELEASE_NOISE_RE = re.compile(
+    r"\b(?:2160p|1080p|720p|480p|4k|uhd|hdr|hdr10|dv|dovi|bluray|blu[\-\s]?ray|bdrip|brrip|"
+    r"web[\-\s]?dl|webrip|web|hdrip|dvdrip|remux|x264|x265|h\.?264|h\.?265|hevc|av1|aac\d*|"
+    r"ddp\d*|eac3|ac3|dts(?:\-hd)?|truehd|atmos|10bit|8bit|proper|repack|amzn|nf|dsnp|atvp|hmax)\b.*$",
+    re.IGNORECASE,
+) if "re" in globals() else None
+
+
+def derive_title_prompt(file_name: Optional[str]) -> Optional[str]:
+    """Extract a clean movie/episode title hint from media filename metadata when meaningful."""
+    import os
+    import re
+
+    raw = (file_name or "").strip()
+    if not raw:
+        return None
+    stem = os.path.splitext(os.path.basename(raw))[0].strip()
+    if not stem or len(stem) < 4:
+        return None
+    low_stem = stem.lower()
+    if low_stem in _GENERIC_MEDIA_STEMS or re.match(r"^(?:job|tmp|temp|v|f|audio|vid)[_\-][a-z0-9]+$", low_stem):
+        return None
+    if re.fullmatch(r"[0-9a-f_\-]{6,}", low_stem):
+        return None
+
+    cleaned = re.sub(r"[._]+", " ", stem)
+    cleaned = re.sub(r"\[[^\]]*\]|\{[^}]*\}", " ", cleaned)
+    cleaned = re.sub(
+        r"\b(?:2160p|1080p|720p|480p|4k|uhd|hdr|hdr10|dv|dovi|bluray|blu[\-\s]?ray|bdrip|brrip|"
+        r"web[\-\s]?dl|webrip|hdrip|dvdrip|remux|x264|x265|h\.?264|h\.?265|hevc|av1|aac\d*|"
+        r"ddp\d*|eac3|ac3|dts|truehd|atmos|10bit|8bit|proper|repack)\b.*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -_.,;:")
+    # Format trailing release year nicely: "The Uprising 2026" -> "The Uprising (2026)"
+    m_year = re.match(r"^(.+?)\s+\(?((?:19|20)\d{2})\)?$", cleaned)
+    if m_year:
+        title_part, year_part = m_year.group(1).strip(" -_("), m_year.group(2)
+        if len(title_part) >= 3:
+            cleaned = f"{title_part} ({year_part})"
+    words = [w for w in re.findall(r"[A-Za-z\u00C0-\u024F0-9']+", cleaned) if any(c.isalpha() for c in w)]
+    if not words or (len(words) == 1 and words[0].lower() in _GENERIC_MEDIA_STEMS):
+        return None
+    if len(cleaned) < 4:
+        return None
+    return cleaned[:120]
+
+
+def _sanitize_prompt_for_audio(raw_text: Optional[str], language: Optional[str]) -> str:
+    """Prepare user context/glossary text for Whisper's initial_prompt without cross-script bias.
+
+    When the spoken audio is not an RTL language (e.g. English), target-language RTL annotations
+    such as ``John Ball = ג'ון בול`` have their RTL spans stripped so the source-script proper
+    nouns (``John Ball``) survive cleanly. Pure-RTL notes (e.g. translator gender instructions in
+    Hebrew) return an empty string so Whisper is not nudged into another language.
+    """
+    import re
+    from app.utils.languages import is_rtl
+    from app.utils.rtl_fixer import contains_rtl
+
+    text = (raw_text or "").strip()
+    if not text:
+        return ""
+    lang = (language or "auto").strip().lower()
+    if lang not in ("auto", "none", "") and is_rtl(lang):
+        return re.sub(r"\s+", " ", text)[:_MAX_NOTES_IN_PROMPT].strip()
+
+    if not contains_rtl(text):
+        return re.sub(r"\s+", " ", text)[:_MAX_NOTES_IN_PROMPT].strip()
+
+    # Strip RTL character runs and adjacent mapping markers (=, ->, →) while preserving Latin/source terms
+    stripped = re.sub(
+        r"\s*(?:=|->|→|:)?\s*[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufeff]+"
+        r"(?:[\s'\"׳״\-–—()[\],./]*[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufeff]+)*\s*(?:=|->|→)?",
+        " ",
+        text,
+    )
+    # Remove empty parentheses/brackets left behind after stripping RTL explanations
+    stripped = re.sub(r"\(\s*\)|\[\s*\]", " ", stripped)
+    stripped = re.sub(r"\s*,\s*,+", ", ", stripped)
+    stripped = re.sub(r"\s+", " ", stripped).strip(" ,;:-=>→")
+    if not re.search(r"[A-Za-z0-9\u00C0-\u024F\u0400-\u04FF]", stripped):
+        return ""
+    return stripped[:_MAX_NOTES_IN_PROMPT].strip()
+
+
+def build_whisper_initial_prompt(
+    initial_prompt: Optional[str],
+    context_notes: Optional[str],
+    language: Optional[str],
+    comms_boost: bool = False,
+    file_name: Optional[str] = None,
+) -> Optional[str]:
+    """Build Whisper's ``initial_prompt`` from explicit ``initial_prompt``, ``context_notes``, title metadata, and mode primer."""
+    parts: List[str] = []
+    seen_cf: set[str] = set()
+    for candidate in (initial_prompt, context_notes):
+        cleaned = _sanitize_prompt_for_audio(candidate, language)
+        if cleaned and cleaned.casefold() not in seen_cf:
+            parts.append(cleaned)
+            seen_cf.add(cleaned.casefold())
+
+    if not parts and file_name:
+        title_hint = _sanitize_prompt_for_audio(derive_title_prompt(file_name), language)
+        if title_hint:
+            parts.append(title_hint)
+            seen_cf.add(title_hint.casefold())
+
+    if comms_boost:
+        lang = (language or "auto").strip().lower()
+        if lang in ("auto", "none", "", "en", "english"):
+            parts.append(TACTICAL_PRIMER)
+    return " ".join(parts) if parts else None
 
 
 def build_comms_prompt(context_notes: Optional[str], language: Optional[str]) -> Optional[str]:
     """
     Combine the user's show notes with the tactical primer for Whisper's initial_prompt.
 
-    - Notes written in a right-to-left script (e.g. Hebrew notes for the translator) are left out:
+    - Notes written purely in a right-to-left script (e.g. Hebrew notes for the translator) are left out:
       a prompt in another script pushes Whisper toward that language.
     - The English primer is only added when the audio is (or may be) English.
     - Whisper keeps the *last* ~224 prompt tokens, so the primer goes last and survives truncation.
     """
-    from app.utils.rtl_fixer import contains_rtl
-
-    parts = []
-    notes = (context_notes or "").strip()
-    if notes and not contains_rtl(notes):
-        parts.append(notes[:_MAX_NOTES_IN_PROMPT])
-    lang = (language or "auto").strip().lower()
-    if lang in ("auto", "none", "", "en", "english"):
-        parts.append(TACTICAL_PRIMER)
-    return " ".join(parts) if parts else None
+    return build_whisper_initial_prompt(
+        initial_prompt=None,
+        context_notes=context_notes,
+        language=language,
+        comms_boost=True,
+    )
 
 # ---------------------------------------------------------------------------
 # Process-wide model cache. Loading large-v3 takes many seconds and several GB of
@@ -108,6 +226,9 @@ class FasterWhisperTranscriber(BaseTranscriber):
         comms_boost: bool = False,
         context_notes: Optional[str] = None,
         high_speech_sensitivity: bool = False,
+        initial_prompt: Optional[str] = None,
+        condition_on_previous_text: Optional[bool] = None,
+        file_name: Optional[str] = None,
     ):
         self.model_name = model_size_or_path or settings.whisper_default_model
 
@@ -124,6 +245,13 @@ class FasterWhisperTranscriber(BaseTranscriber):
         self.comms_boost = comms_boost
         self.high_speech_sensitivity = high_speech_sensitivity
         self.context_notes = context_notes
+        self.initial_prompt = initial_prompt
+        self.file_name = file_name
+        self.condition_on_previous_text = (
+            settings.whisper_condition_on_previous_text
+            if condition_on_previous_text is None
+            else bool(condition_on_previous_text)
+        )
         # Comms mode & high speech sensitivity always run VAD with their respective parameters
         self.vad_filter = vad_filter or comms_boost or high_speech_sensitivity
         self.batch_size = settings.whisper_batch_size if batch_size is None else batch_size
@@ -161,13 +289,21 @@ class FasterWhisperTranscriber(BaseTranscriber):
         )
 
     def _start_transcription(self, model: WhisperModel, audio_path: str, lang_arg: Optional[str], batched: bool):
-        common = dict(
+        common: Dict[str, object] = dict(
             language=lang_arg,
             word_timestamps=True,
-            # Prevents the classic long-form failure where one hallucinated line is
-            # repeated for minutes: each window is decoded without the previous text.
-            condition_on_previous_text=False,
+            # Prevents cascading hallucinations across segments during music or crowd noise:
+            # each decoding window starts clean without conditioning on previous output.
+            condition_on_previous_text=self.condition_on_previous_text,
+            compression_ratio_threshold=settings.whisper_compression_ratio_threshold,
+            log_prob_threshold=settings.whisper_log_prob_threshold,
+            no_speech_threshold=settings.whisper_no_speech_threshold,
         )
+        if self.vad_filter:
+            common["vad_parameters"] = dict(
+                min_silence_duration_ms=settings.whisper_min_silence_duration_ms,
+                speech_pad_ms=settings.whisper_speech_pad_ms,
+            )
         if self.high_speech_sensitivity:
             common.update(
                 vad_parameters=dict(
@@ -185,11 +321,17 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 no_speech_threshold=COMMS_NO_SPEECH_THRESHOLD,
                 log_prob_threshold=COMMS_LOG_PROB_THRESHOLD,
             )
-            prompt = build_comms_prompt(self.context_notes, lang_arg)
-            if prompt:
-                common["initial_prompt"] = prompt
             if not lang_arg or lang_arg.lower() in ("en", "english"):
                 common["hotwords"] = TACTICAL_HOTWORDS
+        prompt = build_whisper_initial_prompt(
+            initial_prompt=self.initial_prompt,
+            context_notes=self.context_notes,
+            language=lang_arg,
+            comms_boost=self.comms_boost,
+            file_name=self.file_name or audio_path,
+        )
+        if prompt:
+            common["initial_prompt"] = prompt
         if batched:
             logger.info(f"Transcribing with batched inference (batch_size={self.batch_size})")
             pipeline = BatchedInferencePipeline(model=model)
@@ -231,11 +373,20 @@ class FasterWhisperTranscriber(BaseTranscriber):
             emitted = 0
             # segments_iter is lazy: decoding happens while we iterate, so breaking
             # out of the loop really stops the GPU work.
+            from app.pipeline.gap_recovery import is_watermark_hallucination
+            from app.utils.text_rules import has_spoken_content
+
             try:
                 for s in segments_iter:
                     if _should_stop():
                         _put(("CANCELLED", None))
                         return -1
+                    seg_text = (s.text or "").strip()
+                    if not seg_text or not has_spoken_content(seg_text):
+                        continue  # empty or punctuation-only ("...", ". .") breath/noise artifact
+                    if is_watermark_hallucination(seg_text, float(s.start), float(info.duration or 0.0) or None):
+                        logger.info(f"Filtered watermark/outro hallucination at {s.start:.1f}-{s.end:.1f}s: {seg_text[:70]!r}")
+                        continue
                     words = [
                         TranscribedWord(
                             word=w.word,
@@ -252,7 +403,7 @@ class FasterWhisperTranscriber(BaseTranscriber):
                         index=emitted,
                         start_time=float(s.start),
                         end_time=float(s.end),
-                        text=s.text.strip(),
+                        text=seg_text,
                         confidence=round(conf, 2),
                         words=words,
                     )))
@@ -406,7 +557,14 @@ class FasterWhisperTranscriber(BaseTranscriber):
         logger.info(f"Gap recovery: re-listening to {len(gaps)} uncovered stretch(es), {total:.0f}s, without VAD")
 
         model = self._get_model()
-        options = dict(
+        gap_prompt = build_whisper_initial_prompt(
+            initial_prompt=self.initial_prompt,
+            context_notes=self.context_notes,
+            language=language,
+            comms_boost=False,
+            file_name=self.file_name or audio_path,
+        )
+        options: Dict[str, object] = dict(
             language=language,
             clip_timestamps=[t for g in gaps for t in g],
             vad_filter=False,
@@ -414,7 +572,8 @@ class FasterWhisperTranscriber(BaseTranscriber):
             condition_on_previous_text=False,
             hallucination_silence_threshold=2.0,
         )
-        # No initial prompt / hotwords here: on noise Whisper tends to echo them back as "speech"
+        if gap_prompt:
+            options["initial_prompt"] = gap_prompt
         segments, _ = model.transcribe(audio, **options)
 
         context = [{"start": s.start_time, "end": s.end_time, "text": s.text} for s in spoken]
@@ -438,6 +597,7 @@ class FasterWhisperTranscriber(BaseTranscriber):
                 [float(getattr(w, "probability", 1.0)) for w in words],
                 spoken_span,
                 gr.neighbours_of(start, end, context + [{"start": r.start_time, "end": r.end_time, "text": r.text} for r in recovered]),
+                prompt_text=gap_prompt,
             )
             stats = (f"logprob {getattr(seg, 'avg_logprob', 0):.2f}, no_speech {getattr(seg, 'no_speech_prob', 0):.2f}")
             if reason:

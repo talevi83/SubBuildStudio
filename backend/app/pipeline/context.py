@@ -35,16 +35,26 @@ class PipelineContext:
     video_path: str
     file_name: str
     audio_wav_path: Optional[str] = None
+    raw_audio_wav_path: Optional[str] = None
     selected_audio_stream: int = 0
     duration: float = 0.0
     video_metadata: Dict[str, Any] = field(default_factory=dict)
     audio_streams: List[AudioStreamInfo] = field(default_factory=list)
     subtitle_streams: List[SubtitleStreamInfo] = field(default_factory=list)
+    transcription_provider: str = "faster_whisper"
+    effective_transcription_provider: str = "faster_whisper"
+    vocal_isolation: bool = False
+    vocal_isolation_mode: Optional[str] = None
+    isolated_vocals_path: Optional[str] = None
+    smart_audio_summary: Optional[str] = None
     whisper_model: str = "medium"
     source_language: Optional[str] = "auto"
     detected_language: Optional[str] = None
     vad_filter: bool = True
+    condition_on_previous_text: bool = False
+    initial_prompt: Optional[str] = None
     comms_boost: bool = False
+    comms_boost_mode: Optional[str] = None
     high_speech_sensitivity: bool = False
     use_embedded_subtitles: bool = True
     selected_subtitle_stream: Optional[int] = None
@@ -57,6 +67,8 @@ class PipelineContext:
     skip_end_credits: bool = True
     enable_diarization: bool = False
     diarization_timeline: List[Dict[str, Any]] = field(default_factory=list)
+    # assess_diarization() result: which speaker ids may drive gender/listener inference
+    diarization_quality: Optional[Dict[str, Any]] = None
     speakers: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     enable_translation: bool = False
     target_language: str = "Hebrew"

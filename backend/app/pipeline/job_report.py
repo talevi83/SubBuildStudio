@@ -40,9 +40,13 @@ def log_job_start(
                         f"language {ctx.sync_language} | Gemini matching {ctx.sync_use_gemini} | "
                         f"burned-in detection {settings.sync_detect_burned_in}")
         logger.info(f"File: {ctx.file_name} | duration {ctx.duration:.1f}s | path {ctx.video_path}")
+        engine_name = getattr(ctx, "transcription_provider", "faster_whisper") or "faster_whisper"
+        v_mode = getattr(ctx, "vocal_isolation_mode", None) or ("on" if getattr(ctx, "vocal_isolation", False) else "off")
+        c_mode = getattr(ctx, "comms_boost_mode", None) or ("on" if getattr(ctx, "comms_boost", False) else "off")
         logger.info(
-            f"Transcription: Whisper {ctx.whisper_model}, source language {ctx.source_language}, "
-            f"VAD {ctx.vad_filter}, comms boost {ctx.comms_boost}, on-screen text {ctx.detect_onscreen_text}"
+            f"Transcription: engine {engine_name}, model {ctx.whisper_model}, vocal isolation {v_mode}, "
+            f"source language {ctx.source_language}, VAD {ctx.vad_filter}, "
+            f"comms boost {c_mode}, on-screen text {ctx.detect_onscreen_text}"
         )
         translation_model = ctx.gemini_model or s.translation.model
         logger.info(
@@ -75,6 +79,16 @@ def log_job_summary(job_id: str, ctx: Optional[PipelineContext]) -> None:
                 f"Result: status {job.status.value}, {len(job.segments)} subtitles {counts}, "
                 f"untranslated {untranslated}, flagged failed {failed}"
             )
+            if ctx is not None:
+                eff_engine = getattr(ctx, "effective_transcription_provider", None) or getattr(
+                    ctx, "transcription_provider", "faster_whisper"
+                )
+                smart_summary = getattr(ctx, "smart_audio_summary", None)
+                logger.info(
+                    f"ASR Summary: effective engine {eff_engine}, "
+                    f"vocal isolation used {bool(getattr(ctx, 'isolated_vocals_path', None))}"
+                    + (f" | {smart_summary}" if smart_summary else "")
+                )
             if job.warning_message:
                 logger.warning(f"Job warning: {job.warning_message}")
             if job.error_message:
@@ -82,10 +96,13 @@ def log_job_summary(job_id: str, ctx: Optional[PipelineContext]) -> None:
         if ctx is not None and ctx.usage is not None:
             for name, st in ctx.usage.stages.items():
                 cost = "unknown" if st.cost_usd is None else f"${st.cost_usd:.4f}"
+                std_count = getattr(st, "standard_requests", None)
+                if std_count is None:
+                    std_count = max(0, st.requests - st.flex_requests - st.flex_fallbacks)
                 logger.info(
                     f"AI {name}: {st.model}, {st.requests} request(s), in {st.input_tokens}, "
                     f"out {st.output_tokens}, thinking {st.thinking_tokens}, cost {cost}, "
-                    f"Flex {st.flex_requests}, Flex->Standard {st.flex_fallbacks}"
+                    f"Flex {st.flex_requests}, Flex->Standard {st.flex_fallbacks}, Standard {std_count}"
                 )
             loc = getattr(ctx.usage, "local", None)
             if loc is not None and (loc.requests > 0 or loc.saved_tokens > 0 or loc.frames_filtered > 0):

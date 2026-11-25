@@ -27,25 +27,26 @@ def test_level_db_tells_silence_from_sound():
 
 
 @pytest.mark.parametrize("text,logprob,no_speech,ratio,probs,expected", [
-    ("Cease fire! Head shot!", -0.4, 0.2, 1.2, [0.8, 0.9, 0.85, 0.7], None),
-    ("Fire!", -0.3, 0.3, 1.0, [0.9], None),
+    ("Cease fire! Head shot!", -0.35, 0.15, 1.2, [0.8, 0.9, 0.85, 0.7], None),
+    ("Fire!", -0.3, 0.2, 1.0, [0.9], None),
     ("Thank you for watching!", -0.2, 0.1, 1.0, [0.9] * 4, "known hallucination"),
-    ("Thank you.", -0.5, 0.0, 1.0, [0.9], "known hallucination"),   # turbo's favourite invention on silence
-    ("We'll be right back.", -0.6, 0.0, 1.0, [0.9] * 4, "known hallucination"),
+    ("Thank you.", -0.2, 0.0, 1.0, [0.9], "known hallucination"),   # turbo's favourite invention on silence
+    ("We'll be right back.", -0.2, 0.0, 1.0, [0.9] * 4, "known hallucination"),
+    ("© BF-WATCH TV 2021", -0.2, 0.05, 1.0, [0.9] * 4, "known hallucination"),
     ("♪ ♪", -0.2, 0.1, 1.0, [0.9], "known hallucination"),
     ("Subtitles by the Amara.org community", -0.3, 0.1, 1.1, [0.9] * 5, "known hallucination"),
-    ("We need help, we're in the warehouse.", -1.3, 0.2, 1.2, [0.5] * 6, "low confidence"),
-    ("We need help, we're in the warehouse.", -1.3, 0.2, 1.2, [0.8] * 6, None),  # sure words under noise
-    ("Clear.", -1.46, 0.07, 1.0, [0.8], None),                    # a shout under gunfire (window logprob is the noise's)
-    ("Get the hell out of there!", -1.21, 0.19, 1.1, [0.75] * 6, None),
-    ("Go, go, go, go, go.", -0.5, 0.1, 1.4, [0.7] * 5, None),       # real repeated command
-    ("If you want to know exactly what's going on, you can find the link in", -1.0, 0.5, 1.0, [0.8] * 14, "known hallucination"),
-    ("Okay.", -0.95, 0.4, 1.0, [0.8], "low confidence"),          # short lines are held to a higher bar
-    ("I know, Mike.", -0.66, 0.03, 1.0, [0.56, 0.6, 0.52], None),  # a real line from the episode
-    ("over, copy, roger, wilco, sitrep, klicks, callsign", -0.4, 0.2, 1.3, [0.9] * 7, "echo of the prompt words"),
-    ("Get out of there now!", -0.5, 0.8, 1.1, [0.8] * 5, "probably not speech"),
+    ("We need help, we're in the warehouse.", -0.97, 0.2, 1.2, [0.8] * 6, "low confidence"),
+    ("We need help, we're in the warehouse.", -0.38, 0.18, 1.2, [0.8] * 6, None),
+    ("Clear.", -0.42, 0.07, 1.0, [0.8], None),
+    ("Get the hell out of there!", -0.45, 0.19, 1.1, [0.75] * 6, None),
+    ("Go, go, go, go, go.", -0.45, 0.1, 1.4, [0.7] * 5, None),       # real repeated command
+    ("If you want to know exactly what's going on, you can find the link in", -0.3, 0.1, 1.0, [0.8] * 14, "known hallucination"),
+    ("Okay.", -0.52, 0.2, 1.0, [0.8], "low confidence"),             # short lines are held to an even higher bar
+    ("I know, Mike.", -0.42, 0.03, 1.0, [0.75, 0.72, 0.70], None),
+    ("over, copy, roger, wilco, sitrep, klicks, callsign", -0.3, 0.1, 1.3, [0.9] * 7, "echo of the prompt words"),
+    ("Get out of there now!", -0.35, 0.32, 1.1, [0.8] * 5, "probably not speech"),
     ("go go go go go go go go go", -0.3, 0.1, 3.1, [0.9] * 9, "repetitive"),
-    ("Masks on, everybody, now.", -0.5, 0.2, 1.1, [0.3] * 4, "unsure words"),
+    ("Masks on, everybody, now.", -0.35, 0.15, 1.1, [0.60] * 4, "unsure words"),
 ])
 def test_rejection_reason(text, logprob, no_speech, ratio, probs, expected):
     reason = gr.rejection_reason(text, logprob, no_speech, ratio, probs, duration=1.5)
@@ -58,17 +59,17 @@ def test_duplicates_of_neighbouring_lines_are_dropped():
 
 
 def test_repeated_shouted_commands_are_kept():
-    # "Fire! ... Fire! ... Fire!" on a shooting range: 0.1s words, mediocre probability, same as neighbours
-    for text, probs in [("Fire!", [0.41]), ("Fire!", [0.55]), ("Move!", [0.6]), ("Cease fire!", [0.5, 0.5])]:
-        assert gr.rejection_reason(text, -0.52, 0.04, 1.0, probs, duration=0.1, neighbours=["Fire!"]) is None
-    assert gr.rejection_reason("Fire!", -0.5, 0.6, 1.0, [0.9], duration=0.1) == "probably not speech (no_speech 0.60)"
+    # "Fire! ... Fire! ... Fire!" on a shooting range: 0.1s words, clean speech confidence, same as neighbours
+    for text, probs in [("Fire!", [0.72]), ("Fire!", [0.85]), ("Move!", [0.78]), ("Cease fire!", [0.75, 0.70])]:
+        assert gr.rejection_reason(text, -0.45, 0.04, 1.0, probs, duration=0.1, neighbours=["Fire!"]) is None
+    assert gr.rejection_reason("Fire!", -0.45, 0.6, 1.0, [0.9], duration=0.1) == "probably not speech (no_speech 0.60)"
     assert gr.rejection_reason("Ugh!", -0.8, 0.5, 1.0, [0.03], duration=0.1) == "too short"
-    assert gr.rejection_reason("Okay.", -0.5, 0.1, 1.0, [0.9], duration=0.1) == "too short"
+    assert gr.rejection_reason("Okay.", -0.4, 0.1, 1.0, [0.9], duration=0.1) == "too short"
 
 
 def test_lines_stretched_over_silence_are_dropped():
-    assert gr.rejection_reason("There you go.", -0.5, 0.1, 1.0, [0.9] * 3, duration=11.2).startswith("stretched")
-    assert gr.rejection_reason("There you go.", -0.5, 0.1, 1.0, [0.9] * 3, duration=1.2) is None
+    assert gr.rejection_reason("There you go.", -0.4, 0.1, 1.0, [0.9] * 3, duration=11.2).startswith("stretched")
+    assert gr.rejection_reason("There you go.", -0.4, 0.1, 1.0, [0.9] * 3, duration=1.2) is None
 
 
 class _GapModel:

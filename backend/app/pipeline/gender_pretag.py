@@ -246,6 +246,53 @@ def build_scene_batches(
     return batches
 
 
+# Lines on either side of an asked line in which a named character grounds a listener hint
+GROUNDING_WINDOW = 2
+
+
+def _character_name_patterns(glossary: Optional[Dict[str, Any]]) -> List[Tuple["re.Pattern[str]", str]]:
+    """`(name regex, M|F)` for every glossary character with a known gender (name and aliases)."""
+    from app.pipeline.speaker_match import _extract_character_aliases
+
+    chars = [c for c in (glossary or {}).get("characters") or [] if isinstance(c, dict)]
+    out: List[Tuple["re.Pattern[str]", str]] = []
+    for _idx, ch, aliases in _extract_character_aliases(chars):
+        code = _normalize_gender_code(ch.get("gender"))
+        if code not in ("M", "F"):
+            continue
+        for alias in aliases:
+            alias = str(alias or "").strip()
+            if len(alias) >= 3:
+                out.append((re.compile(rf"(?<!\w){re.escape(alias)}(?!\w)", re.IGNORECASE), code))
+    return out
+
+
+def grounded_listener_hint(
+    answer: Optional[str],
+    line_text: str,
+    neighbour_texts: Sequence[str],
+    name_patterns: Sequence[Tuple["re.Pattern[str]", str]],
+) -> Optional[str]:
+    """Keep a local model's listener answer (M/F/G) only when the transcript itself supports it.
+
+    A small local model guesses "you" genders from thin air (job_320de88c99: 198 hints, systemic
+    inversions). An M/F answer survives only if a glossary character of that gender is named in the
+    line or within `GROUNDING_WINDOW` lines of it; a G answer only if the line addresses a group.
+    """
+    code = _normalize_gender_code(answer)
+    if code is None:
+        return None
+    if code == "G":
+        from app.pipeline.addressee import _PLURAL_VOCATIVE_RE, _YOURSELVES_RE
+
+        return "G" if (_PLURAL_VOCATIVE_RE.search(line_text or "") or _YOURSELVES_RE.search(line_text or "")) else None
+    texts = [line_text or "", *neighbour_texts]
+    for pattern, gender in name_patterns:
+        if gender == code and any(pattern.search(t) for t in texts):
+            return code
+    return None
+
+
 async def pretag_gender_hints(
     segments: Sequence[Any],
     target_lang: str = "Hebrew",
@@ -313,6 +360,8 @@ async def pretag_gender_hints(
         asked, context_segments or segments, speakers=speakers, known_to=known_to_by_index, batch_size=batch_size
     )
     hints: Dict[int, str] = {}
+    name_patterns = _character_name_patterns(glossary)
+    dropped_ungrounded = 0
 
     try:
         from app.core.model_catalog import estimated_thinking_tokens, request_cost
@@ -363,12 +412,22 @@ async def pretag_gender_hints(
                             continue
                         if seg_idx not in ask_set:
                             continue  # a context line: the model was not asked about it
-                        sp_raw = item.get("speaker") or item.get("speaker_gender")
-                        if seg_idx in known_gender_by_index:
-                            sp_raw = known_gender_by_index[seg_idx]
+                        # The local model's own speaker-gender guess is never used: only a speaker
+                        # gender that is already known (diarization + glossary) is passed on
+                        sp_raw = known_gender_by_index.get(seg_idx)
                         to_raw = item.get("to") or item.get("addressee") or item.get("addressee_gender")
                         if seg_idx in known_to_by_index:
                             to_raw = known_to_by_index[seg_idx]
+                        else:
+                            texts = [str(ln.get("text") or "") for ln in batch["lines"]]
+                            pos = next((k for k, ln in enumerate(batch["lines"]) if ln.get("index") == seg_idx), None)
+                            if pos is None:
+                                continue
+                            near = texts[max(0, pos - GROUNDING_WINDOW):pos] + texts[pos + 1:pos + 1 + GROUNDING_WINDOW]
+                            grounded = grounded_listener_hint(to_raw, texts[pos], near, name_patterns)
+                            if to_raw and _normalize_gender_code(to_raw) and grounded is None:
+                                dropped_ungrounded += 1
+                            to_raw = grounded
                         tag = format_gender_tag(sp_raw, to_raw)
                         if tag:
                             hints[seg_idx] = tag
@@ -395,8 +454,11 @@ async def pretag_gender_hints(
         logger.debug(f"Local gender pre-tagger stopped early ({e}); continuing with Gemini")
         return hints
 
-    if hints:
-        logger.info(f"Local Ollama ({model}) pre-tagged gender hints for {len(hints)} segment(s)")
+    if hints or dropped_ungrounded:
+        logger.info(
+            f"Local Ollama ({model}) pre-tagged gender hints for {len(hints)} segment(s); "
+            f"dropped {dropped_ungrounded} listener guess(es) no character name or group address supports"
+        )
     return hints
 
 

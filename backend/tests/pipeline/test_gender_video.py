@@ -166,12 +166,12 @@ async def test_translator_is_told_who_speaks_to_whom_and_a_wrong_you_is_fixed(sc
         fixing = "GENDER CHECK" in config.system_instruction
         out = []
         for item in payload["target_batch"]:
-            if item["index"] == 1:
+            if item["id"] == 1:
                 # First try: a masculine "you" for a line said to the woman
                 text = "היי, את לקחת את הקפה שלי מהשיש?" if fixing else "היי, אתה לקחת את הקפה שלי מהשיש?"
                 out.append({"index": 1, "translated_text": text, "addressee_form": "f" if fixing else "m"})
             else:
-                out.append({"index": item["index"], "translated_text": "כן, השארתי אותו ממש ליד המחברת שלך.",
+                out.append({"index": item["id"], "translated_text": "כן, השארתי אותו ממש ליד המחברת שלך.",
                             "addressee_form": "m"})
         return types.SimpleNamespace(text=json.dumps({"translations": out}))
 
@@ -182,14 +182,15 @@ async def test_translator_is_told_who_speaks_to_whom_and_a_wrong_you_is_fixed(sc
     )
     await TranslateStage(translator=_translator(fake_generate, monkeypatch)).execute(ctx)
 
-    first = {item["index"]: item for item in payloads[0]["target_batch"]}
+    first = {item["id"]: item for item in payloads[0]["target_batch"]}
     # The man asks the woman; the woman answers the man — given as facts, not guesses
-    assert first[1]["speaker"] == "SPEAKER_01 (male)" and first[1]["addressee"] == "SPEAKER_02 (female)"
-    assert first[2]["speaker"] == "SPEAKER_02 (female)" and first[2]["addressee"] == "SPEAKER_01 (male)"
+    # Genders come from the voice here, so the translator is told they are estimates
+    assert first[1]["speaker"] == "SPEAKER_01 (male by voice)" and first[1]["addressee"] == "SPEAKER_02 (female)"
+    assert first[2]["speaker"] == "SPEAKER_02 (female by voice)" and first[2]["addressee"] == "SPEAKER_01 (male)"
     assert "`addressee_form`" in prompts[0]
 
     # The masculine "you" said to the woman was caught and translated once more, for that line only
-    assert len(payloads) == 2 and [it["index"] for it in payloads[1]["target_batch"]] == [1]
+    assert len(payloads) == 2 and [it["id"] for it in payloads[1]["target_batch"]] == [1]
     rows = {s["index"]: s for s in ctx.refined_segments}
     assert rows[1]["translated_text"] == "היי, את לקחת את הקפה שלי מהשיש?"
     assert rows[1]["addressee"]["gender"] == "female" and rows[1]["addressee"]["used"] == "f"

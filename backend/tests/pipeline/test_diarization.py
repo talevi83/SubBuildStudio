@@ -160,7 +160,7 @@ async def test_glossary_speaker_sync_and_translation_payload(monkeypatch):
                 text=json.dumps(
                     {
                         "translations": [
-                            {"index": item["index"], "translated_text": f"ת{item['index']}"}
+                            {"index": item["id"], "translated_text": f"ת{item['id']}"}
                             for item in payload["target_batch"]
                         ]
                     }
@@ -680,7 +680,7 @@ async def test_translate_stage_passes_speaker_and_addressee_to_translator_and_lo
         return types.SimpleNamespace(
             text=json.dumps({
                 "translations": [
-                    {"index": item["index"], "translated_text": f"תרגום מלא {item['index']}"}
+                    {"index": item["id"], "translated_text": f"תרגום מלא {item['id']}"}
                     for item in payload["target_batch"]
                 ]
             })

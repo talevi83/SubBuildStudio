@@ -372,10 +372,12 @@ async def test_translator_adaptive_batch_split_and_provider_batch_sizes(tmp_path
     monkeypatch.setattr(settings, "storage_dir", tmp_path)
     pk.add_key("openai", api_key="sk-test-oai", label="OAI")
 
-    tr_oai = GeminiTranslator(provider="openai", model_name="gpt-5-mini")
+    tr_oai_mini = GeminiTranslator(provider="openai", model_name="gpt-5-mini")
+    tr_oai_full = GeminiTranslator(provider="openai", model_name="gpt-5")
     tr_ollama = GeminiTranslator(provider="ollama", model_name="gemma4:12b")
-    assert tr_oai.batch_size == 50
-    assert tr_ollama.batch_size == 30
+    assert tr_oai_mini.batch_size == 18
+    assert tr_oai_full.batch_size == 35
+    assert tr_ollama.batch_size == 18
 
     # Simulate a 30-segment batch failing with truncated empty JSON when size > 20, then succeeding when split to 15+15
     calls = []
@@ -389,7 +391,7 @@ async def test_translator_adaptive_batch_split_and_provider_batch_sizes(tmp_path
             return SimpleNamespace(text="")
         return SimpleNamespace(
             text=json.dumps({
-                "translations": [{"index": item["index"], "translated_text": f"שורה {item['index']}"} for item in batch]
+                "translations": [{"index": item["id"], "translated_text": f"שורה {item['id']}"} for item in batch]
             })
         )
 
@@ -662,3 +664,87 @@ def test_get_settings_awaits_initial_discovery_race(client: TestClient, monkeypa
     res2 = client.get("/api/settings")
     assert res2.status_code == 200
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_anthropic_temperature_omission_and_http400_retry(monkeypatch):
+    from app.providers.llm.client import ProviderSpec, call_text_json
+
+    sent_payloads = []
+
+    async def fake_post(url, headers, payload, timeout, provider_label, max_attempts=4):
+        sent_payloads.append(dict(payload))
+        if payload.get("model") == "claude-future-custom" and "temperature" in payload:
+            raise RuntimeError(
+                'Anthropic HTTP 400: {"type":"error","error":{"type":"invalid_request_error",'
+                '"message":"\'temperature\' is deprecated for this model."}}'
+            )
+        return {
+            "content": [{"type": "text", "text": json.dumps({"status": "ok"})}],
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+
+    monkeypatch.setattr("app.providers.llm.client._post_json_with_retry", fake_post)
+
+    # Known Claude 5.5 omits temperature upfront
+    res_55 = await call_text_json(
+        ProviderSpec(provider="anthropic", model="claude-sonnet-5-5", api_key="sk-ant-1"),
+        system_instruction="sys",
+        prompt="hi",
+    )
+    assert json.loads(res_55.text) == {"status": "ok"}
+    assert "temperature" not in sent_payloads[-1]
+
+    # Claude 4.5 includes temperature
+    sent_payloads.clear()
+    await call_text_json(
+        ProviderSpec(provider="anthropic", model="claude-sonnet-4-5", api_key="sk-ant-1"),
+        system_instruction="sys",
+        prompt="hi",
+        temperature=0.2,
+    )
+    assert sent_payloads[-1]["temperature"] == 0.2
+
+    # Unrecognized Anthropic model rejecting temperature retries once without temperature
+    sent_payloads.clear()
+    res_future = await call_text_json(
+        ProviderSpec(provider="anthropic", model="claude-future-custom", api_key="sk-ant-1"),
+        system_instruction="sys",
+        prompt="hi",
+        temperature=0.2,
+    )
+    assert json.loads(res_future.text) == {"status": "ok"}
+    assert len(sent_payloads) == 2
+    assert "temperature" in sent_payloads[0]
+    assert "temperature" not in sent_payloads[1]
+
+
+def test_2026_models_pricing_and_promo_schedule():
+    from datetime import date
+    from app.core.provider_catalog import build_model_entry
+
+    sonnet55 = build_model_entry("anthropic", "claude-sonnet-5-5", available=True)
+    assert sonnet55["input_per_m"] == 2.00 and sonnet55["output_per_m"] == 10.00
+    opus55 = build_model_entry("anthropic", "claude-opus-5-5", available=True)
+    assert opus55["input_per_m"] == 4.00 and opus55["output_per_m"] == 20.00
+    opus48 = build_model_entry("anthropic", "claude-opus-4-8", available=True)
+    assert opus48["input_per_m"] == 5.00 and opus48["output_per_m"] == 25.00
+    haiku55 = build_model_entry("anthropic", "claude-haiku-5-5", available=True)
+    assert haiku55["input_per_m"] == 0.10 and haiku55["output_per_m"] == 0.50
+    fable52 = build_model_entry("anthropic", "claude-fable-5-2", available=True)
+    assert fable52["input_per_m"] == 8.00 and fable52["output_per_m"] == 40.00
+
+    luna56 = build_model_entry("openai", "gpt-5.6-luna", available=True)
+    assert luna56["input_per_m"] == 0.20 and luna56["output_per_m"] == 1.20
+    assert luna56["tasks"] == ["vision"]
+
+    hydrogen = build_model_entry("google", "gemini-4-hydrogen", available=True)
+    assert hydrogen["input_per_m"] == 1.50 and hydrogen["output_per_m"] == 7.50
+    neon = build_model_entry("google", "gemini-4-neon", available=True)
+    assert neon["input_per_m"] == 3.00 and neon["output_per_m"] == 15.00
+
+    carbon_promo = build_model_entry("google", "gemini-4-carbon", available=True, day=date(2026, 11, 25))
+    assert carbon_promo["input_per_m"] == 2.00 and carbon_promo["output_per_m"] == 10.00
+    assert carbon_promo["price_change"]["after"] == "2026-11-30"
+    carbon_std = build_model_entry("google", "gemini-4-carbon", available=True, day=date(2026, 12, 1))
+    assert carbon_std["input_per_m"] == 4.00 and carbon_std["output_per_m"] == 20.00

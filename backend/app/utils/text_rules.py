@@ -64,3 +64,15 @@ def ends_sentence(word: str) -> bool:
 
 def ends_clause(word: str) -> bool:
     return bool(CLAUSE_END.search(word.strip()))
+
+
+_SPOKEN_CHAR_RE = re.compile(r"[^\W_]", re.UNICODE)
+
+
+def has_spoken_content(text: str) -> bool:
+    """True when `text` holds at least one letter or digit (in any script).
+
+    ASR on breaths, clicks and silence emits cues like ".", ". .", "..." or "♪": they carry nothing
+    to read or translate and must never reach the subtitle file.
+    """
+    return bool(_SPOKEN_CHAR_RE.search(text or ""))

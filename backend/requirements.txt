@@ -13,3 +13,7 @@ Pillow>=13.0.0
 # CUDA runtime libraries for GPU transcription (loaded by app/core/hardware.py on Windows/Linux x86_64)
 nvidia-cublas-cu12; sys_platform == 'win32' or (sys_platform == 'linux' and platform_machine == 'x86_64')
 nvidia-cudnn-cu12; sys_platform == 'win32' or (sys_platform == 'linux' and platform_machine == 'x86_64')
+
+# Optional vocal isolation (demucs / audio-separator) & WhisperX (batched ASR + phoneme alignment):
+# Kept out of base requirements so lightweight CTranslate2 setups stay fast and conflict-free.
+# Install with: pip install -r requirements-optional.txt  (or: pip install -e ".[audio-extras]")

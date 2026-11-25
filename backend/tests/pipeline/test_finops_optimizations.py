@@ -39,12 +39,12 @@ def _clean_settings_file():
 
 
 # ---------------------------------------------------------------------------
-# 1. Default batch size 120 & prune_glossary_for_batch
+# 1. Default batch size (25-40 lines) & prune_glossary_for_batch
 # ---------------------------------------------------------------------------
 
-def test_default_batch_size_is_120():
-    assert Settings.model_fields["gemini_batch_size"].default == 120
-    assert settings.gemini_batch_size == 120
+def test_default_batch_size_is_35():
+    assert Settings.model_fields["gemini_batch_size"].default == 35
+    assert 25 <= settings.gemini_batch_size <= 40
     assert Settings.model_fields["cost_saver_mode"].default is False
 
 
@@ -102,7 +102,7 @@ async def test_gemini_translator_prunes_glossary_per_batch():
             return types.SimpleNamespace(
                 text=json.dumps({
                     "translations": [
-                        {"index": it["index"], "translated_text": f"תרגום {it['index']}"}
+                        {"index": it["id"], "translated_text": f"תרגום {it['id']}"}
                         for it in payload["target_batch"]
                     ]
                 })
@@ -123,7 +123,13 @@ async def test_gemini_translator_prunes_glossary_per_batch():
         ],
         "register_notes": "",
     }
-    tr = GeminiTranslator(api_key="test-key", batch_size=2, prev_context_size=0, lookahead_size=0)
+    tr = GeminiTranslator(
+        api_key="test-key",
+        batch_size=2,
+        prev_context_size=0,
+        lookahead_size=0,
+        prune_glossary=True,
+    )
     tr.client = types.SimpleNamespace(models=_FakeModels())
 
     segs = [
@@ -140,7 +146,7 @@ async def test_gemini_translator_prunes_glossary_per_batch():
             return types.SimpleNamespace(
                 text=json.dumps({
                     "translations": [
-                        {"index": it["index"], "translated_text": f"תרגום מלא של שורה מספר {it['index']}"}
+                        {"index": it["id"], "translated_text": f"תרגום מלא של שורה מספר {it['id']}"}
                         for it in payload["target_batch"]
                     ]
                 })
@@ -328,12 +334,17 @@ async def test_gender_pretag_falls_back_when_ollama_unreachable_and_works_when_m
     monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
 
     assert pick_ollama_model([{"name": "llama3:8b"}, {"name": "qwen2.5:7b"}]) == "qwen2.5:7b"
-    hints = await pretag_gender_hints(segs, target_lang="Hebrew")
-    assert hints == {1: "[Speaker: M, To: F]"}
+    # Ungrounded: no character is named, so the "To: F" guess is dropped; the model's own
+    # speaker-gender guess is never used
+    assert await pretag_gender_hints(segs, target_lang="Hebrew") == {}
+    segs[0] = TranslatableSegment(1, 0, 2, "Sarah, are you sure you're ready?")
+    hints = await pretag_gender_hints(segs, target_lang="Hebrew",
+                                      glossary={"characters": [{"name": "Sarah", "gender": "female"}]})
+    assert hints == {1: "[Speaker: ?, To: F]"}
     assert posted_bodies[-1]["model"] == "qwen2.5:7b-instruct"
     assert posted_bodies[-1]["format"] == "json"
     assert posted_bodies[-1]["keep_alive"] == 0
-    assert "#1: [Speaker: M, To: F]" in format_hints_for_context_notes(hints)
+    assert "#1: [Speaker: ?, To: F]" in format_hints_for_context_notes(hints)
 
 
 # ---------------------------------------------------------------------------

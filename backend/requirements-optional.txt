@@ -1,0 +1,8 @@
+# Optional audio pre-processing and WhisperX dependencies for SubBuild Studio.
+# Install CUDA PyTorch + Torchaudio matching your GPU together with these extras using uv:
+#   uv pip install --python backend\.venv\Scripts\python.exe --extra-index-url https://download.pytorch.org/whl/cu128 torch torchaudio -r backend\requirements-optional.txt
+# Or with standard pip:
+#   pip install --extra-index-url https://download.pytorch.org/whl/cu128 torch torchaudio -r backend/requirements-optional.txt
+demucs>=4.0.1
+audio-separator>=0.28.0
+whisperx>=3.3.0

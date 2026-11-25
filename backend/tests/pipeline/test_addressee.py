@@ -261,8 +261,13 @@ async def test_local_pretag_asks_only_about_open_lines_and_ignores_answers_it_di
         TranslatableSegment(3, 4, 6, "The door is open."),
     ]
     known = {1: AddresseeRecord(gender="female", number="singular", confidence=0.95, source="vocative")}
-    hints = await pretag_gender_hints(segs, target_lang="Hebrew", addressees=known)
-    # line 1 is settled, line 3 has nothing gendered: only the imperative was asked, with its scene
+    # Without a glossary nothing grounds the model's "F" for line 2: the guess is dropped
+    assert await pretag_gender_hints(segs, target_lang="Hebrew", addressees=known) == {}
+    posted.clear()
+    glossary = {"characters": [{"name": "Sarah", "gender": "female"}]}
+    hints = await pretag_gender_hints(segs, target_lang="Hebrew", addressees=known, glossary=glossary)
+    # line 1 is settled, line 3 has nothing gendered: only the imperative was asked, with its scene;
+    # its "F" is kept because Sarah (female) is named on the line before it
     assert hints == {2: "[Speaker: ?, To: F]"}
     assert len(posted) == 1
     sent = json.loads(posted[0]["prompt"].split("Lines: ", 1)[1])
@@ -328,7 +333,7 @@ async def test_translator_gets_facts_guesses_or_nothing_and_rows_keep_their_reco
         payload = json.loads(contents)
         payloads.append(payload)
         return types.SimpleNamespace(text=json.dumps({"translations": [
-            {"index": it["index"], "translated_text": f"תרגום {it['index']}", "addressee_form": "f" if it["index"] == 1 else ""}
+            {"index": it["id"], "translated_text": f"תרגום {it['id']}", "addressee_form": "f" if it["id"] == 1 else ""}
             for it in payload["target_batch"]
         ]}))
 
@@ -342,7 +347,7 @@ async def test_translator_gets_facts_guesses_or_nothing_and_rows_keep_their_reco
     ctx = _ctx(segments)
     await TranslateStage(translator=_translator_with(fake_generate, monkeypatch)).execute(ctx)
 
-    batch = {it["index"]: it for it in payloads[0]["target_batch"]}
+    batch = {it["id"]: it for it in payloads[0]["target_batch"]}
     assert batch[1]["addressee"] == "SPEAKER_03 (שרה, female)" and "addressee_guess" not in batch[1]
     assert batch[3]["addressee_guess"] == "male" and "addressee" not in batch[3]
     assert "addressee" not in batch[4] and "addressee_guess" not in batch[4]
@@ -361,14 +366,14 @@ async def test_a_translation_that_contradicts_its_listener_is_translated_once_mo
 
     def fake_generate(model, contents, config):
         payload = json.loads(contents)
-        calls.append((config.system_instruction, [it["index"] for it in payload["target_batch"]]))
+        calls.append((config.system_instruction, [it["id"] for it in payload["target_batch"]]))
         fixing = "GENDER CHECK" in config.system_instruction
         out = []
         for it in payload["target_batch"]:
-            if it["index"] == 1:
+            if it["id"] == 1:
                 out.append({"index": 1, "translated_text": "שרה, את מוכנה? בואי." if fixing else "שרה, אתה מוכן?"})
             else:
-                out.append({"index": it["index"], "translated_text": "כמעט סיימתי."})
+                out.append({"index": it["id"], "translated_text": "כמעט סיימתי."})
         return types.SimpleNamespace(text=json.dumps({"translations": out}))
 
     persisted: List[List[int]] = []
@@ -387,9 +392,9 @@ async def test_a_translation_that_contradicts_its_listener_is_translated_once_mo
     # A retry that is still wrong does not replace the first translation, and the switch turns it off
     def always_wrong(model, contents, config):
         payload = json.loads(contents)
-        calls.append((config.system_instruction, [it["index"] for it in payload["target_batch"]]))
+        calls.append((config.system_instruction, [it["id"] for it in payload["target_batch"]]))
         return types.SimpleNamespace(text=json.dumps({"translations": [
-            {"index": it["index"], "translated_text": "אתה מוכן?" if it["index"] == 1 else "כמעט."}
+            {"index": it["id"], "translated_text": "אתה מוכן?" if it["id"] == 1 else "כמעט."}
             for it in payload["target_batch"]
         ]}))
 

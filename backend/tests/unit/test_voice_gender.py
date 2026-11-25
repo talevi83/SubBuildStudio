@@ -35,12 +35,13 @@ def test_silence_has_no_pitch():
 
 @pytest.mark.parametrize("median,seconds,expected", [
     (120.0, 2.0, ("male", "high")),
-    (150.0, 2.0, ("male", "medium")),       # close to the overlap zone
+    (142.0, 2.0, ("male", "medium")),       # close to the overlap zone
     (165.0, 2.0, ("unknown", "low")),       # men and women both speak here
-    (180.0, 2.0, ("female", "medium")),
+    (173.9, 2.0, ("unknown", "low")),       # dramatic/shouting male pitch (< 195 Hz) stays unknown
+    (202.0, 2.0, ("female", "medium")),
     (230.0, 2.0, ("female", "high")),
-    (230.0, 0.6, ("female", "medium")),     # little speech: less sure
-    (230.0, 0.2, ("unknown", "low")),       # too little to judge
+    (230.0, 0.8, ("female", "medium")),     # little speech: less sure
+    (230.0, 0.3, ("unknown", "low")),       # too little to judge
     (340.0, 3.0, ("unknown", "low")),       # a child's or a shouting voice
 ])
 def test_classification_and_its_limits(median, seconds, expected):
@@ -62,15 +63,15 @@ def test_voice_never_overrides_a_gender_from_the_text_but_can_be_refreshed():
         "SPEAKER_03": {"label": "Speaker 3", "gender": "male", "gender_source": "voice"},
     }
     estimates = {
-        "SPEAKER_01": {"gender": "male", "confidence": "high", "median_f0": 130.0},
-        "SPEAKER_02": {"gender": "female", "confidence": "medium", "median_f0": 182.0},
-        "SPEAKER_03": {"gender": "female", "confidence": "high", "median_f0": 220.0},
+        "SPEAKER_01": {"gender": "male", "confidence": "high", "median_f0": 125.0},
+        "SPEAKER_02": {"gender": "female", "confidence": "medium", "median_f0": 205.0},
+        "SPEAKER_03": {"gender": "female", "confidence": "high", "median_f0": 225.0},
     }
     assert apply_voice_genders(speakers, estimates) == 2
     assert speakers["SPEAKER_01"]["gender"] == "female" and "gender_source" not in speakers["SPEAKER_01"]
-    assert speakers["SPEAKER_01"]["voice_f0"] == 130.0
+    assert speakers["SPEAKER_01"]["voice_f0"] == 125.0
     assert speakers["SPEAKER_02"] == {"label": "Speaker 2", "gender": "female", "gender_source": "voice",
-                                      "voice_confidence": "medium", "voice_f0": 182.0}
+                                      "voice_confidence": "medium", "voice_f0": 205.0}
     assert speakers["SPEAKER_03"]["gender"] == "female"
 
 
