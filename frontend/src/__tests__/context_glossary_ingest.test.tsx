@@ -155,11 +155,11 @@ describe('Transcription Context / Glossary / Names UI', () => {
     expect(bar.getByText('WhisperX')).toBeTruthy();
   });
 
-  it('supports Smart Audio Map auto modes without enabling global comms_boost in Cinema preset', async () => {
+  it('supports Smart Audio Map auto modes without enabling global comms_boost in Documentary preset', async () => {
     const view = render(<PipelineConfig />);
-    const cinemaBtn = view.getByText(/Cinema & Narrative|קולנוע ועלילתי/i).closest('button');
-    expect(cinemaBtn).toBeTruthy();
-    fireEvent.click(cinemaBtn!);
+    const docuBtn = view.getByTestId('genre-preset-docu');
+    expect(docuBtn).toBeTruthy();
+    fireEvent.click(docuBtn);
 
     const cfg = useJobStore.getState().pipelineConfig;
     expect(cfg.comms_boost).toBe(false);
@@ -273,5 +273,46 @@ describe('Transcription Context / Glossary / Names UI', () => {
     expect(useJobStore.getState().pipelineConfig.enable_dual_source_pivot).toBe(true);
     expect(useJobStore.getState().pipelineConfig.use_embedded_subtitles).toBe(true);
     expect(view.queryByTestId('use-embedded-subtitles-toggle')).toBeNull();
+  });
+
+  it('switches genre presets between Creator presets (flag off) and Series/Cinema presets (flag on)', () => {
+    useJobStore.setState({
+      systemInfo: {
+        is_gemini_configured: true,
+        gemini_model: 'gemini-3.8-flash',
+        gemini_models: ['gemini-3.8-flash'],
+        whisper_default_model: 'medium',
+        whisper_models: ['medium', 'large-v3-turbo', 'large-v3'],
+        max_cps_warning: 20,
+        hardware: {
+          cuda_available: false,
+          device_count: 0,
+          cpu_count: 8,
+          recommended_device: 'cpu',
+          recommended_compute_type: 'int8',
+        },
+        dual_source_pivot_enabled: false,
+      },
+    });
+    const viewOff = render(<PipelineConfig />);
+    expect(viewOff.getByTestId('genre-preset-youtube')).toBeTruthy();
+    expect(viewOff.getByTestId('genre-preset-course')).toBeTruthy();
+    expect(viewOff.queryByTestId('genre-preset-series')).toBeNull();
+    expect(viewOff.queryByTestId('genre-preset-cinema')).toBeNull();
+
+    cleanup();
+    useJobStore.setState((s) => ({
+      systemInfo: s.systemInfo ? { ...s.systemInfo, dual_source_pivot_enabled: true } : null,
+    }));
+    const viewOn = render(<PipelineConfig />);
+    expect(viewOn.getByTestId('genre-preset-series')).toBeTruthy();
+    expect(viewOn.getByTestId('genre-preset-cinema')).toBeTruthy();
+    expect(viewOn.getByTestId('genre-preset-action')).toBeTruthy();
+    expect(viewOn.queryByTestId('genre-preset-youtube')).toBeNull();
+    expect(viewOn.queryByTestId('genre-preset-course')).toBeNull();
+
+    fireEvent.click(viewOn.getByTestId('genre-preset-series'));
+    expect(useJobStore.getState().pipelineConfig.enable_dual_source_pivot).toBe(true);
+    expect(useJobStore.getState().pipelineConfig.use_embedded_subtitles).toBe(true);
   });
 });

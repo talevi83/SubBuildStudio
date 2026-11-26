@@ -14,7 +14,8 @@ interface GenrePresetDefinition {
   config: Partial<JobConfig>;
 }
 
-const GENRE_PRESETS: GenrePresetDefinition[] = [
+/** Presets shown in the default public/creator build (ENABLE_DUAL_SOURCE_PIVOT=false). */
+const CREATOR_PRESETS: GenrePresetDefinition[] = [
   {
     id: 'youtube',
     icon: '▶️',
@@ -85,27 +86,27 @@ const GENRE_PRESETS: GenrePresetDefinition[] = [
     },
   },
   {
-    id: 'hebrew',
-    icon: '🇮🇱',
-    titleKey: 'config.presetHebrewTitle',
-    descKey: 'config.presetHebrewDesc',
-    preferredWhisperModel: 'ivrit-ai/whisper-large-v3-turbo-ct2',
-    tags: ['ivrit-ai', 'HE → HE'],
+    id: 'course',
+    icon: '🎓',
+    titleKey: 'config.presetCourseTitle',
+    descKey: 'config.presetCourseDesc',
+    preferredWhisperModel: 'large-v3-turbo',
+    tags: ['Slides OCR', 'Turbo', 'Clean'],
     config: {
-      source_language: 'he',
       vad_filter: true,
       high_speech_sensitivity: false,
-      use_embedded_subtitles: false,
+      use_embedded_subtitles: true,
       supplement_with_whisper: false,
       comms_boost: false,
-      detect_onscreen_text: false,
-      onscreen_sensitivity: 1,
+      comms_boost_mode: 'off',
+      detect_onscreen_text: true,
+      onscreen_sensitivity: 2,
       allow_onscreen_overlap: true,
       onscreen_position: 'top_center',
       convert_to_metric: false,
       remove_sdh_speakers: false,
       enable_diarization: false,
-      enable_translation: false,
+      enable_translation: true,
     },
   },
   {
@@ -135,17 +136,73 @@ const GENRE_PRESETS: GenrePresetDefinition[] = [
     },
   },
   {
+    id: 'hebrew',
+    icon: '🇮🇱',
+    titleKey: 'config.presetHebrewTitle',
+    descKey: 'config.presetHebrewDesc',
+    preferredWhisperModel: 'ivrit-ai/whisper-large-v3-turbo-ct2',
+    tags: ['ivrit-ai', 'HE → HE'],
+    config: {
+      source_language: 'he',
+      vad_filter: true,
+      high_speech_sensitivity: false,
+      use_embedded_subtitles: false,
+      supplement_with_whisper: false,
+      comms_boost: false,
+      detect_onscreen_text: false,
+      onscreen_sensitivity: 1,
+      allow_onscreen_overlap: true,
+      onscreen_position: 'top_center',
+      convert_to_metric: false,
+      remove_sdh_speakers: false,
+      enable_diarization: false,
+      enable_translation: false,
+    },
+  },
+];
+
+/** Presets shown when ENABLE_DUAL_SOURCE_PIVOT=true (Series & Cinema workflow). */
+const MEDIA_PRESETS: GenrePresetDefinition[] = [
+  {
+    id: 'series',
+    icon: '📺',
+    titleKey: 'config.presetSeriesTitle',
+    descKey: 'config.presetSeriesDesc',
+    preferredWhisperModel: 'large-v3',
+    tags: ['Subs First', 'EN+AR', 'OCR · 2', 'SDH'],
+    config: {
+      enable_dual_source_pivot: true,
+      use_embedded_subtitles: true,
+      dual_source_smart_asr_fallback: true,
+      supplement_with_whisper: false,
+      vad_filter: true,
+      high_speech_sensitivity: false,
+      comms_boost: false,
+      comms_boost_mode: 'auto',
+      detect_onscreen_text: true,
+      onscreen_sensitivity: 2,
+      allow_onscreen_overlap: true,
+      onscreen_position: 'top_center',
+      convert_to_metric: true,
+      remove_sdh_speakers: true,
+      enable_diarization: false,
+      enable_translation: true,
+    },
+  },
+  {
     id: 'cinema',
     icon: '🎬',
     titleKey: 'config.presetCinemaTitle',
     descKey: 'config.presetCinemaDesc',
     preferredWhisperModel: 'large-v3',
-    tags: ['High Sens', 'Smart Audio', 'OCR · 2', 'Voice ID'],
+    tags: ['Subs First', 'Smart Audio', 'OCR · 2', 'SDH'],
     config: {
+      enable_dual_source_pivot: true,
+      use_embedded_subtitles: true,
+      dual_source_smart_asr_fallback: true,
+      supplement_with_whisper: false,
       vad_filter: true,
       high_speech_sensitivity: true,
-      use_embedded_subtitles: true,
-      supplement_with_whisper: true,
       vocal_isolation: false,
       vocal_isolation_mode: 'off',
       comms_boost: false,
@@ -156,8 +213,110 @@ const GENRE_PRESETS: GenrePresetDefinition[] = [
       onscreen_position: 'top_center',
       convert_to_metric: true,
       remove_sdh_speakers: true,
+      enable_diarization: false,
+      enable_translation: true,
+    },
+  },
+  {
+    id: 'action',
+    icon: '🎖️',
+    titleKey: 'config.presetActionTitle',
+    descKey: 'config.presetActionDesc',
+    preferredWhisperModel: 'large-v3',
+    tags: ['Subs First', 'Comms', 'OCR · 2', 'SDH'],
+    config: {
+      enable_dual_source_pivot: true,
+      use_embedded_subtitles: true,
+      dual_source_smart_asr_fallback: true,
+      supplement_with_whisper: false,
+      vad_filter: true,
+      high_speech_sensitivity: true,
+      comms_boost: true,
+      comms_boost_mode: 'on',
+      detect_onscreen_text: true,
+      onscreen_sensitivity: 2,
+      allow_onscreen_overlap: true,
+      onscreen_position: 'top_center',
+      convert_to_metric: true,
+      remove_sdh_speakers: true,
+      enable_diarization: false,
+      enable_translation: true,
+    },
+  },
+  {
+    id: 'docu',
+    icon: '🔬',
+    titleKey: 'config.presetDocuTitle',
+    descKey: 'config.presetDocuDesc',
+    preferredWhisperModel: 'large-v3-turbo',
+    tags: ['Subs First', 'OCR · 2', 'Metric', 'SDH'],
+    config: {
+      enable_dual_source_pivot: true,
+      use_embedded_subtitles: true,
+      dual_source_smart_asr_fallback: true,
+      supplement_with_whisper: false,
+      vad_filter: true,
+      high_speech_sensitivity: false,
+      comms_boost: false,
+      comms_boost_mode: 'auto',
+      detect_onscreen_text: true,
+      onscreen_sensitivity: 2,
+      allow_onscreen_overlap: true,
+      onscreen_position: 'top_center',
+      convert_to_metric: true,
+      remove_sdh_speakers: true,
+      enable_diarization: false,
+      enable_translation: true,
+    },
+  },
+  {
+    id: 'direct_asr',
+    icon: '🎙️',
+    titleKey: 'config.presetDirectAsrTitle',
+    descKey: 'config.presetDirectAsrDesc',
+    preferredWhisperModel: 'large-v3',
+    tags: ['Direct ASR', 'Smart Audio', 'Voice ID'],
+    config: {
+      enable_dual_source_pivot: false,
+      use_embedded_subtitles: false,
+      supplement_with_whisper: false,
+      vad_filter: true,
+      high_speech_sensitivity: true,
+      comms_boost: false,
+      comms_boost_mode: 'auto',
+      detect_onscreen_text: true,
+      onscreen_sensitivity: 2,
+      allow_onscreen_overlap: true,
+      onscreen_position: 'top_center',
+      convert_to_metric: true,
+      remove_sdh_speakers: true,
       enable_diarization: true,
       enable_translation: true,
+    },
+  },
+  {
+    id: 'hebrew',
+    icon: '🇮🇱',
+    titleKey: 'config.presetHebrewTitle',
+    descKey: 'config.presetHebrewDesc',
+    preferredWhisperModel: 'ivrit-ai/whisper-large-v3-turbo-ct2',
+    tags: ['ivrit-ai', 'HE → HE'],
+    config: {
+      enable_dual_source_pivot: false,
+      source_language: 'he',
+      vad_filter: true,
+      high_speech_sensitivity: false,
+      use_embedded_subtitles: false,
+      supplement_with_whisper: false,
+      comms_boost: false,
+      detect_onscreen_text: false,
+      onscreen_sensitivity: 1,
+      allow_onscreen_overlap: true,
+      onscreen_position: 'top_center',
+      convert_to_metric: false,
+      remove_sdh_speakers: false,
+      enable_diarization: false,
+      enable_translation: false,
     },
   },
 ];
@@ -190,17 +349,25 @@ function matchesPreset(current: JobConfig, preset: GenrePresetDefinition, availa
   if (Boolean(current.convert_to_metric) !== Boolean(c.convert_to_metric)) return false;
   if (Boolean(current.remove_sdh_speakers) !== Boolean(c.remove_sdh_speakers)) return false;
   if (Boolean(current.enable_diarization) !== Boolean(c.enable_diarization)) return false;
+  if (
+    c.enable_dual_source_pivot !== undefined &&
+    Boolean(current.enable_dual_source_pivot) !== Boolean(c.enable_dual_source_pivot)
+  ) {
+    return false;
+  }
   return true;
 }
 
 export const GenrePresets: React.FC<{
   pipelineConfig: JobConfig;
   whisperModels: string[];
+  dualSourceEnabled?: boolean;
   onApply: (patch: Partial<JobConfig>) => void;
-}> = ({ pipelineConfig, whisperModels, onApply }) => {
+}> = ({ pipelineConfig, whisperModels, dualSourceEnabled = false, onApply }) => {
   const t = useT();
+  const presets = dualSourceEnabled ? MEDIA_PRESETS : CREATOR_PRESETS;
 
-  const activePreset = GENRE_PRESETS.find((p) => matchesPreset(pipelineConfig, p, whisperModels));
+  const activePreset = presets.find((p) => matchesPreset(pipelineConfig, p, whisperModels));
 
   const handleSelect = (preset: GenrePresetDefinition) => {
     const model = resolveModel(preset.preferredWhisperModel, whisperModels);
@@ -242,7 +409,7 @@ export const GenrePresets: React.FC<{
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
-        {GENRE_PRESETS.map((preset) => {
+        {presets.map((preset) => {
           const isActive = activePreset?.id === preset.id;
           return (
             <button

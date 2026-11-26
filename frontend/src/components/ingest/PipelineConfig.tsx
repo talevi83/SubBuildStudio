@@ -224,6 +224,7 @@ export const PipelineConfig: React.FC = () => {
         <GenrePresets
           pipelineConfig={pipelineConfig}
           whisperModels={whisperModels}
+          dualSourceEnabled={dualSourceFeatureEnabled}
           onApply={updatePipelineConfig}
         />
       )}
