@@ -49,13 +49,31 @@ die() { echo "[ERROR] $*" >&2; exit 1; }
 # download <output> <url> [<url>...] - each URL up to 3 times, then the next one
 download() {
     local out="$1"; shift
-    local url try
+    local url try valid
     for url in "$@"; do
         for try in 1 2 3; do
+            rm -f "$out"
             if curl -fsSL --retry 2 --connect-timeout 30 -o "$out" "$url"; then
-                return 0
+                valid=1
+                case "$out" in
+                    *.tar.xz|*.xz)
+                        xz -t "$out" >/dev/null 2>&1 || valid=0
+                        ;;
+                    *.tar.gz|*.tgz|*.gz)
+                        gzip -t "$out" >/dev/null 2>&1 || valid=0
+                        ;;
+                    *)
+                        [[ -s "$out" ]] || valid=0
+                        ;;
+                esac
+                if [[ "$valid" -eq 1 ]]; then
+                    return 0
+                fi
+                echo "    downloaded file failed integrity check ($try/3) from $url" >&2
+                rm -f "$out"
+            else
+                echo "    download failed ($try/3) from $url" >&2
             fi
-            echo "    download failed ($try/3) from $url" >&2
             sleep $((10 * try))
         done
     done

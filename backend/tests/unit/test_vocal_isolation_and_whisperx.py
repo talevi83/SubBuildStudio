@@ -588,8 +588,28 @@ def test_ensure_torchaudio_compat_shims_missing_2_11_apis_and_soundfile_io(monke
     fake_torch = types.ModuleType("torch")
     fake_torch.from_numpy = lambda arr: _FakeTensor(arr)
 
+    fake_soundfile = types.ModuleType("soundfile")
+
+    def _fake_sf_read(uri, frames=-1, start=0, dtype="float32", always_2d=True):
+        import numpy as np
+
+        with wave.open(str(uri), "rb") as wf:
+            sr = wf.getframerate()
+            n_ch = wf.getnchannels()
+            wf.setpos(max(0, int(start)))
+            raw = wf.readframes(wf.getnframes() - int(start) if frames is None or frames < 0 else int(frames))
+        samples = np.frombuffer(raw, dtype=np.int16).reshape(-1, n_ch)
+        if dtype == "float32":
+            samples = (samples.astype(np.float32)) / 32768.0
+        if not always_2d and n_ch == 1:
+            samples = samples[:, 0]
+        return samples, sr
+
+    fake_soundfile.read = _fake_sf_read
+
     monkeypatch.setitem(sys.modules, "torchaudio", fake_torchaudio)
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "soundfile", fake_soundfile)
     monkeypatch.setattr("app.core.hardware._has_package", lambda name: name == "torchaudio")
 
     ensure_torchaudio_compat()
