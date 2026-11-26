@@ -115,6 +115,17 @@ class PipelineContext:
     sync_language: Optional[str] = None
     sync_use_gemini: bool = True
     sync_report: Optional[Dict[str, Any]] = None
+    # Private local-only Dual-Source (EN + AR) pivot mode fields
+    enable_dual_source_pivot: bool = False
+    dual_source_en_srt: Optional[str] = None
+    dual_source_ar_srt: Optional[str] = None
+    dual_source_fallback_languages: Optional[List[str]] = None
+    dual_source_smart_asr_fallback: bool = True
+    dual_source_primary_lang: Optional[str] = None
+    dual_source_anchor_lang: Optional[str] = None
+    dual_source_pair_mode: Optional[str] = None
+    dual_source_active: bool = False
+    dual_source_report: Optional[Dict[str, Any]] = None
     # Background burned-in subtitle detection (started right after audio extraction)
     burned_task: Optional[Any] = None
     # Thread-safe flag so worker threads (Whisper) can observe cancellation

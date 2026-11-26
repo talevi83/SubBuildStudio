@@ -191,6 +191,12 @@ def _job_to_response(
             sync_report = json.loads(job.sync_report_json)
         except Exception:
             pass
+    dual_source_report = None
+    if getattr(job, "dual_source_report_json", None):
+        try:
+            dual_source_report = json.loads(job.dual_source_report_json)
+        except Exception:
+            pass
     usage = None
     if job.usage_json:
         try:
@@ -275,6 +281,8 @@ def _job_to_response(
         job_kind=job.job_kind or "transcribe",
         sync_file_name=job.sync_file_name,
         sync_report=sync_report,
+        enable_dual_source_pivot=bool(settings.enable_dual_source_pivot and getattr(job, "enable_dual_source_pivot", False)),
+        dual_source_report=dual_source_report,
         segments=segments,
         created_at=job.created_at,
         updated_at=job.updated_at,
@@ -363,6 +371,12 @@ async def create_job(req: JobCreate, session: Session = Depends(get_session)):
     if syncing and len(req.sync_cues) < 3:
         raise HTTPException(status_code=400, detail="The subtitle file needs at least 3 lines to sync")
 
+    dual_source_enabled = bool(settings.enable_dual_source_pivot and req.enable_dual_source_pivot and not syncing)
+    ds_fallbacks = [
+        str(c).strip().lower()
+        for c in (req.dual_source_fallback_languages or [])
+        if str(c).strip()
+    ]
     saved_settings = load_settings()
     is_upload_file = is_in_uploads(str(resolved))
     limit = max(1, settings.max_concurrent_transcriptions)
@@ -419,6 +433,13 @@ async def create_job(req: JobCreate, session: Session = Depends(get_session)):
         gemini_model=req.gemini_model or saved_settings.translation.model,
         context_notes=req.context_notes,
         glossary_profile=clean_name(req.glossary_profile) or None,
+        enable_dual_source_pivot=dual_source_enabled,
+        dual_source_en_srt=(req.dual_source_en_srt if dual_source_enabled and req.dual_source_en_srt else None),
+        dual_source_ar_srt=(req.dual_source_ar_srt if dual_source_enabled and req.dual_source_ar_srt else None),
+        dual_source_fallback_languages_json=(
+            json.dumps(ds_fallbacks) if (dual_source_enabled and ds_fallbacks) else None
+        ),
+        dual_source_smart_asr_fallback=(bool(req.dual_source_smart_asr_fallback) if dual_source_enabled else True),
     )
     if syncing:
         new_job.job_kind = "sync"

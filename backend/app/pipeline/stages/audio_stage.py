@@ -154,7 +154,18 @@ class AudioExtractionStage(PipelineStage):
         if on_progress:
             await on_progress(0.0, None, None, "Starting audio extraction...", None)
 
-        if ctx.use_embedded_subtitles and not ctx.sync_cues and ctx.subtitle_streams:
+        dual_source_requested = bool(
+            settings.enable_dual_source_pivot and getattr(ctx, "enable_dual_source_pivot", False)
+        )
+        # When Dual-Source Pivot ("Smart Subtitles First") is active, always extract audio so
+        # DualSourceSyncStage can ffsubsync online tracks or trigger Smart ASR Fallback;
+        # DualSourceSyncStage handles embedded subtitle extraction as priority #1.
+        if (
+            ctx.use_embedded_subtitles
+            and not dual_source_requested
+            and not ctx.sync_cues
+            and ctx.subtitle_streams
+        ):
             from app.pipeline.embedded_tracks import pick_dialogue_track, extract_dialogue_track
             from app.utils.languages import language_code
 

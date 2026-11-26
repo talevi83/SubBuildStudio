@@ -1,5 +1,7 @@
 import asyncio
+import importlib.util
 import logging
+import shutil
 import time
 from typing import List, Optional
 
@@ -15,10 +17,11 @@ from app.core.updater import (
     get_current_version_info,
 )
 from app.models.db_models import Job
-from app.models.schemas import GpuLibsStatusSchema, SystemInfoResponse, UpdateApplyResponse, UpdateStatusSchema
+from app.models.schemas import AppConfigResponse, GpuLibsStatusSchema, SystemInfoResponse, UpdateApplyResponse, UpdateStatusSchema
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/system", tags=["System"])
+config_router = APIRouter(prefix="/api", tags=["Config"])
 
 _gemini_models_cache: Optional[List[str]] = None
 _gemini_models_cache_at = 0.0
@@ -92,6 +95,21 @@ async def get_system_info():
         hardware=hw,
         version=version_info["current_version"],
         update=UpdateStatusSchema(**cached_update) if cached_update else None,
+        dual_source_pivot_enabled=bool(settings.enable_dual_source_pivot),
+    )
+
+
+@config_router.get("/config", response_model=AppConfigResponse)
+async def get_app_config():
+    """Return runtime feature-flag and local tool capabilities without exposing secret keys."""
+    ffsubsync_ok = bool(shutil.which("ffsubsync") or importlib.util.find_spec("ffsubsync"))
+    alass_ok = bool(shutil.which("alass") or shutil.which("alass-cli"))
+    return AppConfigResponse(
+        dual_source_pivot_enabled=bool(settings.enable_dual_source_pivot),
+        opensubtitles_configured=bool((settings.opensubtitles_api_key or "").strip()),
+        subdl_configured=bool((settings.subdl_api_key or "").strip()),
+        ffsubsync_available=ffsubsync_ok,
+        alass_available=alass_ok,
     )
 
 

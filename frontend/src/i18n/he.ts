@@ -43,6 +43,7 @@ export const he: Messages = {
     QUEUED: 'בתור',
     PROBING: 'בודק קובץ',
     EXTRACTING_AUDIO: 'מחלץ אודיו',
+    DUAL_SOURCE_SYNC: 'מסנכרן כתוביות EN + AR',
     VOCAL_ISOLATION: 'מבודד קולות דיבור',
     TRANSCRIBING: 'מתמלל',
     DIARIZING: 'מזהה דוברים',
@@ -221,9 +222,9 @@ export const he: Messages = {
     sameLangPolishDesc:
       'שפת המקור והיעד זהות. ה-AI יתקן שגיאות תמלול, פיסוק וכתיב בלי לשכתב את הניסוח.',
     sameLangDisableAi: 'תמלול Whisper בלבד (ללא AI)',
-    commsTitle: 'חיזוק קשר ומכשירי רדיו',
+    commsTitle: 'קשר צבאי / מכשירי ווקי-טוקי בלבד',
     commsDescription:
-      'מדגיש תדרי ווקי־טוקי ורדיו, מנקה רעשי סטטי ומכוונן את זיהוי הדיבור של Whisper כדי לקלוט קשר צבאי מעוות ולחישות.',
+      'הפעל רק בסרטים/סדרות עם קשר רדיו מעוות ומונחים צבאיים (ללחישות רגילות "עיבוד אודיו חכם" מספיק).',
     onscreenTitle: 'זיהוי טקסט על המסך (Forced Narratives)',
     onscreenDescription:
       'סורק פריימים עם AI Vision ובודק ערוצים מוטמעים לכותרות מיקום, ציוני זמן ("שבוע לאחר מכן...") ושלטים חשובים לעלילה — וגם את הכתוביות הצרובות של הסרטון לדיבור בשפות אחרות.',
@@ -267,6 +268,11 @@ export const he: Messages = {
     highSpeechSensitivityTitle: 'רגישות דיבור גבוהה (תפיסת לחישות)',
     highSpeechSensitivityDesc:
       'מרכך את סינון השקט כדי לתפוס לחישות, דיבור חלש או משפטים שנבלעים במוזיקת רקע חזקה.',
+    smartAudioTitle: 'עיבוד אודיו חכם (מומלץ)',
+    smartAudioDesc:
+      'מזהה ומגביר אוטומטית לחישות ודיבור חלש תוך שמירה על שאר הפסקול נקי לחלוטין.',
+    advancedAudioToggle: 'הגדרות אודיו מתקדמות',
+    highSpeechAutoActiveNote: 'מופעל ממילא אוטומטית כשעיבוד האודיו החכם דלוק.',
     estimateTitle: 'עלות AI משוערת לקובץ הזה',
     estimateBatchTitle: 'עלות AI משוערת עבור {count} פרקים',
     estimateNone: 'אין קריאות AI עם האפשרויות האלה',
@@ -277,6 +283,31 @@ export const he: Messages = {
     autoSaveSrtTitle: 'שמור כתוביות אוטומטית ליד כל סרטון בסיום',
     autoSaveSrtDescription:
       'שומר אוטומטית את קובץ ה-.srt (עם תיקון RTL) בתיקייה המקורית של כל סרטון מיד עם סיום העיבוד.',
+    dualSourceTitle: 'סנכרון כפול (EN + AR)',
+    dualSourceDescription:
+      'מאתר ומסנכרן כתוביות באנגלית ובערבית מול האודיו, משתמש בערבית כעוגן מגדר דקדוקי, מזהה כותרות מסך בערבית בלבד ומדלג על Whisper ו-Vision.',
+    dualSourceModeTitle: 'זרימת עבודה ומקורות',
+    dualSourceModeSubtitlesFirst: 'כתוביות תחילה (חכם)',
+    dualSourceModeDirectAsr: 'תמלול אודיו ישיר',
+    dualSourceModeDescSubtitles:
+      'בודק כתוביות מוטמעות וברשת (EN + AR או RU/PL/ES/FR לעוגן מגדר), מסנכרן לאודיו ומריץ WhisperX רק אם חסר.',
+    dualSourceModeDescAsr: 'מתמלל את הדיבור ישירות מהשמע באמצעות WhisperX / Faster-Whisper.',
+    dualSourceFallbackOrderLabel: 'סדר עדיפויות לשפות עוגן / משניות',
+    dualSourceSmartAsrFallbackTitle: 'גיבוי ASR חכם (הרץ Whisper רק אם סנכרון הכתוביות נכשל או שיש פערים)',
+    dualSourceSmartAsrFallbackDesc:
+      'עושה שימוש חוזר באודיו שחולץ ומשלים רק קטעים שנותרו ללא כיסוי כתוביות.',
+    dualSourceEnLabel: 'קובץ .en.srt מקומי (אופציונלי)',
+    dualSourceArLabel: 'קובץ .ar.srt מקומי (אופציונלי)',
+    dualSourceClear: 'נקה',
+    dualSourceLoaded: 'נטען',
+    dualSourceEmbeddedPriorityNote:
+      'נמצאו כתוביות מוטמעות בקובץ ({name}) — ישמשו אוטומטית בעדיפות ראשונה לפני חיפוש ברשת, ו-Whisper ישמש רק כגיבוי להשלמת חוסרים.',
+    whisperFallbackModeNote:
+      'במצב "כתוביות תחילה (חכם)", הגדרות Whisper והאודיו שלהלן מופעלות אוטומטית רק כגיבוי (Fallback) אם לא נמצאו כתוביות או שיש פערים להשלמה.',
+    sectionAll: 'הכל',
+    sectionWorkflow: 'זרימת עבודה ומקורות',
+    sectionTranscription: 'תמלול ואודיו',
+    sectionTranslation: 'תרגום ועלויות',
     launch: 'התחל עיבוד',
     launchBatch: 'הפעל תור אצווה ({count} פרקים)',
     launching: 'מתחיל...',
@@ -318,6 +349,7 @@ export const he: Messages = {
   stages: {
     PROBING: 'בדיקת ערוצים',
     EXTRACTING_AUDIO: 'חילוץ אודיו',
+    DUAL_SOURCE_SYNC: 'מקור כפול (EN+AR)',
     VOCAL_ISOLATION: 'מיפוי ובידוד דיאלוג',
     TRANSCRIBING: 'תמלול (Whisper)',
     DIARIZING: 'זיהוי דוברים',
@@ -826,6 +858,13 @@ export const he: Messages = {
     },
     frameDetail: 'רזולוציית פריים',
     frameDetailHint: 'טוקנים לפריים: נמוכה 280 · בינונית 560 · גבוהה 1120',
+    frameMaxWidthLabel: 'הקטנת רזולוציית פריימים ב-4K ל-OCR',
+    frameMaxWidthHint: 'מגביל את רוחב הפריים בדגימת ה-OCR לפענוח מהיר בהרבה בסרטי 4K.',
+    navAll: 'כל ההגדרות',
+    navKeys: 'מפתחות וספקים',
+    navModels: 'תרגום ו-OCR',
+    navCost: 'חיסכון ואומדן עלות',
+    navSystem: 'אחסון ועדכונים',
     resolution: { low: 'נמוכה', medium: 'בינונית', high: 'גבוהה' },
     onscreenPosition: 'מיקום כתוביות OCR / טקסט מסך',
     onscreenPositionHint:

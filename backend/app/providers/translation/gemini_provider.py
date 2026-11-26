@@ -192,6 +192,10 @@ def build_subtitle_system_prompt(
     remove_sdh_speakers: bool = False,
     report_addressee_form: bool = False,
     static_glossary: bool = False,
+    dual_source_mode: bool = False,
+    dual_source_primary_lang: str = "English",
+    dual_source_anchor_lang: Optional[str] = "Arabic",
+    dual_source_pair_mode: str = "en_ar",
 ) -> str:
     """Construct the system prompt engineered for cinema/broadcast subtitle translation or same-language polish."""
     extra_context = (
@@ -306,6 +310,27 @@ Polish the `target_batch` {target_lang} ASR transcript into clean, broadcast-rea
             "string when the translation has no gender/number-marked 2nd-person form.\n"
         )
 
+    dual_source_rules = ""
+    if dual_source_mode and dual_source_pair_mode != "single_source":
+        anchor_label = dual_source_anchor_lang or "Arabic"
+        if dual_source_pair_mode == "ar_secondary":
+            dual_source_rules = f"""
+### DUAL-SOURCE PIVOT MODE ({dual_source_primary_lang} + {anchor_label} -> {target_lang.upper()})
+- Translate the primary Arabic text (`original_text`) into natural, idiomatic {target_lang}, preserving Arabic 1st/2nd/3rd-person grammatical gender (masculine vs. feminine vs. plural).
+- Use the paired {anchor_label} reference (`ar_reference`) as a semantic and terminology cross-check when idiomatic meaning or proper nouns need verification.
+"""
+        else:
+            onscreen_line = (
+                f'- For segments marked `AR_ONLY` (`dual_source_kind: "AR_ONLY"`, on-screen text outside English dialogue timestamps), '
+                f'translate the {anchor_label} text directly into concise {target_lang} on-screen titles (keep square brackets `[...]` when appropriate for titles or time jumps).\n'
+                if dual_source_pair_mode == "en_ar"
+                else ""
+            )
+            dual_source_rules = f"""
+### DUAL-SOURCE GENDER ANCHOR MODE ({dual_source_primary_lang} + {anchor_label} -> {target_lang.upper()})
+- Translate the {dual_source_primary_lang} text (`original_text`) into natural, idiomatic {target_lang}. Use the paired {anchor_label} translation (`ar_reference`) strictly as a grammatical gender reference (masculine vs. feminine speaker/addressee, 1st/2nd/3rd person inflection) while preserving exact {dual_source_primary_lang} meaning, names, and terminology.
+{onscreen_line}"""
+
     return f"""You are an elite, broadcast-grade audiovisual subtitle translator specializing in translating movies and TV series from {source_lang} to {target_lang}.
 
 ### CORE OBJECTIVE
@@ -351,6 +376,7 @@ Translate the `target_batch` subtitle segments into natural, idiomatic, spoken {
 {hebrew_rules}
 {metric_rules}
 {sdh_rules}
+{dual_source_rules}
 10. **Output hygiene:** Plain text only. Keep punctuation at the logical end of sentences and do NOT insert Unicode direction marks or manually reverse punctuation — a downstream processor handles right-to-left display. Never put the ASCII double-quote character (") inside a translation — it ends the JSON string and cuts the subtitle off. For Hebrew abbreviations use gershayim ״ and geresh ׳ (ד״ר, אב״כ, נ״צ, כנ״ל, צה״ל, ג׳יימס); for quotations use “ ”.
 {context_tail}"""
 
@@ -475,6 +501,10 @@ class GeminiTranslator(BaseTranslator):
         glossary_provider: Optional[str] = None,
         glossary_key_id: Optional[str] = None,
         prune_glossary: Optional[bool] = None,
+        dual_source_mode: bool = False,
+        dual_source_primary_lang: str = "English",
+        dual_source_anchor_lang: Optional[str] = "Arabic",
+        dual_source_pair_mode: str = "en_ar",
     ):
         from app.core.provider_keys import resolve_secret_key
 
@@ -523,6 +553,10 @@ class GeminiTranslator(BaseTranslator):
         self.convert_to_metric = convert_to_metric
         self.remove_sdh_speakers = remove_sdh_speakers
         self.prune_glossary = bool(prune_glossary)
+        self.dual_source_mode = bool(dual_source_mode)
+        self.dual_source_primary_lang = dual_source_primary_lang
+        self.dual_source_anchor_lang = dual_source_anchor_lang
+        self.dual_source_pair_mode = dual_source_pair_mode
         self.last_glossary_error: Optional[str] = None
 
     async def _generate(
@@ -740,6 +774,10 @@ class GeminiTranslator(BaseTranslator):
                 remove_sdh_speakers=self.remove_sdh_speakers,
                 report_addressee_form=report_forms,
                 static_glossary=True,
+                dual_source_mode=self.dual_source_mode,
+                dual_source_primary_lang=self.dual_source_primary_lang,
+                dual_source_anchor_lang=self.dual_source_anchor_lang,
+                dual_source_pair_mode=self.dual_source_pair_mode,
             )
 
         for start_idx in range(0, total_segments, self.batch_size):
@@ -780,6 +818,10 @@ class GeminiTranslator(BaseTranslator):
                     convert_to_metric=self.convert_to_metric,
                     remove_sdh_speakers=self.remove_sdh_speakers,
                     report_addressee_form=report_forms,
+                    dual_source_mode=self.dual_source_mode,
+                    dual_source_primary_lang=self.dual_source_primary_lang,
+                    dual_source_anchor_lang=self.dual_source_anchor_lang,
+                    dual_source_pair_mode=self.dual_source_pair_mode,
                 )
             else:
                 assert static_system_prompt is not None
@@ -839,6 +881,10 @@ class GeminiTranslator(BaseTranslator):
                 item["segment_type"] = seg.segment_type
                 item["duration_sec"] = seg.duration
             item["original_text"] = seg.original_text
+            if getattr(seg, "reference_text", None):
+                item["ar_reference"] = seg.reference_text
+            if getattr(seg, "dual_source_kind", None):
+                item["dual_source_kind"] = seg.dual_source_kind
             if with_translated and seg.translated_text:
                 item["translated_text"] = strip_directional_marks(seg.translated_text)
             sp = getattr(seg, "speaker_info", None) or getattr(seg, "speaker", None)

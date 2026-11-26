@@ -58,6 +58,8 @@ class RefineStage(PipelineStage):
                     "translation_failed": False,
                     "segment_type": seg.get("segment_type", SegmentType.DIALOGUE.value),
                     "confidence": float(seg.get("confidence", 1.0)),
+                    **({"reference_text": seg["reference_text"]} if seg.get("reference_text") is not None else {}),
+                    **({"dual_source_kind": seg["dual_source_kind"]} if seg.get("dual_source_kind") else {}),
                 }
                 for i, seg in enumerate(ctx.embedded_dialogue_segments)
             ]

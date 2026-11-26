@@ -31,6 +31,7 @@ import type { JobStatus, JobUsage, ModelUsage, SyncReport } from '../../types';
 const ALL_STAGES: ReadonlyArray<{ key: JobStatus; icon: React.ComponentType<{ className?: string }> }> = [
   { key: 'PROBING', icon: Search },
   { key: 'EXTRACTING_AUDIO', icon: Music },
+  { key: 'DUAL_SOURCE_SYNC', icon: Languages },
   { key: 'VOCAL_ISOLATION', icon: Sparkles },
   { key: 'TRANSCRIBING', icon: Mic },
   { key: 'DIARIZING', icon: Users },
@@ -68,6 +69,7 @@ export const LivePipelineBar: React.FC = () => {
   // A translation-only run (Retranslate) shows just the translate step
   const translateOnly = status === 'TRANSLATING' && activeJob.segments.some((s) => s.id);
   const isSync = activeJob.job_kind === 'sync';
+  const hasDualSource = Boolean(activeJob.enable_dual_source_pivot) || status === 'DUAL_SOURCE_SYNC';
   const hasAudioConditioning =
     Boolean(activeJob.vocal_isolation) ||
     activeJob.vocal_isolation_mode === 'auto' ||
@@ -75,6 +77,7 @@ export const LivePipelineBar: React.FC = () => {
     activeJob.comms_boost_mode === 'auto';
   const stages = ALL_STAGES.filter(
     (s) =>
+      (s.key !== 'DUAL_SOURCE_SYNC' || hasDualSource) &&
       (s.key !== 'VOCAL_ISOLATION' || hasAudioConditioning || status === 'VOCAL_ISOLATION') &&
       (isSync
         ? s.key !== 'DIARIZING' && s.key !== 'REFINING' && s.key !== 'TRANSLATING'

@@ -135,6 +135,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 # Register API routers
 app.include_router(routes_system.router)
+app.include_router(routes_system.config_router)
 app.include_router(routes_media.router)
 app.include_router(routes_jobs.router)
 app.include_router(routes_export.router)

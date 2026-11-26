@@ -284,6 +284,14 @@ class TranslateStage(PipelineStage):
             # Keep system_prompt + glossary 100% static across cloud batches for prefix caching;
             # only prune per-batch on small local Ollama models with tight context windows.
             prune_glossary=bool(app_settings.cost_saver_mode and target_provider == "ollama"),
+            dual_source_mode=bool(getattr(ctx, "dual_source_active", False)),
+            dual_source_primary_lang=language_name(getattr(ctx, "dual_source_primary_lang", None) or "en", default="English"),
+            dual_source_anchor_lang=(
+                language_name(getattr(ctx, "dual_source_anchor_lang", None), default="")
+                if getattr(ctx, "dual_source_anchor_lang", None)
+                else "Arabic"
+            ),
+            dual_source_pair_mode=getattr(ctx, "dual_source_pair_mode", None) or "en_ar",
         )
 
     async def _fix_listener_mismatches(
@@ -428,6 +436,8 @@ class TranslateStage(PipelineStage):
                 segment_type=s.get("segment_type") or "DIALOGUE",
                 speaker=s.get("speaker"),
                 speaker_info=_format_speaker_info(s.get("speaker"), speakers_map),
+                reference_text=s.get("reference_text"),
+                dual_source_kind=s.get("dual_source_kind"),
             )
             for s in ctx.refined_segments
         ]

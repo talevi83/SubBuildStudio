@@ -90,6 +90,10 @@ class JobConfig(RequestModel):
     gemini_api_key_override: Optional[str] = None
     context_notes: Optional[str] = None
     glossary_profile: Optional[str] = None
+    # Feature-flagged Dual-Source (EN + AR) pivot mode
+    enable_dual_source_pivot: bool = False
+    dual_source_fallback_languages: Optional[List[str]] = None
+    dual_source_smart_asr_fallback: bool = True
 
 
 class SyncCue(RequestModel):
@@ -121,6 +125,9 @@ class JobCreate(JobConfig):
     sync_file_name: Optional[str] = None
     sync_language: Optional[str] = None
     sync_use_gemini: bool = True
+    # Optional manual .en.srt / .ar.srt overrides for Dual-Source Pivot testing
+    dual_source_en_srt: Optional[str] = None
+    dual_source_ar_srt: Optional[str] = None
 
 
 class RetranslateRequest(RequestModel):
@@ -375,6 +382,8 @@ class JobResponse(BaseModel):
     job_kind: str = "transcribe"
     sync_file_name: Optional[str] = None
     sync_report: Optional[Dict[str, Any]] = None
+    enable_dual_source_pivot: bool = False
+    dual_source_report: Optional[Dict[str, Any]] = None
     segments: List[SubtitleSegmentSchema] = []
     created_at: datetime
     updated_at: datetime
@@ -453,6 +462,16 @@ class SystemInfoResponse(BaseModel):
     hardware: Dict[str, Any]
     version: str = "1.5.0"
     update: Optional[UpdateStatusSchema] = None
+    dual_source_pivot_enabled: bool = False
+
+
+class AppConfigResponse(BaseModel):
+    """Runtime feature-flag and local tool availability (never exposes API keys)."""
+    dual_source_pivot_enabled: bool = False
+    opensubtitles_configured: bool = False
+    subdl_configured: bool = False
+    ffsubsync_available: bool = False
+    alass_available: bool = False
 
 
 class SaveNextToVideoRequest(RequestModel):

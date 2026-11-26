@@ -3,6 +3,7 @@ export type JobStatus =
   | 'QUEUED'
   | 'PROBING'
   | 'EXTRACTING_AUDIO'
+  | 'DUAL_SOURCE_SYNC'
   | 'VOCAL_ISOLATION'
   | 'TRANSCRIBING'
   | 'DIARIZING'
@@ -22,6 +23,7 @@ export const ACTIVE_STATUSES: JobStatus[] = [
   'QUEUED',
   'PROBING',
   'EXTRACTING_AUDIO',
+  'DUAL_SOURCE_SYNC',
   'VOCAL_ISOLATION',
   'TRANSCRIBING',
   'DIARIZING',
@@ -203,6 +205,8 @@ export interface Job {
   job_kind?: 'transcribe' | 'sync';
   sync_file_name?: string | null;
   sync_report?: SyncReport | null;
+  enable_dual_source_pivot?: boolean;
+  dual_source_report?: Record<string, unknown> | null;
   segments: SubtitleSegment[];
   created_at: string;
   updated_at: string;
@@ -300,6 +304,7 @@ export interface SystemInfo {
   hardware: HardwareInfo;
   version?: string;
   update?: UpdateStatus | null;
+  dual_source_pivot_enabled?: boolean;
 }
 
 export interface ApiKeyStatus {
@@ -379,6 +384,12 @@ export interface JobConfig {
   context_notes?: string;
   /** Series glossary shared between episodes (saved by name) */
   glossary_profile?: string;
+  /** Feature-flagged local Dual-Source (EN + AR) pivot mode */
+  enable_dual_source_pivot?: boolean;
+  dual_source_en_srt?: string | null;
+  dual_source_ar_srt?: string | null;
+  dual_source_fallback_languages?: string[];
+  dual_source_smart_asr_fallback?: boolean;
 }
 
 export interface RetranslateOptions {
@@ -504,6 +515,7 @@ export interface AppSettings {
   glossary: GeminiCallSettings;
   vision: GeminiCallSettings;
   vision_media_resolution: MediaResolution;
+  onscreen_frame_max_width?: number;
   onscreen_position?: OnscreenPosition;
   convert_to_metric?: boolean;
   remove_sdh_speakers?: boolean;

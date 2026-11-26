@@ -56,6 +56,11 @@ const DEFAULT_CONFIG: JobConfig = {
   gemini_api_key_override: '',
   initial_prompt: '',
   context_notes: '',
+  enable_dual_source_pivot: false,
+  dual_source_en_srt: null,
+  dual_source_ar_srt: null,
+  dual_source_fallback_languages: ['ar', 'ru', 'pl', 'es', 'fr'],
+  dual_source_smart_asr_fallback: true,
 };
 
 /** Remembered pipeline settings (never the API key). Storage can be unavailable — fail soft. */
@@ -67,6 +72,9 @@ function loadSavedConfig(): Partial<JobConfig> {
     delete parsed.gemini_model;
     // The series belongs to one video, never a default for the next one (older versions saved it)
     delete parsed.glossary_profile;
+    // Raw SRT files belong only to a single submission
+    delete parsed.dual_source_en_srt;
+    delete parsed.dual_source_ar_srt;
     return parsed;
   } catch {
     return {};
@@ -82,6 +90,8 @@ function saveConfig(config: JobConfig) {
       initial_prompt: _prompt,
       context_notes: _notes,
       glossary_profile: _series,
+      dual_source_en_srt: _dsEn,
+      dual_source_ar_srt: _dsAr,
       ...rest
     } = config;
     localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(rest));
@@ -844,11 +854,31 @@ export const useJobStore = create<JobState>((set, get) => {
     },
 
     createAndStartJob: async () => {
-      const { batchProbes, probeResult, pipelineConfig, ingestMode, syncFile, syncLanguage, syncUseGemini } = get();
+      const { batchProbes, probeResult, pipelineConfig, ingestMode, syncFile, syncLanguage, syncUseGemini, systemInfo } = get();
       const targets = batchProbes.length > 0 ? batchProbes : probeResult ? [probeResult] : [];
       if (targets.length === 0) return null;
       const syncing = ingestMode === 'sync';
       if (syncing && !syncFile) return null;
+      const dualSourceAllowed = Boolean(systemInfo?.dual_source_pivot_enabled);
+      const dualSourceFields = dualSourceAllowed && !syncing
+        ? {
+            enable_dual_source_pivot: Boolean(pipelineConfig.enable_dual_source_pivot),
+            dual_source_en_srt: pipelineConfig.enable_dual_source_pivot ? pipelineConfig.dual_source_en_srt || undefined : undefined,
+            dual_source_ar_srt: pipelineConfig.enable_dual_source_pivot ? pipelineConfig.dual_source_ar_srt || undefined : undefined,
+            dual_source_fallback_languages: pipelineConfig.enable_dual_source_pivot
+              ? (pipelineConfig.dual_source_fallback_languages || ['ar', 'ru', 'pl', 'es', 'fr'])
+              : undefined,
+            dual_source_smart_asr_fallback: pipelineConfig.enable_dual_source_pivot
+              ? pipelineConfig.dual_source_smart_asr_fallback !== false
+              : undefined,
+          }
+        : {
+            enable_dual_source_pivot: false,
+            dual_source_en_srt: undefined,
+            dual_source_ar_srt: undefined,
+            dual_source_fallback_languages: undefined,
+            dual_source_smart_asr_fallback: undefined,
+          };
 
       if (targets.length > 1 && !syncing) {
         const createdJobs: Job[] = [];
@@ -857,6 +887,7 @@ export const useJobStore = create<JobState>((set, get) => {
           for (const target of targets) {
             const job = await api.createJob({
               ...pipelineConfig,
+              ...dualSourceFields,
               gemini_api_key_override: pipelineConfig.gemini_api_key_override || undefined,
               auto_save_srt: !target.is_upload && Boolean(pipelineConfig.auto_save_srt),
               video_path: target.file_path,
@@ -898,6 +929,7 @@ export const useJobStore = create<JobState>((set, get) => {
         set({ isLoading: true, error: null });
         const newJob = await api.createJob({
           ...pipelineConfig,
+          ...dualSourceFields,
           gemini_api_key_override: pipelineConfig.gemini_api_key_override || undefined,
           auto_save_srt: !target.is_upload && Boolean(pipelineConfig.auto_save_srt),
           video_path: target.file_path,

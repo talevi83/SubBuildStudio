@@ -54,6 +54,16 @@ const json = (method: string, body: unknown): RequestInit => ({
 });
 
 export const api = {
+  getConfig(): Promise<{
+    dual_source_pivot_enabled: boolean;
+    opensubtitles_configured: boolean;
+    subdl_configured: boolean;
+    ffsubsync_available: boolean;
+    alass_available: boolean;
+  }> {
+    return request(`${API_BASE}/config`, undefined, 'Failed to load feature config');
+  },
+
   getSystemInfo(): Promise<SystemInfo> {
     return request(`${API_BASE}/system/info`, undefined, 'Failed to load system info');
   },

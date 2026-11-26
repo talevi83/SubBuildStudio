@@ -48,6 +48,8 @@ def log_job_start(
             f"source language {ctx.source_language}, VAD {ctx.vad_filter}, "
             f"comms boost {c_mode}, on-screen text {ctx.detect_onscreen_text}"
         )
+        if getattr(ctx, "enable_dual_source_pivot", False):
+            logger.info("Dual-Source Pivot (EN + AR): enabled for this job")
         translation_model = ctx.gemini_model or s.translation.model
         logger.info(
             f"AI: translation {'on' if ctx.enable_translation else 'off'} -> {ctx.target_language}, "
@@ -89,6 +91,32 @@ def log_job_summary(job_id: str, ctx: Optional[PipelineContext]) -> None:
                     f"vocal isolation used {bool(getattr(ctx, 'isolated_vocals_path', None))}"
                     + (f" | {smart_summary}" if smart_summary else "")
                 )
+                ds_report = getattr(ctx, "dual_source_report", None)
+                if isinstance(ds_report, dict):
+                    if ds_report.get("active"):
+                        align = ds_report.get("alignment") or {}
+                        en_sync = ds_report.get("primary_sync") or ds_report.get("en_sync") or {}
+                        ar_sync = ds_report.get("anchor_sync") or ds_report.get("ar_sync") or {}
+                        p_lang = (ds_report.get("primary_lang") or "en").upper()
+                        a_lang = (ds_report.get("anchor_lang") or "").upper()
+                        pair_mode = ds_report.get("pair_mode") or "en_ar"
+                        gap_sup = ds_report.get("gap_asr_supplement")
+                        logger.info(
+                            f"Dual-Source Pivot ({ds_report.get('source', 'api')}, mode={pair_mode}, "
+                            f"primary={p_lang}, anchor={a_lang or 'none'}): "
+                            f"{p_lang} sync {en_sync.get('engine', 'none')} ({float(en_sync.get('offset_seconds', 0.0)):+.3f}s)"
+                            + (
+                                f", {a_lang} sync {ar_sync.get('engine', 'none')} ({float(ar_sync.get('offset_seconds', 0.0)):+.3f}s)"
+                                if a_lang
+                                else ""
+                            )
+                            + f" | paired={align.get('paired_count', 0)}, unmatched={align.get('en_only_count', 0)}, "
+                            f"AR-only ON_SCREEN={align.get('ar_only_count', 0)} | "
+                            f"{'gap ASR supplement active; ' if gap_sup else ''}"
+                            f"skipped {', '.join(ds_report.get('skipped_stages') or [])}"
+                        )
+                    else:
+                        logger.info(f"Dual-Source Pivot fallback: {ds_report.get('fallback_reason', 'unavailable')}")
             if job.warning_message:
                 logger.warning(f"Job warning: {job.warning_message}")
             if job.error_message:

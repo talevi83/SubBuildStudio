@@ -127,6 +127,11 @@ describe('Transcription Context / Glossary / Names UI', () => {
 
     const view = render(<PipelineConfig />);
     const engineSelect = view.getByTestId('transcription-provider-select') as HTMLSelectElement;
+    // Advanced audio controls stay collapsed until opened
+    expect(view.queryByTestId('vocal-isolation-toggle')).toBeNull();
+    expect(view.queryByTestId('high-speech-sensitivity-checkbox')).toBeNull();
+
+    fireEvent.click(view.getByTestId('advanced-audio-toggle'));
     const vocalToggle = view.getByTestId('vocal-isolation-toggle') as HTMLInputElement;
 
     fireEvent.change(engineSelect, { target: { value: 'whisperx' } });
@@ -161,10 +166,112 @@ describe('Transcription Context / Glossary / Names UI', () => {
     expect(cfg.comms_boost_mode).toBe('auto');
     expect(cfg.vocal_isolation).toBe(false);
     expect(cfg.vocal_isolation_mode).toBe('off');
+    expect((view.getByTestId('smart-audio-toggle') as HTMLInputElement).checked).toBe(true);
+    expect((view.getByTestId('radio-comms-toggle') as HTMLInputElement).checked).toBe(false);
 
+    fireEvent.click(view.getByTestId('advanced-audio-toggle'));
     const vocalModeSelect = view.getByTestId('vocal-isolation-mode-select') as HTMLSelectElement;
     fireEvent.change(vocalModeSelect, { target: { value: 'auto' } });
     expect(useJobStore.getState().pipelineConfig.vocal_isolation_mode).toBe('auto');
     expect(useJobStore.getState().pipelineConfig.vocal_isolation).toBe(false);
+  });
+
+  it('hides Dual-Source Sync toggle when disabled and exposes it with optional SRT pickers when enabled', () => {
+    useJobStore.setState({
+      systemInfo: {
+        is_gemini_configured: true,
+        gemini_model: 'gemini-3.8-flash',
+        gemini_models: ['gemini-3.8-flash'],
+        whisper_default_model: 'medium',
+        whisper_models: ['medium'],
+        max_cps_warning: 20,
+        hardware: {
+          cuda_available: false,
+          device_count: 0,
+          cpu_count: 8,
+          recommended_device: 'cpu',
+          recommended_compute_type: 'int8',
+        },
+        dual_source_pivot_enabled: false,
+      },
+    });
+    const viewOff = render(<PipelineConfig />);
+    expect(viewOff.queryByTestId('dual-source-pivot-toggle')).toBeNull();
+
+    cleanup();
+    useJobStore.setState((s) => ({
+      systemInfo: s.systemInfo ? { ...s.systemInfo, dual_source_pivot_enabled: true } : null,
+    }));
+    const viewOn = render(<PipelineConfig />);
+    const toggle = viewOn.getByTestId('dual-source-pivot-toggle') as HTMLButtonElement;
+    expect(toggle).toBeTruthy();
+    fireEvent.click(toggle);
+    expect(useJobStore.getState().pipelineConfig.enable_dual_source_pivot).toBe(true);
+    expect(viewOn.getByTestId('dual-source-fallback-order-select')).toBeTruthy();
+    expect(viewOn.getByTestId('dual-source-smart-asr-toggle')).toBeTruthy();
+    expect(viewOn.getByTestId('dual-source-en-input')).toBeTruthy();
+    expect(viewOn.getByTestId('dual-source-ar-input')).toBeTruthy();
+    expect(viewOn.getByTestId('pipeline-section-tabs')).toBeTruthy();
+    fireEvent.click(viewOn.getByTestId('dual-source-direct-asr-toggle'));
+    expect(useJobStore.getState().pipelineConfig.enable_dual_source_pivot).toBe(false);
+    expect(useJobStore.getState().pipelineConfig.use_embedded_subtitles).toBe(false);
+  });
+
+  it('hides duplicate embedded-subtitles toggle when Smart Subtitles First is active and prioritizes embedded tracks automatically', () => {
+    const probeWithSubs: ProbeResponse = {
+      ...sampleProbe,
+      subtitle_streams: [
+        {
+          index: 2,
+          codec_name: 'subrip',
+          language: 'eng',
+          title: 'English',
+          default: true,
+          forced: false,
+          text_based: true,
+        },
+      ],
+    };
+    useJobStore.setState((s) => ({
+      probeResult: probeWithSubs,
+      batchProbes: [probeWithSubs],
+      systemInfo: s.systemInfo
+        ? { ...s.systemInfo, dual_source_pivot_enabled: true }
+        : {
+            is_gemini_configured: true,
+            gemini_model: 'gemini-3.8-flash',
+            gemini_models: ['gemini-3.8-flash'],
+            whisper_default_model: 'medium',
+            whisper_models: ['medium'],
+            max_cps_warning: 20,
+            hardware: {
+              cuda_available: false,
+              device_count: 0,
+              cpu_count: 8,
+              recommended_device: 'cpu',
+              recommended_compute_type: 'int8',
+            },
+            dual_source_pivot_enabled: true,
+          },
+    }));
+    useJobStore.getState().updatePipelineConfig({
+      enable_dual_source_pivot: true,
+      use_embedded_subtitles: false,
+    });
+
+    const view = render(<PipelineConfig />);
+    expect(view.queryByTestId('use-embedded-subtitles-toggle')).toBeNull();
+    expect(view.getByTestId('dual-source-embedded-detected')).toBeTruthy();
+    expect(view.getByTestId('whisper-fallback-mode-banner')).toBeTruthy();
+
+    fireEvent.click(view.getByTestId('dual-source-direct-asr-toggle'));
+    expect(useJobStore.getState().pipelineConfig.enable_dual_source_pivot).toBe(false);
+    expect(useJobStore.getState().pipelineConfig.use_embedded_subtitles).toBe(false);
+    expect(view.getByTestId('use-embedded-subtitles-toggle')).toBeTruthy();
+
+    fireEvent.click(view.getByTestId('dual-source-pivot-toggle'));
+    expect(useJobStore.getState().pipelineConfig.enable_dual_source_pivot).toBe(true);
+    expect(useJobStore.getState().pipelineConfig.use_embedded_subtitles).toBe(true);
+    expect(view.queryByTestId('use-embedded-subtitles-toggle')).toBeNull();
   });
 });

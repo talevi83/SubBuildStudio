@@ -41,6 +41,7 @@ export const en = {
     QUEUED: 'Queued',
     PROBING: 'Probing',
     EXTRACTING_AUDIO: 'Extracting audio',
+    DUAL_SOURCE_SYNC: 'Syncing EN + AR subtitles',
     VOCAL_ISOLATION: 'Isolating vocals',
     TRANSCRIBING: 'Transcribing',
     DIARIZING: 'Detecting speakers',
@@ -219,9 +220,9 @@ export const en = {
     sameLangPolishDesc:
       'Source and target are the same language. AI will fix ASR typos, punctuation, and spelling without rewriting wording.',
     sameLangDisableAi: 'Raw Whisper only (no AI)',
-    commsTitle: 'Tactical Comms & Radio Boost',
+    commsTitle: 'Radio / Military Comms Only',
     commsDescription:
-      'Enhances walkie-talkie/radio frequencies, reduces static, and tunes Whisper VAD to capture distorted military comms and whispers.',
+      'Use only for movies/series with heavy walkie-talkie static or military radio chatter (for regular whispers, Smart Audio is enough).',
     onscreenTitle: 'Detect On-Screen Text (Forced Narratives)',
     onscreenDescription:
       "Scans video frames with AI Vision and checks embedded tracks for location titles, timestamps ('One week later...'), plot signs — and the video's burned-in subtitles for speech in other languages.",
@@ -265,6 +266,11 @@ export const en = {
     highSpeechSensitivityTitle: 'High Speech Sensitivity (Catch Whispers)',
     highSpeechSensitivityDesc:
       'Relaxes voice activity thresholds to catch quiet whispers, rapid speech, and dialogue over loud background music.',
+    smartAudioTitle: 'Smart Audio Processing (Recommended)',
+    smartAudioDesc:
+      'Automatically detects and gently boosts quiet whispers while keeping the rest of the soundtrack untouched.',
+    advancedAudioToggle: 'Advanced Audio Settings',
+    highSpeechAutoActiveNote: 'Already enabled automatically when Smart Audio is on.',
     estimateTitle: 'Estimated AI cost for this file',
     estimateBatchTitle: 'Estimated AI cost for {count} episodes',
     estimateNone: 'No AI calls with these options',
@@ -275,6 +281,31 @@ export const en = {
     autoSaveSrtTitle: 'Auto-save subtitles next to each video when finished',
     autoSaveSrtDescription:
       'Automatically writes Episode.<lang>.srt (with RTL fix) into each video\'s original folder upon job completion.',
+    dualSourceTitle: 'Dual-Source Sync (EN + AR)',
+    dualSourceDescription:
+      'Fetches & audio-syncs official English and Arabic subtitles, uses Arabic as a grammatical gender anchor, detects Arabic-only on-screen titles, and skips redundant Whisper/Vision passes.',
+    dualSourceModeTitle: 'Workflow & Sources',
+    dualSourceModeSubtitlesFirst: 'Smart Subtitles First',
+    dualSourceModeDirectAsr: 'Direct Audio Transcription',
+    dualSourceModeDescSubtitles:
+      'Checks embedded & online subtitles (EN + AR or RU/PL/ES/FR gender fallback), syncs to audio, and runs WhisperX only if needed.',
+    dualSourceModeDescAsr: 'Transcribes speech directly from audio with WhisperX / Faster-Whisper.',
+    dualSourceFallbackOrderLabel: 'Gender / Secondary Language Priority',
+    dualSourceSmartAsrFallbackTitle: 'Smart ASR Fallback (Run Whisper only if subtitles fail sync or leave gaps)',
+    dualSourceSmartAsrFallbackDesc:
+      'Reuses already-extracted audio and targets only missing or low-coverage segments.',
+    dualSourceEnLabel: 'Optional local .en.srt',
+    dualSourceArLabel: 'Optional local .ar.srt',
+    dualSourceClear: 'Clear',
+    dualSourceLoaded: 'Loaded',
+    dualSourceEmbeddedPriorityNote:
+      'Embedded subtitles detected in file ({name}) — will be used automatically as first priority before online search, with Whisper as fallback.',
+    whisperFallbackModeNote:
+      'In "Smart Subtitles First" mode, the Whisper and audio settings below run automatically as a fallback only if subtitles are missing or need gap completion.',
+    sectionAll: 'All Sections',
+    sectionWorkflow: 'Workflow & Sources',
+    sectionTranscription: 'Transcription & Audio',
+    sectionTranslation: 'Translation & Cost',
     launch: 'Launch Subtitling Pipeline',
     launchBatch: 'Launch Batch Queue ({count} Episodes)',
     launching: 'Starting pipeline...',
@@ -316,6 +347,7 @@ export const en = {
   stages: {
     PROBING: 'Probe Streams',
     EXTRACTING_AUDIO: 'Extract Audio',
+    DUAL_SOURCE_SYNC: 'Dual-Source (EN+AR)',
     VOCAL_ISOLATION: 'Audio Conditioning',
     TRANSCRIBING: 'Transcribe (Whisper)',
     DIARIZING: 'Speaker Diarization',
@@ -825,6 +857,13 @@ export const en = {
     },
     frameDetail: 'Frame detail',
     frameDetailHint: 'Tokens per frame: low 280 · medium 560 · high 1120',
+    frameMaxWidthLabel: '4K / High-Res OCR Downscale',
+    frameMaxWidthHint: 'Caps frame width during OCR sampling for faster 4K decoding.',
+    navAll: 'All Settings',
+    navKeys: 'Keys & Providers',
+    navModels: 'Translation & OCR',
+    navCost: 'Cost & Local AI',
+    navSystem: 'Storage & Updates',
     resolution: { low: 'Low', medium: 'Medium', high: 'High' },
     onscreenPosition: 'On-Screen OCR Text Position',
     onscreenPositionHint:

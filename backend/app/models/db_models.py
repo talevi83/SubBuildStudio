@@ -10,6 +10,7 @@ class JobStatus(str, Enum):
     QUEUED = "QUEUED"
     PROBING = "PROBING"
     EXTRACTING_AUDIO = "EXTRACTING_AUDIO"
+    DUAL_SOURCE_SYNC = "DUAL_SOURCE_SYNC"
     VOCAL_ISOLATION = "VOCAL_ISOLATION"
     TRANSCRIBING = "TRANSCRIBING"
     DIARIZING = "DIARIZING"
@@ -127,6 +128,13 @@ class Job(SQLModel, table=True):
     sync_file_name: Optional[str] = None
     sync_source_json: Optional[str] = None  # the uploaded cues (with their original times) and options
     sync_report_json: Optional[str] = None  # how the sync went (methods, offset, frame rate, cuts)
+    # Feature-flagged Dual-Source (EN + AR) subtitle pivot fields
+    enable_dual_source_pivot: bool = Field(default=False)
+    dual_source_en_srt: Optional[str] = None
+    dual_source_ar_srt: Optional[str] = None
+    dual_source_fallback_languages_json: Optional[str] = None
+    dual_source_smart_asr_fallback: bool = Field(default=True)
+    dual_source_report_json: Optional[str] = None
     # Edit history: the JobHistoryEntry that matches the subtitles right now (see core/edit_history.py)
     history_cursor: Optional[int] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

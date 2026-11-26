@@ -23,6 +23,9 @@ class TranslatableSegment:
     addressee: Optional[Dict[str, Any]] = None
     # 2nd-person form the translator reports having written: m | f | pl (None = none / not reported)
     addressee_form: Optional[str] = None
+    # Dual-source pivot: paired Arabic reference text and alignment classification ("EN_AR" | "EN_ONLY" | "AR_ONLY")
+    reference_text: Optional[str] = None
+    dual_source_kind: Optional[str] = None
 
     @property
     def duration(self) -> float:

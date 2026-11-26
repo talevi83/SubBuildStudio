@@ -17,7 +17,7 @@ import {
 } from '../settings/labels';
 import { SyncOptions } from './SyncOptions';
 import { GenrePresets } from './GenrePresets';
-import { AlertTriangle, Sparkles, Settings, Mic, Key, Play, Loader2, FileText, Coins, Users, Layers } from 'lucide-react';
+import { AlertTriangle, Sparkles, Settings, Mic, Key, Play, Loader2, FileText, Coins, Users, Layers, ChevronDown, ChevronUp } from 'lucide-react';
 
 /** Accessible on/off switch with a title and a one-line description. */
 export const FeatureToggle: React.FC<{
@@ -31,7 +31,7 @@ export const FeatureToggle: React.FC<{
   testId?: string;
 }> = ({ icon, title, description, checked, onChange, note, children, testId }) => (
   <div
-    className={`p-3 rounded-lg border transition-colors ${
+    className={`min-w-0 overflow-hidden p-3 rounded-lg border transition-colors ${
       checked ? 'bg-indigo-500/10 border-indigo-500/40' : 'bg-surface border-line hover:border-zinc-600'
     }`}
   >
@@ -94,6 +94,11 @@ export const PipelineConfig: React.FC = () => {
   const t = useT();
 
   const [showKeyOverride, setShowKeyOverride] = useState(false);
+  const [advancedAudioOpen, setAdvancedAudioOpen] = useState(false);
+  const [dualSourceEnName, setDualSourceEnName] = useState<string | null>(null);
+  const [dualSourceArName, setDualSourceArName] = useState<string | null>(null);
+  const [activeSection, setActiveSection] = useState<'all' | 'workflow' | 'transcription' | 'translation'>('all');
+  const dualSourceFeatureEnabled = systemInfo?.dual_source_pivot_enabled === true;
   const activeTranslationProvider =
     appSettings?.translation.provider || inferProviderFromModelId(appSettings?.translation.model) || 'google';
   const activeVisionProvider =
@@ -121,6 +126,14 @@ export const PipelineConfig: React.FC = () => {
   );
   const dialogueTrack =
     dialogueTracks.find((s) => s.index === pipelineConfig.selected_subtitle_stream) || dialogueTracks[0];
+  const dialogueTrackLabel = dialogueTrack
+    ? (dialogueTrack.title || dialogueTrack.language?.toUpperCase() || `#${dialogueTrack.index}`) +
+      (dialogueTrack.language &&
+      dialogueTrack.title &&
+      !dialogueTrack.title.toLowerCase().includes(dialogueTrack.language.toLowerCase())
+        ? ` (${dialogueTrack.language.toUpperCase()})`
+        : '')
+    : '';
   const translationWithoutKey = pipelineConfig.enable_translation && !isTranslationReady;
 
   const activeProbes = batchProbes.length > 0 ? batchProbes : probeResult ? [probeResult] : [];
@@ -181,19 +194,265 @@ export const PipelineConfig: React.FC = () => {
         </div>
       )}
 
-      <GenrePresets
-        pipelineConfig={pipelineConfig}
-        whisperModels={whisperModels}
-        onApply={updatePipelineConfig}
-      />
+      {/* Organized Section Filter Bar */}
+      <div className="flex flex-wrap items-center gap-1.5" role="tablist" data-testid="pipeline-section-tabs">
+        {([
+          { id: 'all' as const, label: t('config.sectionAll') },
+          ...(dualSourceFeatureEnabled ? [{ id: 'workflow' as const, label: t('config.sectionWorkflow') }] : []),
+          { id: 'transcription' as const, label: t('config.sectionTranscription') },
+          { id: 'translation' as const, label: t('config.sectionTranslation') },
+        ]).map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={activeSection === tab.id}
+            data-testid={`pipeline-tab-${tab.id}`}
+            onClick={() => setActiveSection(tab.id)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+              activeSection === tab.id
+                ? 'bg-indigo-600 text-white shadow-sm'
+                : 'bg-sunken border border-line text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {(activeSection === 'all' || activeSection === 'workflow') && (
+        <GenrePresets
+          pipelineConfig={pipelineConfig}
+          whisperModels={whisperModels}
+          onApply={updatePipelineConfig}
+        />
+      )}
+
+      {/* Feature-Flagged Workflow & Sources Card (Dual-Source Subtitles-First vs Direct ASR) */}
+      {!syncing && dualSourceFeatureEnabled && (activeSection === 'all' || activeSection === 'workflow') && (
+        <div
+          data-testid="dual-source-workflow-card"
+          className="p-4 rounded-xl bg-sunken border border-indigo-500/30 space-y-3"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-xs font-semibold text-zinc-100">{t('config.dualSourceModeTitle')}</h3>
+              <p className="text-[11px] text-zinc-400 mt-0.5">
+                {pipelineConfig.enable_dual_source_pivot
+                  ? t('config.dualSourceModeDescSubtitles')
+                  : t('config.dualSourceModeDescAsr')}
+              </p>
+            </div>
+            <div className="inline-flex bg-surface p-1 rounded-lg border border-line" role="radiogroup">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={Boolean(pipelineConfig.enable_dual_source_pivot)}
+                data-testid="dual-source-pivot-toggle"
+                onClick={() => updatePipelineConfig({ enable_dual_source_pivot: true, use_embedded_subtitles: true })}
+                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors cursor-pointer ${
+                  pipelineConfig.enable_dual_source_pivot
+                    ? 'bg-indigo-600 text-white'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                {t('config.dualSourceModeSubtitlesFirst')}
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={!pipelineConfig.enable_dual_source_pivot}
+                data-testid="dual-source-direct-asr-toggle"
+                onClick={() => updatePipelineConfig({ enable_dual_source_pivot: false, use_embedded_subtitles: false })}
+                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors cursor-pointer ${
+                  !pipelineConfig.enable_dual_source_pivot
+                    ? 'bg-indigo-600 text-white'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                {t('config.dualSourceModeDirectAsr')}
+              </button>
+            </div>
+          </div>
+
+          {Boolean(pipelineConfig.enable_dual_source_pivot) && (
+            <div className="pt-3 border-t border-indigo-500/20 space-y-3 text-xs">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-zinc-400 mb-1 font-medium">
+                    {t('config.dualSourceFallbackOrderLabel')}
+                  </label>
+                  <select
+                    data-testid="dual-source-fallback-order-select"
+                    value={(pipelineConfig.dual_source_fallback_languages || ['ar', 'ru', 'pl', 'es', 'fr']).join(',')}
+                    onChange={(e) =>
+                      updatePipelineConfig({ dual_source_fallback_languages: e.target.value.split(',') })
+                    }
+                    className={selectClass}
+                  >
+                    <option value="ar,ru,pl,es,fr">AR → RU → PL → ES → FR</option>
+                    <option value="ar,es,fr,ru,pl">AR → ES → FR → RU → PL</option>
+                    <option value="ru,pl,es,fr,ar">RU → PL → ES → FR → AR</option>
+                  </select>
+                </div>
+
+                <label className="flex items-start gap-2.5 p-2 rounded-lg bg-surface border border-line cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    data-testid="dual-source-smart-asr-toggle"
+                    checked={pipelineConfig.dual_source_smart_asr_fallback !== false}
+                    onChange={(e) =>
+                      updatePipelineConfig({ dual_source_smart_asr_fallback: e.target.checked })
+                    }
+                    className="mt-0.5 w-4 h-4 rounded border-zinc-700 text-indigo-600 focus:ring-indigo-500 bg-zinc-800 cursor-pointer"
+                  />
+                  <span className="min-w-0">
+                    <span className="block font-medium text-zinc-200">
+                      {t('config.dualSourceSmartAsrFallbackTitle')}
+                    </span>
+                    <span className="block text-[11px] text-zinc-400">
+                      {t('config.dualSourceSmartAsrFallbackDesc')}
+                    </span>
+                  </span>
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div className="p-2 rounded bg-surface border border-line flex items-center justify-between gap-2">
+                  <label className="flex-1 min-w-0 cursor-pointer">
+                    <span className="block font-medium text-zinc-300 truncate">
+                      {dualSourceEnName ? `${t('config.dualSourceLoaded')}: ${dualSourceEnName}` : t('config.dualSourceEnLabel')}
+                    </span>
+                    <input
+                      type="file"
+                      accept=".srt"
+                      data-testid="dual-source-en-input"
+                      className="sr-only"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const txt = await file.text();
+                        setDualSourceEnName(file.name);
+                        updatePipelineConfig({ dual_source_en_srt: txt });
+                      }}
+                    />
+                  </label>
+                  {pipelineConfig.dual_source_en_srt && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDualSourceEnName(null);
+                        updatePipelineConfig({ dual_source_en_srt: null });
+                      }}
+                      className="text-[11px] text-zinc-400 hover:text-zinc-200 underline cursor-pointer"
+                    >
+                      {t('config.dualSourceClear')}
+                    </button>
+                  )}
+                </div>
+
+                <div className="p-2 rounded bg-surface border border-line flex items-center justify-between gap-2">
+                  <label className="flex-1 min-w-0 cursor-pointer">
+                    <span className="block font-medium text-zinc-300 truncate">
+                      {dualSourceArName ? `${t('config.dualSourceLoaded')}: ${dualSourceArName}` : t('config.dualSourceArLabel')}
+                    </span>
+                    <input
+                      type="file"
+                      accept=".srt"
+                      data-testid="dual-source-ar-input"
+                      className="sr-only"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const txt = await file.text();
+                        setDualSourceArName(file.name);
+                        updatePipelineConfig({ dual_source_ar_srt: txt });
+                      }}
+                    />
+                  </label>
+                  {pipelineConfig.dual_source_ar_srt && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDualSourceArName(null);
+                        updatePipelineConfig({ dual_source_ar_srt: null });
+                      }}
+                      className="text-[11px] text-zinc-400 hover:text-zinc-200 underline cursor-pointer"
+                    >
+                      {t('config.dualSourceClear')}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {dialogueTrack && (
+                <div
+                  data-testid="dual-source-embedded-detected"
+                  className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/35 space-y-2"
+                >
+                  <div className="flex items-start gap-2 text-[11px] text-emerald-300 leading-relaxed">
+                    <FileText className="w-4 h-4 mt-0.5 shrink-0 text-emerald-400" />
+                    <span>{t('config.dualSourceEmbeddedPriorityNote', { name: dialogueTrackLabel })}</span>
+                  </div>
+                  {dialogueTracks.length > 1 && (
+                    <div>
+                      <label className="block text-zinc-400 mb-1 text-[11px] font-medium">
+                        {t('config.selectEmbeddedTrack')}
+                      </label>
+                      <select
+                        data-testid="dual-source-embedded-track-select"
+                        value={
+                          pipelineConfig.selected_subtitle_stream == null
+                            ? 'auto'
+                            : String(pipelineConfig.selected_subtitle_stream)
+                        }
+                        onChange={(e) =>
+                          updatePipelineConfig({
+                            selected_subtitle_stream: e.target.value === 'auto' ? null : Number(e.target.value),
+                          })
+                        }
+                        className={selectClass}
+                      >
+                        <option value="auto">
+                          {t('config.embeddedAutoTrack', {
+                            name:
+                              dialogueTracks[0].title ||
+                              dialogueTracks[0].language?.toUpperCase() ||
+                              `#${dialogueTracks[0].index}`,
+                          })}
+                        </option>
+                        {dialogueTracks.map((tr) => (
+                          <option key={tr.index} value={String(tr.index)}>
+                            #{tr.index} {tr.title || tr.language?.toUpperCase() || t('streams.subtitles')}
+                            {tr.language ? ` (${tr.language.toUpperCase()})` : ''} · {tr.codec_name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Whisper */}
+        {/* Transcription & Audio */}
+        {(activeSection === 'all' || activeSection === 'transcription') && (
         <div className="space-y-4 p-4 rounded-xl bg-sunken border border-line">
           <div className="flex items-center gap-2 text-xs font-semibold text-zinc-200 border-b border-line pb-2">
             <Mic className="w-4 h-4 text-indigo-400" />
             {pipelineConfig.transcription_provider === 'whisperx' ? t('config.whisperxTitle') : t('config.whisperTitle')}
           </div>
+          {dualSourceFeatureEnabled && Boolean(pipelineConfig.enable_dual_source_pivot) && (
+            <div
+              data-testid="whisper-fallback-mode-banner"
+              className="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/30 text-[11px] text-indigo-200 leading-relaxed"
+            >
+              {t('config.whisperFallbackModeNote')}
+            </div>
+          )}
           <div className="space-y-3 text-xs">
             <div>
               <label htmlFor="transcription-provider-select" className="block text-zinc-400 mb-1 font-medium">
@@ -277,103 +536,201 @@ export const PipelineConfig: React.FC = () => {
                   </div>
                 )}
             </div>
-            <label className="pt-1 flex items-center justify-between gap-3 cursor-pointer">
-              <span>
-                <span className="text-zinc-300 font-medium block">{t('config.vad')}</span>
-                <span className="text-[11px] text-zinc-500 block">{t('config.vadHint')}</span>
-              </span>
-              <input
-                type="checkbox"
-                checked={pipelineConfig.vad_filter}
-                onChange={(e) => updatePipelineConfig({ vad_filter: e.target.checked })}
-                className="w-4 h-4 rounded border-zinc-700 text-indigo-600 focus:ring-indigo-500 bg-zinc-800 cursor-pointer"
-              />
-            </label>
-            <label className="pt-1 flex items-center justify-between gap-3 cursor-pointer">
-              <span>
-                <span className="text-zinc-300 font-medium block">{t('config.highSpeechSensitivityTitle')}</span>
-                <span className="text-[11px] text-zinc-500 block">{t('config.highSpeechSensitivityDesc')}</span>
-              </span>
-              <input
-                type="checkbox"
-                checked={pipelineConfig.high_speech_sensitivity ?? false}
-                onChange={(e) => updatePipelineConfig({ high_speech_sensitivity: e.target.checked })}
-                className="w-4 h-4 rounded border-zinc-700 text-indigo-600 focus:ring-indigo-500 bg-zinc-800 cursor-pointer"
-              />
-            </label>
-
             {(() => {
               const vocalMode =
                 pipelineConfig.vocal_isolation_mode ?? (pipelineConfig.vocal_isolation ? 'on' : 'off');
-              const isActive = vocalMode !== 'off';
+              const smartAudioOn = pipelineConfig.comms_boost_mode === 'auto' || vocalMode === 'auto';
+              const hasAdvancedOverrides =
+                !pipelineConfig.vad_filter ||
+                Boolean(pipelineConfig.high_speech_sensitivity) ||
+                Boolean(pipelineConfig.vocal_isolation) ||
+                vocalMode !== 'off';
+              const isVocalActive = vocalMode !== 'off';
+
               return (
-                <div
-                  className={`p-2.5 rounded-lg border transition-colors space-y-2 ${
-                    isActive
-                      ? 'bg-indigo-500/10 border-indigo-500/40'
-                      : 'bg-surface border-line hover:border-zinc-600'
-                  }`}
-                >
-                  <label className="flex items-start justify-between gap-3 cursor-pointer">
-                    <span className="min-w-0">
-                      <span className="text-zinc-200 font-semibold block">{t('config.vocalIsolationTitle')}</span>
-                      <span className="text-[11px] text-zinc-400 block mt-0.5 leading-relaxed">
-                        {t('config.vocalIsolationDesc')}
+                <>
+                  <div
+                    className={`p-2.5 rounded-lg border transition-colors ${
+                      smartAudioOn
+                        ? 'bg-teal-500/10 border-teal-500/40'
+                        : 'bg-surface border-line hover:border-zinc-600'
+                    }`}
+                  >
+                    <label className="flex items-start justify-between gap-3 cursor-pointer">
+                      <span className="min-w-0">
+                        <span className="text-zinc-200 font-semibold block">{t('config.smartAudioTitle')}</span>
+                        <span className="text-[11px] text-zinc-400 block mt-0.5 leading-relaxed">
+                          {t('config.smartAudioDesc')}
+                        </span>
                       </span>
-                    </span>
-                    <input
-                      type="checkbox"
-                      role="switch"
-                      data-testid="vocal-isolation-toggle"
-                      aria-checked={isActive}
-                      checked={isActive}
-                      onChange={(e) => {
-                        const nextMode = e.target.checked ? 'on' : 'off';
-                        updatePipelineConfig({
-                          vocal_isolation: nextMode === 'on',
-                          vocal_isolation_mode: nextMode,
-                        });
-                      }}
-                      className="sr-only peer"
-                    />
-                    <span
-                      className={`relative mt-0.5 inline-flex h-5 w-9 flex-shrink-0 rounded-full transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-500 ${
-                        isActive ? 'bg-indigo-600' : 'bg-zinc-700'
-                      }`}
-                      aria-hidden
-                    >
-                      <span
-                        className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${
-                          isActive ? 'start-4.5' : 'start-0.5'
-                        }`}
+                      <input
+                        type="checkbox"
+                        role="switch"
+                        data-testid="smart-audio-toggle"
+                        aria-checked={smartAudioOn}
+                        checked={smartAudioOn}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            updatePipelineConfig({
+                              comms_boost: false,
+                              comms_boost_mode: 'auto',
+                            });
+                          } else {
+                            updatePipelineConfig({
+                              comms_boost: false,
+                              comms_boost_mode: 'off',
+                              vocal_isolation: false,
+                              vocal_isolation_mode: 'off',
+                            });
+                          }
+                        }}
+                        className="sr-only peer"
                       />
-                    </span>
-                  </label>
-                  <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-line/60">
-                    <span className="text-[11px] text-zinc-400">{t('config.audioModeLabel')}</span>
-                    <select
-                      data-testid="vocal-isolation-mode-select"
-                      value={vocalMode}
-                      onChange={(e) => {
-                        const m = e.target.value as 'off' | 'auto' | 'on';
-                        updatePipelineConfig({
-                          vocal_isolation: m === 'on',
-                          vocal_isolation_mode: m,
-                        });
-                      }}
-                      className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-[11px] text-zinc-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
-                    >
-                      <option value="off">{t('config.audioModeOff')}</option>
-                      <option value="auto">{t('config.vocalModeAuto')}</option>
-                      <option value="on">{t('config.audioModeOn')}</option>
-                    </select>
+                      <span
+                        className={`relative mt-0.5 inline-flex h-5 w-9 flex-shrink-0 rounded-full transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-teal-500 ${
+                          smartAudioOn ? 'bg-teal-600' : 'bg-zinc-700'
+                        }`}
+                        aria-hidden
+                      >
+                        <span
+                          className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${
+                            smartAudioOn ? 'start-4.5' : 'start-0.5'
+                          }`}
+                        />
+                      </span>
+                    </label>
                   </div>
-                  {isActive && systemInfo?.vocal_isolation_available === false && (
-                    <p className="text-[11px] text-amber-300 leading-snug" dir="auto">
-                      {t('config.vocalIsolationFallbackNote')}
-                    </p>
-                  )}
-                </div>
+
+                  <div className="pt-1">
+                    <button
+                      type="button"
+                      data-testid="advanced-audio-toggle"
+                      aria-expanded={advancedAudioOpen}
+                      onClick={() => setAdvancedAudioOpen((o) => !o)}
+                      className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-surface hover:bg-zinc-800/70 border border-line/80 text-[11px] font-medium text-zinc-300 transition-colors cursor-pointer"
+                    >
+                      <span className="flex items-center gap-2">
+                        <span>{t('config.advancedAudioToggle')}</span>
+                        {hasAdvancedOverrides && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" aria-hidden />
+                        )}
+                      </span>
+                      {advancedAudioOpen ? (
+                        <ChevronUp className="w-3.5 h-3.5 text-zinc-400" />
+                      ) : (
+                        <ChevronDown className="w-3.5 h-3.5 text-zinc-400" />
+                      )}
+                    </button>
+
+                    {advancedAudioOpen && (
+                      <div
+                        data-testid="advanced-audio-panel"
+                        className="mt-2 p-2.5 rounded-lg bg-surface/70 border border-line/80 space-y-2.5"
+                      >
+                        <label className="flex items-center justify-between gap-3 cursor-pointer">
+                          <span>
+                            <span className="text-zinc-300 font-medium block">{t('config.vad')}</span>
+                            <span className="text-[11px] text-zinc-500 block">{t('config.vadHint')}</span>
+                          </span>
+                          <input
+                            type="checkbox"
+                            data-testid="vad-filter-checkbox"
+                            checked={pipelineConfig.vad_filter}
+                            onChange={(e) => updatePipelineConfig({ vad_filter: e.target.checked })}
+                            className="w-4 h-4 rounded border-zinc-700 text-indigo-600 focus:ring-indigo-500 bg-zinc-800 cursor-pointer"
+                          />
+                        </label>
+
+                        <label className="pt-2 border-t border-line/50 flex items-start justify-between gap-3 cursor-pointer">
+                          <span>
+                            <span className="text-zinc-300 font-medium block">{t('config.highSpeechSensitivityTitle')}</span>
+                            <span className="text-[11px] text-zinc-500 block">{t('config.highSpeechSensitivityDesc')}</span>
+                            {smartAudioOn && (
+                              <span className="text-[11px] text-teal-400 block mt-0.5">
+                                {t('config.highSpeechAutoActiveNote')}
+                              </span>
+                            )}
+                          </span>
+                          <input
+                            type="checkbox"
+                            data-testid="high-speech-sensitivity-checkbox"
+                            checked={pipelineConfig.high_speech_sensitivity ?? false}
+                            onChange={(e) => updatePipelineConfig({ high_speech_sensitivity: e.target.checked })}
+                            className="mt-0.5 w-4 h-4 rounded border-zinc-700 text-indigo-600 focus:ring-indigo-500 bg-zinc-800 cursor-pointer"
+                          />
+                        </label>
+
+                        <div
+                          className={`p-2.5 rounded-lg border transition-colors space-y-2 ${
+                            isVocalActive
+                              ? 'bg-indigo-500/10 border-indigo-500/40'
+                              : 'bg-sunken border-line hover:border-zinc-600'
+                          }`}
+                        >
+                          <label className="flex items-start justify-between gap-3 cursor-pointer">
+                            <span className="min-w-0">
+                              <span className="text-zinc-200 font-semibold block">{t('config.vocalIsolationTitle')}</span>
+                              <span className="text-[11px] text-zinc-400 block mt-0.5 leading-relaxed">
+                                {t('config.vocalIsolationDesc')}
+                              </span>
+                            </span>
+                            <input
+                              type="checkbox"
+                              role="switch"
+                              data-testid="vocal-isolation-toggle"
+                              aria-checked={isVocalActive}
+                              checked={isVocalActive}
+                              onChange={(e) => {
+                                const nextMode = e.target.checked ? 'on' : 'off';
+                                updatePipelineConfig({
+                                  vocal_isolation: nextMode === 'on',
+                                  vocal_isolation_mode: nextMode,
+                                });
+                              }}
+                              className="sr-only peer"
+                            />
+                            <span
+                              className={`relative mt-0.5 inline-flex h-5 w-9 flex-shrink-0 rounded-full transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-500 ${
+                                isVocalActive ? 'bg-indigo-600' : 'bg-zinc-700'
+                              }`}
+                              aria-hidden
+                            >
+                              <span
+                                className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${
+                                  isVocalActive ? 'start-4.5' : 'start-0.5'
+                                }`}
+                              />
+                            </span>
+                          </label>
+                          <div className="space-y-1.5 pt-2 border-t border-line/60">
+                            <span className="block text-[11px] text-zinc-400 font-medium">{t('config.audioModeLabel')}</span>
+                            <select
+                              data-testid="vocal-isolation-mode-select"
+                              value={vocalMode}
+                              onChange={(e) => {
+                                const m = e.target.value as 'off' | 'auto' | 'on';
+                                updatePipelineConfig({
+                                  vocal_isolation: m === 'on',
+                                  vocal_isolation_mode: m,
+                                });
+                              }}
+                              className="w-full min-w-0 max-w-full truncate bg-zinc-800 border border-zinc-700 rounded px-2.5 py-1.5 text-[11px] text-zinc-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                            >
+                              <option value="off">{t('config.audioModeOff')}</option>
+                              <option value="auto">{t('config.vocalModeAuto')}</option>
+                              <option value="on">{t('config.audioModeOn')}</option>
+                            </select>
+                          </div>
+                          {isVocalActive && systemInfo?.vocal_isolation_available === false && (
+                            <p className="text-[11px] text-amber-300 leading-snug" dir="auto">
+                              {t('config.vocalIsolationFallbackNote')}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
               );
             })()}
 
@@ -403,7 +760,7 @@ export const PipelineConfig: React.FC = () => {
               <p className="mt-1 text-[11px] text-zinc-500 leading-snug">{t('config.contextGlossaryHint')}</p>
             </div>
 
-            {dialogueTrack && (
+            {dialogueTrack && !(dualSourceFeatureEnabled && pipelineConfig.enable_dual_source_pivot) && (
               <div
                 className={`mt-2 p-3 rounded-lg border text-[11px] space-y-2 transition-colors ${
                   pipelineConfig.use_embedded_subtitles !== false
@@ -450,13 +807,7 @@ export const PipelineConfig: React.FC = () => {
                   <div className="pt-2 border-t border-emerald-500/20 space-y-2">
                     <p className="text-emerald-300 font-medium">
                       {t('config.embeddedDialogueFound', {
-                        name:
-                          (dialogueTrack.title || dialogueTrack.language?.toUpperCase() || `#${dialogueTrack.index}`) +
-                          (dialogueTrack.language &&
-                          dialogueTrack.title &&
-                          !dialogueTrack.title.toLowerCase().includes(dialogueTrack.language.toLowerCase())
-                            ? ` (${dialogueTrack.language.toUpperCase()})`
-                            : ''),
+                        name: dialogueTrackLabel,
                       })}
                     </p>
                     {dialogueTracks.length > 1 && (
@@ -517,9 +868,10 @@ export const PipelineConfig: React.FC = () => {
             )}
           </div>
         </div>
+        )}
 
         {/* Translation (or, when syncing a file, how its lines are matched) */}
-        {syncing ? (
+        {(activeSection === 'all' || activeSection === 'translation') && (syncing ? (
           <SyncOptions />
         ) : (
         <div className="space-y-4 p-4 rounded-xl bg-sunken border border-line">
@@ -734,49 +1086,27 @@ export const PipelineConfig: React.FC = () => {
             <div className="py-6 text-center text-zinc-500 text-xs">{t('config.translationDisabled')}</div>
           )}
         </div>
-        )}
+        ))}
       </div>
 
+      {(activeSection === 'all' || activeSection === 'transcription') && (
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {(() => {
-          const commsMode = pipelineConfig.comms_boost_mode ?? (pipelineConfig.comms_boost ? 'on' : 'off');
-          const commsActive = commsMode !== 'off';
+          const commsForcedOn = Boolean(pipelineConfig.comms_boost) || pipelineConfig.comms_boost_mode === 'on';
           return (
             <FeatureToggle
               icon="📻"
               title={t('config.commsTitle')}
               description={t('config.commsDescription')}
-              checked={commsActive}
+              checked={commsForcedOn}
+              testId="radio-comms-toggle"
               onChange={(v) => {
-                const nextMode = v ? 'auto' : 'off';
                 updatePipelineConfig({
-                  comms_boost: false,
-                  comms_boost_mode: nextMode,
+                  comms_boost: v,
+                  comms_boost_mode: v ? 'on' : 'off',
                 });
               }}
-            >
-              {commsActive && (
-                <div className="mt-3 pt-2.5 border-t border-indigo-500/20 flex items-center justify-between gap-2 text-xs">
-                  <span className="text-zinc-300 font-medium">{t('config.audioModeLabel')}</span>
-                  <select
-                    data-testid="comms-boost-mode-select"
-                    value={commsMode}
-                    onChange={(e) => {
-                      const m = e.target.value as 'off' | 'auto' | 'on';
-                      updatePipelineConfig({
-                        comms_boost: m === 'on',
-                        comms_boost_mode: m,
-                      });
-                    }}
-                    className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
-                  >
-                    <option value="auto">{t('config.commsModeAuto')}</option>
-                    <option value="on">{t('config.commsModeOn')}</option>
-                    <option value="off">{t('config.audioModeOff')}</option>
-                  </select>
-                </div>
-              )}
-            </FeatureToggle>
+            />
           );
         })()}
         <FeatureToggle
@@ -892,6 +1222,7 @@ export const PipelineConfig: React.FC = () => {
           )}
         </FeatureToggle>
       </div>
+      )}
 
       {!syncing && hasLocalPath && (
         <div data-testid="auto-save-srt-toggle-wrapper">

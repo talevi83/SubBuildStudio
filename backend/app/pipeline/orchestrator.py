@@ -18,6 +18,7 @@ from app.models.schemas import AudioStreamInfo
 from app.pipeline.context import PipelineCancelled, PipelineContext, RawSegment
 from app.pipeline.stages.audio_stage import AudioExtractionStage
 from app.pipeline.stages.diarize_stage import DiarizeStage
+from app.pipeline.stages.dual_source_stage import DualSourceSyncStage
 from app.pipeline.frame_sampling import remove_frames
 from app.pipeline.job_report import log_job_start, log_job_summary
 from app.pipeline.stages.ocr_stage import OnScreenTextStage
@@ -57,6 +58,7 @@ ACTIVE_STATUSES = {
     JobStatus.QUEUED,
     JobStatus.PROBING,
     JobStatus.EXTRACTING_AUDIO,
+    JobStatus.DUAL_SOURCE_SYNC,
     JobStatus.VOCAL_ISOLATION,
     JobStatus.TRANSCRIBING,
     JobStatus.DIARIZING,
@@ -70,6 +72,7 @@ ACTIVE_STATUSES = {
 STAGE_WEIGHTS = {
     JobStatus.PROBING: 2,
     JobStatus.EXTRACTING_AUDIO: 6,
+    JobStatus.DUAL_SOURCE_SYNC: 8,
     JobStatus.VOCAL_ISOLATION: 14,
     JobStatus.TRANSCRIBING: 62,
     JobStatus.DIARIZING: 10,
@@ -390,6 +393,15 @@ class PipelineOrchestrator:
                 only_indices=self.only_indices,
                 translation_hint=self.hint,
                 gemini_thinking=self.thinking,
+                enable_dual_source_pivot=bool(settings.enable_dual_source_pivot and getattr(job, "enable_dual_source_pivot", False)),
+                dual_source_en_srt=getattr(job, "dual_source_en_srt", None) if settings.enable_dual_source_pivot else None,
+                dual_source_ar_srt=getattr(job, "dual_source_ar_srt", None) if settings.enable_dual_source_pivot else None,
+                dual_source_fallback_languages=(
+                    json.loads(getattr(job, "dual_source_fallback_languages_json"))
+                    if getattr(job, "dual_source_fallback_languages_json", None)
+                    else None
+                ),
+                dual_source_smart_asr_fallback=bool(getattr(job, "dual_source_smart_asr_fallback", True)),
                 cancel_flag=self.cancel_flag,
             )
             if self.mode == "sync" and job.sync_source_json:
@@ -455,6 +467,8 @@ class PipelineOrchestrator:
             (JobStatus.PROBING, ProbeStage()),
             (JobStatus.EXTRACTING_AUDIO, AudioExtractionStage()),
         ]
+        if settings.enable_dual_source_pivot and getattr(ctx, "enable_dual_source_pivot", False):
+            stages.append((JobStatus.DUAL_SOURCE_SYNC, DualSourceSyncStage()))
         if run_audio_conditioning:
             stages.append((JobStatus.VOCAL_ISOLATION, VocalIsolationStage()))
         stages.append((JobStatus.TRANSCRIBING, TranscribeStage()))
@@ -817,6 +831,24 @@ class PipelineOrchestrator:
                 weight = STAGE_WEIGHTS[stage_status]
                 base_pct = done_weight / total_weight * 100
 
+                if (
+                    getattr(ctx, "dual_source_active", False)
+                    and (
+                        stage_status == JobStatus.DIARIZING
+                        or (
+                            stage_status == JobStatus.SCANNING_ONSCREEN
+                            and bool(getattr(ctx, "onscreen_segments", None))
+                        )
+                        or (
+                            not getattr(ctx, "supplement_with_whisper", False)
+                            and stage_status in (JobStatus.VOCAL_ISOLATION, JobStatus.TRANSCRIBING)
+                        )
+                    )
+                ):
+                    logger.info(f"Stage {stage_status.value} skipped (Dual-Source Pivot active)")
+                    done_weight += weight
+                    continue
+
                 if stage_status == JobStatus.VOCAL_ISOLATION:
                     if not ctx.embedded_dialogue_segments or ctx.supplement_with_whisper or ctx.enable_diarization:
                         if not self._gpu_held:
@@ -853,13 +885,25 @@ class PipelineOrchestrator:
                         audio_streams_json=json.dumps([s.model_dump() for s in ctx.audio_streams]),
                     )
                 elif stage_status == JobStatus.EXTRACTING_AUDIO:
-                    # Sample video frames in the background while the GPU transcribes
-                    OnScreenTextStage.start_frame_sampling(ctx)
+                    # Defer frame sampling until DualSourceSyncStage decides whether Vision OCR is needed
+                    if not (settings.enable_dual_source_pivot and getattr(ctx, "enable_dual_source_pivot", False)):
+                        OnScreenTextStage.start_frame_sampling(ctx)
                     if self.mode == "sync" and settings.sync_detect_burned_in:
                         from app.pipeline.sync_burned import detect_burned_subtitles
 
                         ctx.burned_task = asyncio.ensure_future(
                             detect_burned_subtitles(ctx.video_path, ctx.cancel_flag, settings.sync_burned_in_fps))
+                elif stage_status == JobStatus.DUAL_SOURCE_SYNC:
+                    if getattr(ctx, "dual_source_report", None) is not None:
+                        self._update_job(
+                            dual_source_report_json=json.dumps(ctx.dual_source_report, ensure_ascii=False),
+                            detected_language=ctx.detected_language,
+                        )
+                    if getattr(ctx, "dual_source_active", False):
+                        if not getattr(ctx, "supplement_with_whisper", False):
+                            self._delete_audio()
+                    else:
+                        OnScreenTextStage.start_frame_sampling(ctx)
                 elif stage_status == JobStatus.TRANSCRIBING:
                     try:
                         from app.core.user_settings import load_settings

@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     gemini_vision_model: str = "gemini-3.5-flash-lite"
     # On-screen text scan: seconds between sampled frames, frame budget, frames per request
     onscreen_frame_interval: float = 2.0
+    onscreen_frame_max_width: int = 640
     onscreen_max_frames: int = 660
     onscreen_batch_size: int = 12
     # Allow on-screen OCR text to overlap dialogue subtitles (displayed at top and bottom simultaneously)
@@ -75,6 +76,12 @@ class Settings(BaseSettings):
     # "Sync existing subtitles": look for subtitles burned into the picture (local, no AI)
     sync_detect_burned_in: bool = True
     sync_burned_in_fps: float = 5.0
+
+    # Private local-only Dual-Source (EN + AR) subtitle pivot feature flag (off by default)
+    enable_dual_source_pivot: bool = False
+    dual_source_fallback_languages: List[str] = ["ar", "ru", "pl", "es", "fr"]
+    opensubtitles_api_key: Optional[str] = None
+    subdl_api_key: Optional[str] = None
 
     # Subtitle Rules
     max_chars_per_line: int = 42

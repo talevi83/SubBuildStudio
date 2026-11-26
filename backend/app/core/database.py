@@ -108,6 +108,12 @@ _ADDED_COLUMNS = {
         "vocal_isolation": "BOOLEAN NOT NULL DEFAULT 0",
         "vocal_isolation_mode": "VARCHAR NOT NULL DEFAULT 'off'",
         "comms_boost_mode": "VARCHAR NOT NULL DEFAULT 'off'",
+        "enable_dual_source_pivot": "BOOLEAN NOT NULL DEFAULT 0",
+        "dual_source_en_srt": "VARCHAR",
+        "dual_source_ar_srt": "VARCHAR",
+        "dual_source_fallback_languages_json": "VARCHAR",
+        "dual_source_smart_asr_fallback": "BOOLEAN NOT NULL DEFAULT 1",
+        "dual_source_report_json": "VARCHAR",
     },
     "subtitle_segments": {
         "translation_failed": "BOOLEAN NOT NULL DEFAULT 0",
