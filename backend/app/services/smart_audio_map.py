@@ -35,6 +35,7 @@ from app.pipeline.context import PipelineCancelled
 from app.services.audio_isolation import (
     is_vocal_isolation_available,
     isolate_vocals,
+    unload_vocal_model,
 )
 
 logger = logging.getLogger(__name__)
@@ -548,69 +549,92 @@ def condition_audio_by_map(
     with tempfile.TemporaryDirectory(prefix="subbuild_smartmap_") as tmp_dir:
         tmp_root = Path(tmp_dir)
         total_w = len(windows)
-        for idx, win in enumerate(windows):
-            if cancel_flag is not None and cancel_flag.is_set():
-                raise PipelineCancelled()
-            i0 = max(0, min(samples.size, int(round(win.start * sr))))
-            i1 = max(i0, min(samples.size, int(round(win.end * sr))))
-            if i1 - i0 < 64:
-                continue
+        shared_demucs_model = None
+        try:
+            for idx, win in enumerate(windows):
+                if cancel_flag is not None and cancel_flag.is_set():
+                    raise PipelineCancelled()
+                i0 = max(0, min(samples.size, int(round(win.start * sr))))
+                i1 = max(i0, min(samples.size, int(round(win.end * sr))))
+                if i1 - i0 < 64:
+                    continue
 
-            if on_progress is not None:
-                pct = 10.0 + (idx / max(1, total_w)) * 85.0
-                on_progress(pct, f"Smart Audio Map: conditioning {win.kind} window ({win.start:.1f}s-{win.end:.1f}s)...")
+                if on_progress is not None:
+                    pct = 10.0 + (idx / max(1, total_w)) * 85.0
+                    on_progress(pct, f"Smart Audio Map: conditioning {win.kind} window ({win.start:.1f}s-{win.end:.1f}s)...")
 
-            raw_slice = samples[i0:i1]
-            if win.kind == "whisper":
-                proc = _enhance_whisper_slice(raw_slice, sr)
-                _splice_with_crossfade(out_samples, proc, i0, i1, fade_samples)
-                applied_windows.append(win)
-            elif win.kind == "comms":
-                proc = _enhance_comms_slice(raw_slice, sr)
-                _splice_with_crossfade(out_samples, proc, i0, i1, fade_samples)
-                applied_windows.append(win)
-            elif win.kind == "music_masked":
-                if not demucs_ready:
-                    # Fallback when Demucs is not installed: mild speech-band clarity boost
+                raw_slice = samples[i0:i1]
+                if win.kind == "whisper":
                     proc = _enhance_whisper_slice(raw_slice, sr)
                     _splice_with_crossfade(out_samples, proc, i0, i1, fade_samples)
                     applied_windows.append(win)
-                    continue
-                margin = 0.45
-                ext_start = max(0.0, win.start - margin)
-                ext_end = min(duration_sec, win.end + margin)
-                slice_in = tmp_root / f"win_{idx}_in.wav"
-                slice_out = tmp_root / f"win_{idx}_vocals.wav"
-                extracted_stereo = False
-                if source_media_path:
-                    extracted_stereo = _extract_source_slice_stereo(
-                        source_media_path,
-                        slice_in,
-                        audio_stream_index=audio_stream_index,
-                        start_sec=ext_start,
-                        duration_sec=ext_end - ext_start,
-                    )
-                if not extracted_stereo:
-                    e0 = max(0, int(round(ext_start * sr)))
-                    e1 = min(samples.size, int(round(ext_end * sr)))
-                    _write_mono_pcm16(slice_in, samples[e0:e1], sr)
-
-                isolate_vocals(
-                    str(slice_in),
-                    str(slice_out),
-                    model_name=model_name,
-                    source_media_path=None,  # slice-specific, do not collide with whole-file cache
-                    cancel_flag=cancel_flag,
-                )
-                iso_samples, iso_sr = _read_mono_float32(slice_out)
-                if iso_samples.size > 0 and iso_sr > 0:
-                    trim_head = int(round((win.start - ext_start) * iso_sr))
-                    trim_len = int(round((win.end - win.start) * iso_sr))
-                    trimmed = iso_samples[max(0, trim_head) : max(0, trim_head) + max(1, trim_len)]
-                    if trimmed.size > 0:
-                        _splice_with_crossfade(out_samples, trimmed, i0, i1, fade_samples)
-                        used_demucs = True
+                elif win.kind == "comms":
+                    proc = _enhance_comms_slice(raw_slice, sr)
+                    _splice_with_crossfade(out_samples, proc, i0, i1, fade_samples)
+                    applied_windows.append(win)
+                elif win.kind == "music_masked":
+                    if not demucs_ready:
+                        # Fallback when Demucs is not installed: mild speech-band clarity boost
+                        proc = _enhance_whisper_slice(raw_slice, sr)
+                        _splice_with_crossfade(out_samples, proc, i0, i1, fade_samples)
                         applied_windows.append(win)
+                        continue
+                    margin = 0.45
+                    ext_start = max(0.0, win.start - margin)
+                    ext_end = min(duration_sec, win.end + margin)
+                    slice_in = tmp_root / f"win_{idx}_in.wav"
+                    slice_out = tmp_root / f"win_{idx}_vocals.wav"
+                    extracted_stereo = False
+                    if source_media_path:
+                        extracted_stereo = _extract_source_slice_stereo(
+                            source_media_path,
+                            slice_in,
+                            audio_stream_index=audio_stream_index,
+                            start_sec=ext_start,
+                            duration_sec=ext_end - ext_start,
+                        )
+                    if not extracted_stereo:
+                        e0 = max(0, int(round(ext_start * sr)))
+                        e1 = min(samples.size, int(round(ext_end * sr)))
+                        _write_mono_pcm16(slice_in, samples[e0:e1], sr)
+
+                    sep_kwargs: Dict[str, object] = {
+                        "model_name": model_name,
+                        "source_media_path": None,  # slice-specific, do not collide with whole-file cache
+                        "cancel_flag": cancel_flag,
+                    }
+                    if shared_demucs_model is not None:
+                        sep_kwargs["preloaded_model"] = shared_demucs_model
+                    sep_kwargs["keep_model_loaded"] = True
+                    try:
+                        sep_res = isolate_vocals(
+                            str(slice_in),
+                            str(slice_out),
+                            **sep_kwargs,  # type: ignore[arg-type]
+                        )
+                    except TypeError:
+                        # Backward-compatible fallback for test doubles with the simpler signature
+                        sep_res = isolate_vocals(
+                            str(slice_in),
+                            str(slice_out),
+                            model_name=model_name,
+                            source_media_path=None,
+                            cancel_flag=cancel_flag,
+                        )
+                    if isinstance(sep_res, dict) and sep_res.get("loaded_model") is not None:
+                        shared_demucs_model = sep_res["loaded_model"]
+                    iso_samples, iso_sr = _read_mono_float32(slice_out)
+                    if iso_samples.size > 0 and iso_sr > 0:
+                        trim_head = int(round((win.start - ext_start) * iso_sr))
+                        trim_len = int(round((win.end - win.start) * iso_sr))
+                        trimmed = iso_samples[max(0, trim_head) : max(0, trim_head) + max(1, trim_len)]
+                        if trimmed.size > 0:
+                            _splice_with_crossfade(out_samples, trimmed, i0, i1, fade_samples)
+                            used_demucs = True
+                            applied_windows.append(win)
+        finally:
+            if shared_demucs_model is not None:
+                unload_vocal_model(shared_demucs_model)
 
     if not applied_windows:
         return SmartAudioMapReport(

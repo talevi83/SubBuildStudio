@@ -177,6 +177,8 @@ def _run_demucs(
     overlap_seconds: float,
     cancel_flag: Optional[threading.Event],
     on_progress: Optional[Callable[[float, str], None]],
+    preloaded_model: Any = None,
+    keep_model_loaded: bool = False,
 ) -> Dict[str, Any]:
     ensure_torchaudio_compat()
     import torch  # type: ignore
@@ -188,26 +190,34 @@ def _run_demucs(
     else:
         target_device = device
 
-    model = None
+    model = preloaded_model
     tmp_path = output_wav_path.with_name(f"{output_wav_path.stem}.tmp{output_wav_path.suffix}")
     output_wav_path.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
 
     try:
-        if on_progress:
-            on_progress(2.0, f"Loading Demucs model '{model_name}' on {target_device}...")
-        logger.info(f"Loading vocal isolation model '{model_name}' (demucs) on {target_device}")
-        model = get_model(model_name)
-        model.eval()
-        try:
-            model.to(target_device)
-        except Exception as exc:
-            if target_device == "cuda":
-                logger.warning(f"Demucs CUDA initialization failed ({exc}); falling back to CPU")
-                target_device = "cpu"
-                model.to("cpu")
-            else:
-                raise
+        if model is None:
+            if on_progress:
+                on_progress(2.0, f"Loading Demucs model '{model_name}' on {target_device}...")
+            logger.info(f"Loading vocal isolation model '{model_name}' (demucs) on {target_device}")
+            model = get_model(model_name)
+            model.eval()
+            try:
+                model.to(target_device)
+            except Exception as exc:
+                if target_device == "cuda":
+                    logger.warning(f"Demucs CUDA initialization failed ({exc}); falling back to CPU")
+                    target_device = "cpu"
+                    model.to("cpu")
+                else:
+                    raise
+        else:
+            try:
+                first_param = next(model.parameters(), None)
+                if first_param is not None:
+                    target_device = str(first_param.device).split(":")[0]
+            except Exception:
+                pass
 
         sources = list(getattr(model, "sources", ["drums", "bass", "other", "vocals"]))
         vocals_idx = sources.index("vocals") if "vocals" in sources else len(sources) - 1
@@ -340,11 +350,13 @@ def _run_demucs(
             "model": model_name,
             "device": target_device,
             "elapsed_seconds": elapsed,
+            **({"loaded_model": model} if keep_model_loaded else {}),
         }
     finally:
         if tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
-        unload_vocal_model(model)
+        if not keep_model_loaded:
+            unload_vocal_model(model)
 
 
 def _convert_to_16k_mono(src_path: Path, dst_path: Path) -> None:
@@ -447,6 +459,8 @@ def isolate_vocals(
     audio_stream_index: int = 0,
     cancel_flag: Optional[threading.Event] = None,
     on_progress: Optional[Callable[[float, str], None]] = None,
+    preloaded_model: Any = None,
+    keep_model_loaded: bool = False,
 ) -> Dict[str, Any]:
     """Extract an isolated dialogue vocals track (`16kHz` mono PCM16 WAV) with disk caching.
 
@@ -533,6 +547,8 @@ def isolate_vocals(
                 overlap_seconds=overlap_seconds,
                 cancel_flag=cancel_flag,
                 on_progress=on_progress,
+                preloaded_model=preloaded_model,
+                keep_model_loaded=keep_model_loaded,
             )
         elif is_audio_separator_available():
             result = _run_audio_separator(
