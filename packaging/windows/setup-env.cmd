@@ -38,10 +38,26 @@ if not exist "%PY%" (
 :: Test builds of the installer used a venv; it is not used any more
 if exist "backend\.venv" rmdir /s /q "backend\.venv" >nul 2>nul
 
+set "WITH_OPTIONAL=0"
+if /I "%~1"=="--with-optional-audio" set "WITH_OPTIONAL=1"
+
 echo Installing packages...
 :: --break-system-packages: this Python belongs to the app alone, so installing into it is intended.
 :: (Without it, an EXTERNALLY-MANAGED marker left by an older build's uv-managed Python stops uv.)
 "%UV%" pip install --python "%PY%" --break-system-packages -r "backend\requirements.txt" -r "packaging\requirements-desktop.txt" || goto :fail
+
+if "%WITH_OPTIONAL%"=="1" (
+    echo.
+    echo Installing optional Vocal Isolation ^(Demucs^) and WhisperX packages...
+    nvidia-smi >nul 2>nul
+    if not errorlevel 1 (
+        echo NVIDIA GPU detected - installing CUDA PyTorch + optional audio engines...
+        "%UV%" pip install --python "%PY%" --break-system-packages --extra-index-url https://download.pytorch.org/whl/cu128 torch torchaudio -r "backend\requirements-optional.txt" || goto :fail
+    ) else (
+        echo No NVIDIA GPU detected - installing CPU PyTorch + optional audio engines...
+        "%UV%" pip install --python "%PY%" --break-system-packages torch torchaudio -r "backend\requirements-optional.txt" || goto :fail
+    )
+)
 
 :: The download cache holds a second copy of every package (several GB with the CUDA libraries)
 "%UV%" cache clean >nul 2>nul

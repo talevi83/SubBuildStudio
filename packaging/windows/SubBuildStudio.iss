@@ -58,9 +58,14 @@ en.SetupEnvFailed=Installing the Python packages did not finish (code %1).%n%nCh
 he.SetupEnvFailed=התקנת חבילות ה-Python לא הסתיימה (קוד %1).%n%nבדקו את החיבור לאינטרנט והריצו את ההתקנה שוב.
 en.LaunchApp=Start SubBuild Studio
 he.LaunchApp=הפעלת SubBuild Studio
+en.OptionalAudioGroup=Optional AI Components:
+he.OptionalAudioGroup=רכיבי AI אופציונליים:
+en.OptionalAudioEngines=Install Demucs Vocal Isolation & WhisperX (requires internet, ~3 GB download)
+he.OptionalAudioEngines=התקן בידוד קולות (Demucs) ו-WhisperX (דרוש חיבור אינטרנט, הורדה של כ-3 GB)
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
+Name: "optionalaudio"; Description: "{cm:OptionalAudioEngines}"; GroupDescription: "{cm:OptionalAudioGroup}"; Flags: unchecked
 
 [InstallDelete]
 ; Remove the previous version's code first, so files deleted in a new version do not linger
@@ -93,12 +98,17 @@ Type: dirifempty; Name: "{app}"
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
+  CmdArgs: String;
 begin
   if CurStep = ssPostInstall then
   begin
     WizardForm.StatusLabel.Caption := CustomMessage('SetupEnv');
+    if WizardIsTaskSelected('optionalaudio') then
+      CmdArgs := '/c ""' + ExpandConstant('{app}\packaging\windows\setup-env.cmd') + '" --with-optional-audio"'
+    else
+      CmdArgs := '/c ""' + ExpandConstant('{app}\packaging\windows\setup-env.cmd') + '""';
     if (not Exec(ExpandConstant('{cmd}'),
-                 '/c ""' + ExpandConstant('{app}\packaging\windows\setup-env.cmd') + '""',
+                 CmdArgs,
                  ExpandConstant('{app}'), SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode))
        or (ResultCode <> 0) then
       MsgBox(FmtMessage(CustomMessage('SetupEnvFailed'), [IntToStr(ResultCode)]), mbError, MB_OK);
