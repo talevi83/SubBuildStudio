@@ -127,6 +127,11 @@ describe('Transcription Context / Glossary / Names UI', () => {
 
     const view = render(<PipelineConfig />);
     const engineSelect = view.getByTestId('transcription-provider-select') as HTMLSelectElement;
+    // Advanced audio controls stay collapsed until opened
+    expect(view.queryByTestId('vocal-isolation-toggle')).toBeNull();
+    expect(view.queryByTestId('high-speech-sensitivity-checkbox')).toBeNull();
+
+    fireEvent.click(view.getByTestId('advanced-audio-toggle'));
     const vocalToggle = view.getByTestId('vocal-isolation-toggle') as HTMLInputElement;
 
     fireEvent.change(engineSelect, { target: { value: 'whisperx' } });
@@ -150,18 +155,21 @@ describe('Transcription Context / Glossary / Names UI', () => {
     expect(bar.getByText('WhisperX')).toBeTruthy();
   });
 
-  it('supports Smart Audio Map auto modes without enabling global comms_boost in Cinema preset', async () => {
+  it('supports Smart Audio Map auto modes without enabling global comms_boost in Documentary preset', async () => {
     const view = render(<PipelineConfig />);
-    const cinemaBtn = view.getByText(/Cinema & Narrative|קולנוע ועלילתי/i).closest('button');
-    expect(cinemaBtn).toBeTruthy();
-    fireEvent.click(cinemaBtn!);
+    const docuBtn = view.getByTestId('genre-preset-docu');
+    expect(docuBtn).toBeTruthy();
+    fireEvent.click(docuBtn);
 
     const cfg = useJobStore.getState().pipelineConfig;
     expect(cfg.comms_boost).toBe(false);
     expect(cfg.comms_boost_mode).toBe('auto');
     expect(cfg.vocal_isolation).toBe(false);
     expect(cfg.vocal_isolation_mode).toBe('off');
+    expect((view.getByTestId('smart-audio-toggle') as HTMLInputElement).checked).toBe(true);
+    expect((view.getByTestId('radio-comms-toggle') as HTMLInputElement).checked).toBe(false);
 
+    fireEvent.click(view.getByTestId('advanced-audio-toggle'));
     const vocalModeSelect = view.getByTestId('vocal-isolation-mode-select') as HTMLSelectElement;
     fireEvent.change(vocalModeSelect, { target: { value: 'auto' } });
     expect(useJobStore.getState().pipelineConfig.vocal_isolation_mode).toBe('auto');

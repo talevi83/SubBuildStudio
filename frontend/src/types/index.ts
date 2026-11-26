@@ -504,6 +504,7 @@ export interface AppSettings {
   glossary: GeminiCallSettings;
   vision: GeminiCallSettings;
   vision_media_resolution: MediaResolution;
+  onscreen_frame_max_width?: number;
   onscreen_position?: OnscreenPosition;
   convert_to_metric?: boolean;
   remove_sdh_speakers?: boolean;

@@ -54,6 +54,7 @@ class AppSettings(BaseModel):
     glossary: GeminiCallSettings
     vision: GeminiCallSettings = Field(description="Reads on-screen text from video frames")
     vision_media_resolution: Literal["low", "medium", "high"] = "medium"
+    onscreen_frame_max_width: int = Field(default=640, ge=320, le=1280)
     onscreen_position: Literal[
         "top_center", "top_left", "top_right", "middle_left", "middle_right", "middle_center"
     ] = "top_center"
@@ -117,6 +118,7 @@ def _defaults() -> AppSettings:
         calls[task] = GeminiCallSettings(model=model, thinking=_thinking_for(model, task))
     return AppSettings(
         cost_saver_mode=settings.cost_saver_mode,
+        onscreen_frame_max_width=getattr(settings, "onscreen_frame_max_width", 640),
         onscreen_position=getattr(settings, "onscreen_position", "top_center"),
         convert_to_metric=getattr(settings, "convert_to_metric", False),
         remove_sdh_speakers=getattr(settings, "remove_sdh_speakers", False),

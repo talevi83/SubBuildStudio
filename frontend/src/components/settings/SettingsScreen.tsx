@@ -671,6 +671,7 @@ export const SettingsScreen: React.FC = () => {
   const [autoNotice, setAutoNotice] = useState<{ summary: string; detail?: string } | null>(null);
   const [ollamaDetailsOpen, setOllamaDetailsOpen] = useState(false);
   const [estimateOpen, setEstimateOpen] = useState(true);
+  const [activeNav, setActiveNav] = useState<'all' | 'keys' | 'models' | 'cost' | 'system'>('all');
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [applyingUpdate, setApplyingUpdate] = useState(false);
@@ -977,11 +978,38 @@ export const SettingsScreen: React.FC = () => {
         </div>
       </div>
 
+      {/* Section Navigation Bar */}
+      <div className="flex flex-wrap items-center gap-1.5" role="tablist" data-testid="settings-section-tabs">
+        {([
+          { id: 'all', label: t('settings.navAll') },
+          { id: 'keys', label: t('settings.navKeys') },
+          { id: 'models', label: t('settings.navModels') },
+          { id: 'cost', label: t('settings.navCost') },
+          { id: 'system', label: t('settings.navSystem') },
+        ] as const).map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={activeNav === tab.id}
+            data-testid={`settings-tab-${tab.id}`}
+            onClick={() => setActiveNav(tab.id)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+              activeNav === tab.id
+                ? 'bg-indigo-600 text-white shadow-sm'
+                : 'bg-surface border border-line text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
       {/* Row 1: Multi-Provider API Key Vault (auto-collapsed once configured) */}
-      <ApiKeySection />
+      {(activeNav === 'all' || activeNav === 'keys') && <ApiKeySection />}
 
       {/* Row 2: AI Models per Pipeline Step (3-Column Grid + Optimizer + Action Footer) */}
-      <section className={card}>
+      {(activeNav === 'all' || activeNav === 'models') && <section className={card}>
         <div className="border-b border-line pb-3 space-y-3">
           <div>
             <h2 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
@@ -1114,6 +1142,20 @@ export const SettingsScreen: React.FC = () => {
                     <p className="text-[11px] text-zinc-500">{t('settings.frameDetailHint')}</p>
                   </div>
                 )}
+                <div className="space-y-1.5 pt-2 border-t border-line/40" data-testid="vision-frame-max-width">
+                  <span className="block text-[11px] text-zinc-400 font-medium">{t('settings.frameMaxWidthLabel')}</span>
+                  <Segmented<string>
+                    value={String(draft.onscreen_frame_max_width || 640)}
+                    itemTestIdPrefix="vision-max-width"
+                    onChange={(v) => setDraft({ ...draft, onscreen_frame_max_width: Number(v) })}
+                    options={[
+                      { value: '480', label: '480px' },
+                      { value: '640', label: '640px' },
+                      { value: '960', label: '960px' },
+                    ]}
+                  />
+                  <p className="text-[11px] text-zinc-500">{t('settings.frameMaxWidthHint')}</p>
+                </div>
               </ModelCard>
             </div>
 
@@ -1154,10 +1196,10 @@ export const SettingsScreen: React.FC = () => {
             </div>
           </div>
         )}
-      </section>
+      </section>}
 
       {/* Row 3: 2-Column Bento Grid — Cost-Saver / Local Ollama (left) & Cost Estimator (right) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+      {(activeNav === 'all' || activeNav === 'cost') && <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
         <section className={`${card} lg:col-span-5`}>
           {draft ? (
             <div
@@ -1462,10 +1504,10 @@ export const SettingsScreen: React.FC = () => {
             </>
           )}
         </section>
-      </div>
+      </div>}
 
       {/* Row 4: 2-Column Bento Grid — Storage (left) & Diagnostics + Feedback (right) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
+      {(activeNav === 'all' || activeNav === 'system') && <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
         <div className="lg:col-span-8">
           <StorageSection />
         </div>
@@ -1595,7 +1637,7 @@ export const SettingsScreen: React.FC = () => {
             </a>
           </div>
         </section>
-      </div>
+      </div>}
     </div>
   );
 };

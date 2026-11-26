@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     gemini_vision_model: str = "gemini-3.5-flash-lite"
     # On-screen text scan: seconds between sampled frames, frame budget, frames per request
     onscreen_frame_interval: float = 2.0
+    onscreen_frame_max_width: int = 640
     onscreen_max_frames: int = 660
     onscreen_batch_size: int = 12
     # Allow on-screen OCR text to overlap dialogue subtitles (displayed at top and bottom simultaneously)

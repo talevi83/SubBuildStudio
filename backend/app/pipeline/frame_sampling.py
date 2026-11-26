@@ -47,12 +47,22 @@ def remove_frames(job_id: str) -> None:
     shutil.rmtree(frames_dir(job_id), ignore_errors=True)
 
 
+def frame_scale_filter(max_width: int = 640) -> str:
+    """FFmpeg scale filter that quickly downscales 4K/HD frames without upscaling low-res video."""
+    w = max(320, min(1280, int(max_width or 640)))
+    return f"scale='min({w},iw)':-2:flags=fast_bilinear"
+
+
 async def sample_frames(ctx: PipelineContext, interval: Optional[float] = None) -> List[Frame]:
     """
-    One ffmpeg pass writes 640px JPEGs (for Gemini) and 32x18 grayscale thumbnails (for scene
+    One ffmpeg pass writes downscaled JPEGs (for Vision OCR) and 64x36 grayscale thumbnails (for scene
     change / static detection). Runs in the background while Whisper transcribes.
     """
+    from app.core.user_settings import load_settings
+
     interval = interval or settings.onscreen_frame_interval
+    max_width = int(getattr(load_settings(), "onscreen_frame_max_width", settings.onscreen_frame_max_width) or 640)
+    scale_expr = frame_scale_filter(max_width)
     out_dir = frames_dir(ctx.job_id)
     shutil.rmtree(out_dir, ignore_errors=True)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -70,7 +80,7 @@ async def sample_frames(ctx: PipelineContext, interval: Optional[float] = None) 
         *safe_input(str(Path(ctx.video_path).resolve())),
         "-filter_complex",
         f"[0:v:0]fps=1/{interval},split=2[big][small];"
-        f"[big]scale=640:-2[o1];[small]scale={_THUMB_W}:{_THUMB_H},format=gray[o2]",
+        f"[big]{scale_expr}[o1];[small]scale={_THUMB_W}:{_THUMB_H},format=gray[o2]",
         "-map", "[o1]", "-q:v", "5", str(out_dir / "f_%06d.jpg"),
         "-map", "[o2]", "-f", "rawvideo", str(thumbs_path),
     ]

@@ -30,67 +30,96 @@ def pick_forced_track(streams: Sequence[SubtitleStreamInfo]) -> Optional[Subtitl
 
 _PURE_MUSIC_LINE = re.compile(r"^[\s♪♫#*+\-—–~]+$")
 _INLINE_MUSIC_NOTES = re.compile(r"[♪♫]")
-_SDH_SOUND_EFFECT = re.compile(
-    r"\[(?:[a-z0-9\s._'-]*?(?:music|applause|laughter|groan|groans|gasp|gasps|sigh|sighs|scream|screams|screaming|cheer|cheers|cheering|chatter|whisper|whispers|whispering|cough|coughing|snicker|snickers|footstep|footsteps|thunder|wind|silence|beep|grunt|grunts|pant|panting|engine|stammer|stammers)[^\]]*?)\]|"
-    r"\((?:[a-z0-9\s._'-]*?(?:music|applause|laughter|groan|groans|gasp|gasps|sigh|sighs|scream|screams|screaming|cheer|cheers|cheering|chatter|whisper|whispers|whispering|cough|coughing|snicker|snickers|footstep|footsteps|thunder|wind|silence|beep|grunt|grunts|pant|panting|engine|stammer|stammers)[^)]*?)\)",
-    re.IGNORECASE,
+_SDH_SOUND_KEYWORDS = (
+    "music", "song", "singing", "lyrics", "applause", "cheer", "cheering",
+    "laugh", "laughter", "chuckle", "chuckles", "chuckling", "scoff", "scoffs", "scoffing",
+    "giggle", "snicker", "snickers", "groan", "groans", "groaning", "grunt", "grunts", "grunting",
+    "sigh", "sighs", "sighing", "gasp", "gasps", "gasping", "pant", "pants", "panting",
+    "cough", "coughs", "coughing", "choke", "chokes", "choking", "exclaim", "exclaiming",
+    "scream", "screams", "screaming", "yell", "yells", "yelling", "shout", "shouts",
+    "whisper", "whispers", "whispering", "murmur", "mutter", "stammer", "stammers",
+    "clatter", "clatters", "bang", "thud", "crash", "thunder", "rumbl", "wind", "rain",
+    "siren", "alarm", "ring", "ringing", "beep", "buzz", "click", "creak",
+    "footstep", "footsteps", "breath", "breathing", "snort", "sob", "sobs", "sobbing", "crying",
+    "silence", "inaudible", "indistinct", "muffled", "overlapping", "speaking",
+    "over radio", "on radio", "on tv", "on phone", "sound", "sounds", "noise", "engine", "explosion",
 )
-_SDH_INLINE_SOUND = re.compile(r"\[[a-zA-Z\s_-]{2,35}\]|\([a-zA-Z\s_-]{2,35}\)")
+_SDH_PARENS_SPAN = re.compile(r"\(([^()]{1,70})\)|\[([^\[\]]{1,70})\]")
+_SDH_ALL_CAPS_SPEAKER = re.compile(
+    r"^(\s*[-–—]?\s*)([A-Z][A-Z0-9\s.'\-/#]{1,30}):(?:\s+(?=\S)|\s*$)"
+)
+_ACRONYM_SKIP = {"RE", "PS", "NB", "AM", "PM", "TV", "ID", "OK", "US", "UK", "EU", "UN", "FBI", "CIA", "MI5", "MI6", "DNA", "FYI", "HUD", "ETA", "POV"}
 _SDH_SPEAKER_LABEL = re.compile(
     r"^(\s*[-–—]?\s*)\[([a-zA-Z0-9\s._'-]{2,25})\]\s*:?\s*(?=\S)",
 )
 
 
-def clean_embedded_dialogue_text(text: str, is_sdh: bool = False) -> str:
+def _is_sdh_stage_direction(inner: str, is_sdh: bool, is_brackets: bool) -> bool:
+    """Return True if parenthesized/bracketed text is a non-speech SDH sound/action cue."""
+    clean = (inner or "").strip()
+    if not clean:
+        return True
+    low = clean.lower()
+    if any(kw in low for kw in _SDH_SOUND_KEYWORDS):
+        return True
+    # In SDH mode, ALL-CAPS parenthetical descriptions like (SCOFFS), (CHOKING) are non-speech actions;
+    # keep bracketed [Title / Date] cues untouched unless they matched an explicit sound keyword above.
+    if is_sdh and not is_brackets:
+        letters = [ch for ch in clean if ch.isalpha()]
+        if letters and all(ch.isupper() for ch in letters) and len(clean.split()) <= 7:
+            return True
+    return False
+
+
+def clean_embedded_dialogue_text(
+    text: str,
+    is_sdh: bool = False,
+    strip_speaker_labels: bool = False,
+) -> str:
     """Strip formatting tags, music note lines, and SDH noise while preserving dialogue and turns."""
     clean = _TAGS.sub("", text or "").strip()
     if not clean:
         return ""
-    lines = []
-    for raw_l in clean.splitlines():
-        l = raw_l.strip()
+    raw_lines = [rl.strip() for rl in clean.splitlines() if rl.strip()]
+    dropped_any = False
+    lines: List[str] = []
+
+    for l in raw_lines:
+        if _PURE_MUSIC_LINE.match(l):
+            dropped_any = True
+            continue
+        if not l.strip("♪♫#*~ \t"):
+            dropped_any = True
+            continue
+
+        def _strip_parens(m: re.Match[str]) -> str:
+            paren_txt = m.group(1)
+            brack_txt = m.group(2)
+            inner = paren_txt if paren_txt is not None else (brack_txt or "")
+            if _is_sdh_stage_direction(inner, is_sdh=is_sdh, is_brackets=(brack_txt is not None)):
+                return ""
+            return m.group(0)
+
+        l = _SDH_PARENS_SPAN.sub(_strip_parens, l)
+        l = _SDH_SPEAKER_LABEL.sub(r"\1", l.strip())
+
+        if strip_speaker_labels:
+            m_spk = _SDH_ALL_CAPS_SPEAKER.match(l)
+            if m_spk and m_spk.group(2).strip().upper() not in _ACRONYM_SKIP:
+                l = (m_spk.group(1) or "") + l[m_spk.end():]
+
+        l = _INLINE_MUSIC_NOTES.sub("", l)
+        l = re.sub(r"\s{2,}", " ", l).strip()
         if not l or _PURE_MUSIC_LINE.match(l):
+            dropped_any = True
             continue
-        stripped_notes = l.strip("♪♫#*~ \t")
-        if not stripped_notes:
-            continue
-        # Drop pure single bracketed/parenthesized sound descriptions (never drop "[Speaker] text [sound]")
-        if (l.startswith("(") and l.endswith(")")) or (is_sdh and l.startswith("[") and l.endswith("]")):
-            inner = l[1:-1].strip()
-            if (
-                "[" not in inner
-                and "]" not in inner
-                and "(" not in inner
-                and ")" not in inner
-                and len(inner.split()) <= 7
-                and any(
-                    k in inner.lower()
-                    for k in (
-                        "music", "sound", "applause", "groan", "sigh", "pant", "gasp",
-                        "chatter", "cough", "cheer", "laugh", "stammer", "whisper",
-                    )
-                )
-            ):
-                continue
-        if is_sdh:
-            l = _SDH_SOUND_EFFECT.sub("", l)
-            # Remove any residual action cues like [stammers] or (sighs)
-            l = _SDH_INLINE_SOUND.sub(
-                lambda m: "" if any(k in m.group(0).lower() for k in ("stammer", "sigh", "gasp", "chuckle", "snicker", "whisper", "music", "groan", "applause", "laughter")) else m.group(0),
-                l,
-            )
-            l = _SDH_SPEAKER_LABEL.sub(r"\1", l.strip())
-        elif "[" in l or "(" in l:
-            l = _SDH_SOUND_EFFECT.sub("", l)
-            l = _SDH_INLINE_SOUND.sub(
-                lambda m: "" if any(k in m.group(0).lower() for k in ("stammer", "sigh", "gasp", "chuckle", "snicker", "whisper", "music", "groan", "applause", "laughter")) else m.group(0),
-                l,
-            )
-            l = _SDH_SPEAKER_LABEL.sub(r"\1", l.strip())
-        l = _INLINE_MUSIC_NOTES.sub("", l).strip()
-        if l and not _PURE_MUSIC_LINE.match(l):
-            lines.append(l)
-    return "\n".join(lines).strip()
+        lines.append(l)
+
+    # Remove orphaned leading "- " when a multi-line turn lost a sound-effect line
+    if len(lines) == 1 and dropped_any:
+        lines[0] = re.sub(r"^[-–—]\s*", "", lines[0]).strip()
+
+    return "\n".join(l for l in lines if l).strip()
 
 
 def pick_dialogue_track(
@@ -165,6 +194,50 @@ def pick_dialogue_track(
     return filtered[0]
 
 
+_LANG_TITLE_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "en": ("english", "eng"),
+    "ar": ("arabic", "ara", "عربي", "العربية"),
+    "ru": ("russian", "rus", "русский"),
+    "pl": ("polish", "pol", "polski"),
+    "es": ("spanish", "spa", "español", "espanol"),
+    "fr": ("french", "fra", "fre", "français", "francais"),
+}
+
+
+def pick_track_by_language(
+    streams: Sequence[SubtitleStreamInfo],
+    lang_code: str,
+) -> Optional[SubtitleStreamInfo]:
+    """Return the best embedded text-based dialogue track matching `lang_code`, or None."""
+    from app.utils.languages import language_code, language_name
+
+    target_code = (language_code(lang_code) or lang_code or "").strip().lower()
+    if not target_code:
+        return None
+    target_name = language_name(target_code, "").lower()
+    aliases = _LANG_TITLE_ALIASES.get(target_code, ())
+
+    matches: List[SubtitleStreamInfo] = []
+    for s in streams:
+        if not s.text_based or s.looks_forced:
+            continue
+        title = (s.title or "").lower()
+        if any(bad in title for bad in ("commentary", "director", "description", "audio desc")):
+            continue
+        s_code = (language_code(s.language) or (s.language or "")).strip().lower()
+        title_hit = (
+            (target_name and target_name in title)
+            or any(al in title for al in aliases)
+        )
+        if s_code == target_code or (s_code in ("und", "unknown", "") and title_hit) or title_hit:
+            matches.append(s)
+
+    if not matches:
+        return None
+    matches.sort(key=lambda s: (1 if s.looks_sdh else 0, 0 if s.default else 1, s.index))
+    return matches[0]
+
+
 _SRT_TIME = re.compile(
     r"(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})"
 )
@@ -182,6 +255,20 @@ def parse_srt(content: str) -> List[Dict[str, Any]]:
     except SubtitleParseError:
         return []
     return [{"start_time": c.start, "end_time": c.end, "text": c.text} for c in cues]
+
+
+async def extract_track_as_srt(video_path: str, stream: SubtitleStreamInfo) -> str:
+    """Extract an embedded subtitle stream as raw UTF-8 SRT text via ffmpeg."""
+    process = await asyncio.create_subprocess_exec(
+        get_ffmpeg_bin(), "-v", "error", *safe_input(str(Path(video_path).resolve())),
+        "-map", f"0:s:{stream.index}", "-f", "srt", "pipe:1",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        raise RuntimeError(f"Could not extract subtitle stream {stream.index}: {stderr.decode(errors='ignore')[-500:]}")
+    return stdout.decode("utf-8", errors="ignore").replace("\ufeff", "").strip()
 
 
 async def extract_forced_track(video_path: str, stream: SubtitleStreamInfo) -> List[Dict[str, Any]]:

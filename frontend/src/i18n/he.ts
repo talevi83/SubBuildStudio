@@ -174,12 +174,12 @@ export const he: Messages = {
     engineWhisperXHint:
       'מבצע יישור פונטי (wav2vec2) לתזמון מילים מדויק ומונע הזיות בקטעי מוזיקה ורעש.',
     engineWhisperXFallbackNote:
-      'חבילת WhisperX לא מותקנת בשרת (pip install -r backend/requirements-optional.txt) — הריצה תיפול חזרה אוטומטית ל־Faster-Whisper.',
+      'מנוע WhisperX אינו מותקן בסביבה זו — הריצה תעבור אוטומטית ל־Faster-Whisper.',
     vocalIsolationTitle: 'בידוד קולות דיבור (הסרת מוזיקה ואפקטים)',
     vocalIsolationDesc:
       'מפריד דיאלוג ממוזיקה כבדה ואפקטים (Demucs) תוך שמירת זיהוי הדוברים על האודיו המקורי הנקי.',
     vocalIsolationFallbackNote:
-      'חבילת Demucs לא מותקנת בשרת (pip install -r backend/requirements-optional.txt) — ייעשה שימוש באודיו הרגיל עד להתקנה.',
+      'רכיב בידוד הקולות (Demucs) אינו מותקן בסביבה זו — ייעשה שימוש באודיו הרגיל.',
     audioModeLabel: 'מצב הפעלה',
     audioModeOff: 'כבוי (ברירת מחדל)',
     audioModeOn: 'תמיד פעיל (על כל הקובץ)',
@@ -221,9 +221,9 @@ export const he: Messages = {
     sameLangPolishDesc:
       'שפת המקור והיעד זהות. ה-AI יתקן שגיאות תמלול, פיסוק וכתיב בלי לשכתב את הניסוח.',
     sameLangDisableAi: 'תמלול Whisper בלבד (ללא AI)',
-    commsTitle: 'חיזוק קשר ומכשירי רדיו',
+    commsTitle: 'קשר צבאי / מכשירי ווקי-טוקי בלבד',
     commsDescription:
-      'מדגיש תדרי ווקי־טוקי ורדיו, מנקה רעשי סטטי ומכוונן את זיהוי הדיבור של Whisper כדי לקלוט קשר צבאי מעוות ולחישות.',
+      'הפעל רק בווידאו עם קשר רדיו מעוות ומונחים טקטיים/צבאיים (ללחישות רגילות "עיבוד אודיו חכם" מספיק).',
     onscreenTitle: 'זיהוי טקסט על המסך (Forced Narratives)',
     onscreenDescription:
       'סורק פריימים עם AI Vision ובודק ערוצים מוטמעים לכותרות מיקום, ציוני זמן ("שבוע לאחר מכן...") ושלטים חשובים לעלילה — וגם את הכתוביות הצרובות של הסרטון לדיבור בשפות אחרות.',
@@ -267,6 +267,11 @@ export const he: Messages = {
     highSpeechSensitivityTitle: 'רגישות דיבור גבוהה (תפיסת לחישות)',
     highSpeechSensitivityDesc:
       'מרכך את סינון השקט כדי לתפוס לחישות, דיבור חלש או משפטים שנבלעים במוזיקת רקע חזקה.',
+    smartAudioTitle: 'עיבוד אודיו חכם (מומלץ)',
+    smartAudioDesc:
+      'מזהה ומגביר אוטומטית לחישות ודיבור חלש תוך שמירה על שאר הפסקול נקי לחלוטין.',
+    advancedAudioToggle: 'הגדרות אודיו מתקדמות',
+    highSpeechAutoActiveNote: 'מופעל ממילא אוטומטית כשעיבוד האודיו החכם דלוק.',
     estimateTitle: 'עלות AI משוערת לקובץ הזה',
     estimateBatchTitle: 'עלות AI משוערת עבור {count} פרקים',
     estimateNone: 'אין קריאות AI עם האפשרויות האלה',
@@ -277,6 +282,9 @@ export const he: Messages = {
     autoSaveSrtTitle: 'שמור כתוביות אוטומטית ליד כל סרטון בסיום',
     autoSaveSrtDescription:
       'שומר אוטומטית את קובץ ה-.srt (עם תיקון RTL) בתיקייה המקורית של כל סרטון מיד עם סיום העיבוד.',
+    sectionAll: 'הכל',
+    sectionTranscription: 'תמלול ואודיו',
+    sectionTranslation: 'תרגום ועלויות',
     launch: 'התחל עיבוד',
     launchBatch: 'הפעל תור אצווה ({count} פרקים)',
     launching: 'מתחיל...',
@@ -308,12 +316,12 @@ export const he: Messages = {
     presetPodcastDesc: 'שיח מרובה משתתפים, קצב מהיר ועיבוד נקי',
     presetReelsTitle: 'Reels / TikTok / Shorts',
     presetReelsDesc: 'רגישות דיבור גבוהה לקליפים דינמיים ולרשתות',
+    presetCourseTitle: 'קורסים, הדרכות והרצאות',
+    presetCourseDesc: 'תמלול מהיר + זיהוי כותרות ושקפים מהמסך (OCR)',
     presetHebrewTitle: 'שמע בעברית (עברית → עברית)',
     presetHebrewDesc: 'מודל מומחה לעברית (ivrit-ai) לתמלול נקי בלי תרגום',
     presetDocuTitle: 'דוקו, מדע והסברה',
-    presetDocuDesc: 'כותרות מרואיינים (OCR), השלמת Whisper, מיפוי סאונד חכם ומטרית',
-    presetCinemaTitle: 'קולנוע ועלילתי',
-    presetCinemaDesc: 'תפיסת לחישות, מיפוי סאונד חכם, כתוביות מסך וניקוי SDH',
+    presetDocuDesc: 'כותרות מרואיינים (OCR), מיפוי סאונד חכם והמרה למטרית',
   },
   stages: {
     PROBING: 'בדיקת ערוצים',
@@ -826,6 +834,13 @@ export const he: Messages = {
     },
     frameDetail: 'רזולוציית פריים',
     frameDetailHint: 'טוקנים לפריים: נמוכה 280 · בינונית 560 · גבוהה 1120',
+    frameMaxWidthLabel: 'הקטנת רזולוציית פריימים ב-4K ל-OCR',
+    frameMaxWidthHint: 'מגביל את רוחב הפריים בדגימת ה-OCR לפענוח מהיר בהרבה בסרטי 4K.',
+    navAll: 'כל ההגדרות',
+    navKeys: 'מפתחות וספקים',
+    navModels: 'תרגום ו-OCR',
+    navCost: 'חיסכון ואומדן עלות',
+    navSystem: 'אחסון ועדכונים',
     resolution: { low: 'נמוכה', medium: 'בינונית', high: 'גבוהה' },
     onscreenPosition: 'מיקום כתוביות OCR / טקסט מסך',
     onscreenPositionHint:

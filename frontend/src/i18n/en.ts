@@ -172,12 +172,12 @@ export const en = {
     engineWhisperXHint:
       'Uses wav2vec2 phoneme forced alignment for frame-accurate word timestamps without un-VAD gap hallucinations.',
     engineWhisperXFallbackNote:
-      'WhisperX package is not installed on the server (pip install -r backend/requirements-optional.txt) — will fall back to Faster-Whisper.',
+      'WhisperX is not installed in this environment — transcription will automatically fall back to Faster-Whisper.',
     vocalIsolationTitle: 'Vocal Isolation (Remove Music/SFX)',
     vocalIsolationDesc:
       'Separates dialogue from heavy music/SFX (Demucs) while keeping speaker ID on clean original audio.',
     vocalIsolationFallbackNote:
-      'Demucs is not installed on the server (pip install -r backend/requirements-optional.txt) — raw audio will be used until installed.',
+      'Vocal isolation (Demucs) is not installed in this environment — standard audio will be used.',
     audioModeLabel: 'Activation mode',
     audioModeOff: 'Off (Default)',
     audioModeOn: 'Always On (Entire File)',
@@ -219,9 +219,9 @@ export const en = {
     sameLangPolishDesc:
       'Source and target are the same language. AI will fix ASR typos, punctuation, and spelling without rewriting wording.',
     sameLangDisableAi: 'Raw Whisper only (no AI)',
-    commsTitle: 'Tactical Comms & Radio Boost',
+    commsTitle: 'Radio / Military Comms Only',
     commsDescription:
-      'Enhances walkie-talkie/radio frequencies, reduces static, and tunes Whisper VAD to capture distorted military comms and whispers.',
+      'Use only for videos with heavy walkie-talkie static or tactical radio chatter (for regular whispers, Smart Audio is enough).',
     onscreenTitle: 'Detect On-Screen Text (Forced Narratives)',
     onscreenDescription:
       "Scans video frames with AI Vision and checks embedded tracks for location titles, timestamps ('One week later...'), plot signs — and the video's burned-in subtitles for speech in other languages.",
@@ -265,6 +265,11 @@ export const en = {
     highSpeechSensitivityTitle: 'High Speech Sensitivity (Catch Whispers)',
     highSpeechSensitivityDesc:
       'Relaxes voice activity thresholds to catch quiet whispers, rapid speech, and dialogue over loud background music.',
+    smartAudioTitle: 'Smart Audio Processing (Recommended)',
+    smartAudioDesc:
+      'Automatically detects and gently boosts quiet whispers while keeping the rest of the soundtrack untouched.',
+    advancedAudioToggle: 'Advanced Audio Settings',
+    highSpeechAutoActiveNote: 'Already enabled automatically when Smart Audio is on.',
     estimateTitle: 'Estimated AI cost for this file',
     estimateBatchTitle: 'Estimated AI cost for {count} episodes',
     estimateNone: 'No AI calls with these options',
@@ -275,6 +280,9 @@ export const en = {
     autoSaveSrtTitle: 'Auto-save subtitles next to each video when finished',
     autoSaveSrtDescription:
       'Automatically writes Episode.<lang>.srt (with RTL fix) into each video\'s original folder upon job completion.',
+    sectionAll: 'All Sections',
+    sectionTranscription: 'Transcription & Audio',
+    sectionTranslation: 'Translation & Cost',
     launch: 'Launch Subtitling Pipeline',
     launchBatch: 'Launch Batch Queue ({count} Episodes)',
     launching: 'Starting pipeline...',
@@ -306,12 +314,12 @@ export const en = {
     presetPodcastDesc: 'Multi-speaker dialogue, clean framing & fast Turbo pass',
     presetReelsTitle: 'Reels / TikTok / Shorts',
     presetReelsDesc: 'High sensitivity for energetic clips & social burn-in',
+    presetCourseTitle: 'Courses & Tutorials',
+    presetCourseDesc: 'Fast Turbo transcription + on-screen slide/title OCR',
     presetHebrewTitle: 'Hebrew Audio (HE → HE)',
     presetHebrewDesc: 'Local Hebrew specialist model (ivrit-ai), zero translation',
     presetDocuTitle: 'Documentary & Explainer',
-    presetDocuDesc: 'Speaker chyrons (OCR), Whisper supplement, Smart Audio Map & metric',
-    presetCinemaTitle: 'Cinema & Narrative',
-    presetCinemaDesc: 'Whisper catch, Smart Audio Map, on-screen titles & SDH cleanup',
+    presetDocuDesc: 'Speaker chyrons (OCR), Smart Audio Map & metric conversion',
   },
   stages: {
     PROBING: 'Probe Streams',
@@ -825,6 +833,13 @@ export const en = {
     },
     frameDetail: 'Frame detail',
     frameDetailHint: 'Tokens per frame: low 280 · medium 560 · high 1120',
+    frameMaxWidthLabel: '4K / High-Res OCR Downscale',
+    frameMaxWidthHint: 'Caps frame width during OCR sampling for faster 4K decoding.',
+    navAll: 'All Settings',
+    navKeys: 'Keys & Providers',
+    navModels: 'Translation & OCR',
+    navCost: 'Cost & Local AI',
+    navSystem: 'Storage & Updates',
     resolution: { low: 'Low', medium: 'Medium', high: 'High' },
     onscreenPosition: 'On-Screen OCR Text Position',
     onscreenPositionHint:
