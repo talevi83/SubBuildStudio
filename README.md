@@ -33,15 +33,22 @@ SubBuild Studio is meant for video you have the right to work on: videos you mad
    - Discovers all video, audio, and embedded subtitle tracks via `ffprobe` and lets you select the exact audio or text-based dialogue subtitle stream to use.
    - **Use Embedded Subtitles Toggle (`use_embedded_subtitles`):** When the video has an embedded text-based dialogue track (e.g., SRT/ASS/WebVTT inside an MKV), SubBuild extracts it directly for instant, studio-accurate timing without waiting for full Whisper transcription — or you can switch it off to force fresh Whisper transcription from the audio.
    - **Supplement with Whisper (`supplement_with_whisper`):** Optionally run Whisper alongside embedded or synced subtitles (`pipeline/missing_speech.py`) to detect and recover spoken lines missing from the subtitle track (such as unsubtitled radio chatter, background remarks, or foreign phrases) without duplicating existing lines.
-   - **Smart Genre Presets (`GenrePresets`):** One-click preset selector at the top of the configuration panel (`🎬 Drama & Cinema`, `🔬 Documentary, Reality & Science`, `🚁 Action, Military & Tactical`, `🕵️ Thriller, Horror & Crime`, `🚀 Sci-Fi, Fantasy & Anime`, `⚡ Fast & Clean / Sitcom`) that automatically configures all Whisper, audio sensitivity, OCR, and translation settings for that genre, with live active-preset detection and a `Custom` badge when tweaked manually.
+   - **Smart Workflow Presets (`GenrePresets`) & Section Filter Tabs:** One-click preset selector at the top of the configuration panel (`▶️ YouTube / Long-form`, `🎙️ Podcast / Interview`, `📱 Reels / TikTok / Shorts`, `🎓 Courses & Tutorials`, `🔬 Documentary & Explainer`, `🇮🇱 Hebrew Audio (HE → HE)`) that automatically configures the Whisper model (including `ivrit-ai/whisper-large-v3-turbo-ct2` for Hebrew), Smart Audio Map, Voice ID diarization, OCR sensitivity, and translation settings for that workflow, with live active-preset detection, a `Custom` badge when tweaked manually, and quick section tabs (`All Sections`, `Transcription & Audio`, `Translation & Cost`).
    - **Browser fallback:** If opened in a regular external browser (`--browser`), where web security blocks local path resolution, dropped files automatically fall back to upload with progress reporting, de-duplication (same name + size is reused), and automatic cleanup when the project is deleted.
 
-2. **Hardware-Accelerated Transcription & High Speech Sensitivity:**
-   - Powered by `faster-whisper` (CTranslate2) with automatic hardware detection (`CUDA FP16` on NVIDIA GPUs or `CPU INT8`).
-   - Batched GPU inference (`WHISPER_BATCH_SIZE`) with automatic fallback to sequential decoding if VRAM runs out; `large-v3-turbo` available.
-   - The model stays loaded between jobs; jobs queue for the GPU instead of loading two models at once.
+2. **Hardware-Accelerated Transcription (`Faster-Whisper` & `WhisperX`), Smart Audio Map & Selective Vocal Isolation:**
+   - **Dual Transcription Engines (`transcription_provider`):**
+     - **`Faster-Whisper` (default, CTranslate2):** Fast, lightweight inference with automatic hardware detection (`CUDA FP16` on NVIDIA GPUs or `CPU INT8`), batched GPU inference (`WHISPER_BATCH_SIZE`) with automatic OOM fallback to sequential decoding, `large-v3-turbo` and the dedicated Hebrew specialist model `ivrit-ai/whisper-large-v3-turbo-ct2`. The model stays loaded between jobs; jobs queue for the GPU instead of loading two models at once.
+     - **`WhisperX` (`providers/transcription/whisperx_provider.py`, optional):** Combines batched VAD Whisper ASR with `wav2vec2` phoneme forced alignment for frame-accurate word timestamps, isolated phantom-interjection filtering (`filter_phantom_interjections`), and immediate per-step VRAM release so 8 GB GPUs stay well within memory limits (automatically falls back to Faster-Whisper if not installed).
+   - **Smart Audio Map & Selective Window Conditioning (`services/smart_audio_map.py`, `stages/vocal_isolation_stage.py`, `services/audio_isolation.py`):**
+     - Scans the entire 16 kHz soundtrack in a fast vectorized pass (~1–2 seconds on CPU for a 2-hour movie) to map its acoustic timeline before transcription and activate filters **only on the specific time windows that need them** (`off` / `auto` / `on` for `vocal_isolation_mode` and `comms_boost_mode`):
+       - **Whisper windows (`whisper`):** Faint or whispered speech (`-48..-25.5 dBFS` adapted to the soundtrack's 88th-percentile dialogue loudness with sibilant/formant presence) receives localized soft speech gain (up to `+9 dB`) without cutting high-frequency consonants.
+       - **Music-masked windows (`music_masked`):** Speech buried under sustained broadband music or heavy sound effects triggers selective **Demucs (`htdemucs`) / `audio-separator`** vocal separation **only on those masked windows** (taking seconds instead of hours). Full-file vocal isolation (`on`) is also available in Advanced Audio Settings with deterministic source caching (`storage/vocals/`).
+       - **Comms windows (`comms`):** Band-limited walkie-talkie/radio speech receives localized radio bandpass, spectral hiss reduction, and gentle compression.
+     - **100% Untouched Clean Speech & Raw Audio Preservation:** Every sample outside detected windows stays **100% untouched (`OFF`)**, window boundaries are blended with an 80 ms raised-cosine crossfade so VAD never sees splice clicks, and acoustic speaker diarization (`WeSpeaker`) plus voice-pitch gender estimation (`F0`) always read the original unconditioned audio (`ctx.raw_audio_wav_path`).
+   - **Context / Glossary / Names Prompt (`initial_prompt`):** Optional field in Setup that feeds character names, proper nouns, domain terms, or a brief synopsis into both Whisper speech recognition and the AI translation glossary.
    - Silero VAD, `condition_on_previous_text=False` and loop detection against hallucinated repetitions.
-   - **High Speech Sensitivity (`high_speech_sensitivity`):** Optional per-job toggle that relaxes VAD and decoding thresholds to catch quiet whispers, murmurs, and speech partially buried under loud music or sound effects.
+   - **High Speech Sensitivity (`high_speech_sensitivity`):** Optional per-job toggle (enabled automatically when Smart Audio Processing is on) that relaxes VAD and decoding thresholds to catch quiet whispers, murmurs, and speech partially buried under music or sound effects.
    - Surround (5.1/7.1) tracks are downmixed with emphasis on the dialogue centre channel (boosting center speech while attenuating LFE/surround noise).
    - Cancel really stops Whisper mid-file.
 
@@ -55,11 +62,11 @@ SubBuild Studio is meant for video you have the right to work on: videos you mad
 
 4. **Context-Aware Multi-Provider Subtitle Translation (Google Gemini, OpenAI, Anthropic, Ollama):**
    - Mix and match providers per stage (*Translation*, *Glossary pass*, *On-screen OCR/Vision*) or keep one provider across the whole pipeline (e.g., local Ollama for Translation + Gemini Flex / GPT-5 nano for frame OCR).
-   - Default batch size of 120 lines for Gemini (`GEMINI_BATCH_SIZE=120`) and tuned batch sizing for OpenAI / Anthropic / Ollama (`~30–50`), paired with adaptive splitting and structured JSON schema validation (`core/provider_catalog.py`, `providers/llm/client.py`).
+   - **Model-Aware Batch Sizing, Per-Stage Thinking Budgets & Static Prefix Caching:** Automatically tunes batch sizes (`35` lines for capable cloud models; tuned smaller batches for local/compact models) with adaptive splitting, structured JSON schema validation (`core/provider_catalog.py`, `providers/llm/client.py`), per-stage thinking token budgets, and static system/glossary prompt prefix caching so scoped row hints never invalidate the cached prefix.
    - **Dedicated On-Screen Translation Pass:** `[ON_SCREEN]` cues (burned-in signs, location chyrons, HUD telemetry, text messages) are translated in a separate pass with a dedicated sign/title prompt from spoken dialogue (`DIALOGUE` / `COMMS` / `FOREIGN`), preventing sign text and overlapping dialogue from contaminating or overwriting each other during translation.
-   - One glossary pass over the whole transcript (characters, gender, terminology) feeds translation, with per-batch dynamic glossary pruning (main cast + characters and terms appearing in the active window, including active `speaker` and `addressee` characters) so prompts stay compact without mutating the saved glossary.
-   - **Acoustic Speaker Diarization & Character Matching (`enable_diarization`, `pipeline/diarization.py`, `pipeline/speaker_match.py`):** Local zero-token WeSpeaker CAM++ ONNX voiceprint clustering tags `SPEAKER_XX` turns across the timeline (retroactively or during pipeline runs), cross-references conversational clues and AI matching to link voice clusters with glossary characters, and supports merging/re-assigning cast voices in the **Characters, Speakers & Terms** studio modal. Each speaker's **gender is estimated from voice pitch** (`pipeline/voice_gender.py`: median F0 over their turns; under ~155 Hz male, ~170–300 Hz female, the overlap zone and child-like voices stay unknown), so Hebrew/Arabic get the right gender even when no name or pronoun is spoken. A voice estimate never replaces a gender from the transcript (glossary / character matching), and the listener resolver trusts it a little less than one. In short clips a voice with a single utterance keeps its own cluster instead of being absorbed as noise.
-   - **Speaker vs. Addressee (Listener) Gender & Plurality Resolution (`pipeline/addressee.py`):** Automatically distinguishes **who is speaking** (`speaker`, used solely for 1st-person self-reference such as *"אני הולכת"*) from **who is being spoken to** (`addressee`, used for all 2nd-person forms: masculine singular *"אתה"*, feminine singular *"את"*, or plural *"אתם/אתן"* / `group (plural)`). Every dialogue line gets a structured listener record with a **confidence score**: direct evidence in the line (plural/group phrases such as `"you guys"` / `"everyone"`, named character vocatives, honorifics such as `"sir"` / `"ma'am"` / `"Mr./Mrs./Ms."`), **conversation state** (the dialogue is cut into exchanges at silences over 8s; a speaker keeps talking to the same listener, so strong evidence is carried to their neighbouring lines with decaying confidence, and is dropped when a third person speaks in between), and turn-taking (two-person exchanges, replying to whoever just called you by name, question/answer adjacency). The confidence decides what the translator is told: a fact (`addressee`), a guess it may overrule from context (`addressee_guess`), or nothing — a weak guess is never presented as certain. For Hebrew/Arabic the translator also reports which 2nd-person form it wrote (`addressee_form`); lines that contradict a confident listener are **translated once more** (`ADDRESSEE_AUTOFIX`, one extra request, at most `ADDRESSEE_AUTOFIX_MAX_ROWS` lines) and anything still wrong is flagged by the quality check. The record is stored on each row (`addressee_json`) and shown in the Studio table as a read-only *Speaking to* tag: grey when sure, dashed amber when the app could not settle a line that has a "you" or an imperative (filter: *Unclear who is being spoken to*), indigo with a lock when you set it yourself (tick rows → *Speaking to a woman / man / group*) — a manual pick is kept by later translations and guides the lines around it.
+   - One glossary pass over the whole transcript (characters, gender, terminology — merged with any user-supplied `initial_prompt` / context glossary pairs) feeds translation, with per-batch dynamic glossary pruning (main cast + characters and terms appearing in the active window, including active `speaker` and `addressee` characters) so prompts stay compact without mutating the saved glossary.
+   - **Acoustic Speaker Diarization, Long-Film Cluster Re-Split & Character Matching (`enable_diarization`, `pipeline/diarization.py`, `pipeline/speaker_match.py`):** Local zero-token WeSpeaker CAM++ ONNX voiceprint clustering tags `SPEAKER_XX` turns across the timeline (retroactively or during pipeline runs), automatically re-splits oversized merged voice clusters on long films (`>= 45 min`), cross-references conversational clues and AI matching (with a 16k output token budget) to link voice clusters with glossary characters, and quarantines unreliable clusters via an automated diarization quality guard (`assess_diarization`). Supports merging/re-assigning cast voices in the **Characters, Speakers & Terms** studio modal. Each speaker's **gender is estimated from voice pitch** (`pipeline/voice_gender.py`: median F0 over their turns on raw unconditioned audio; under ~155 Hz male, ~170–300 Hz female, the overlap zone and child-like voices stay unknown) and refined by dialogue context (1st-person self-descriptions, vocatives, and honorific replies), so Hebrew/Arabic get the right gender even when no name or pronoun is spoken. A voice estimate never replaces a gender from the transcript (glossary / character matching), and the listener resolver trusts it a little less than one. In short clips a voice with a single utterance keeps its own cluster instead of being absorbed as noise.
+   - **Speaker vs. Addressee (Listener) Gender & Plurality Resolution (`pipeline/addressee.py`):** Automatically distinguishes **who is speaking** (`speaker`, used solely for 1st-person self-reference such as *"אני הולכת"*) from **who is being spoken to** (`addressee`, used for all 2nd-person forms: masculine singular *"אתה"*, feminine singular *"את"*, or plural *"אתם/אתן"* / `group (plural)`). Every dialogue line gets a structured listener record with a **confidence score**: direct evidence in the line (plural/group phrases such as `"you guys"` / `"everyone"`, named character vocatives, honorifics such as `"sir"` / `"ma'am"` / `"Mr./Mrs./Ms."`), **conversation state & scene continuity** (the dialogue is cut into exchanges at silences over 8s; a speaker keeps talking to the same listener, carrying strong evidence and scene addressee gender continuity to neighbouring lines with decaying confidence, and dropping it when a third person speaks in between), and turn-taking (two-person exchanges, replying to whoever just called you by name, question/answer adjacency). The confidence decides what the translator is told: a fact (`addressee`), a guess it may overrule from context (`addressee_guess`), or nothing — a weak guess is never presented as certain. For Hebrew/Arabic the translator also reports which 2nd-person form it wrote (`addressee_form`); lines that contradict a confident listener are **translated once more** (`ADDRESSEE_AUTOFIX`, one extra request, at most `ADDRESSEE_AUTOFIX_MAX_ROWS` lines) and anything still wrong is flagged by the quality check. The record is stored on each row (`addressee_json`) and shown in the Studio table as a read-only *Speaking to* tag: grey when sure, dashed amber when the app could not settle a line that has a "you" or an imperative (filter: *Unclear who is being spoken to*), indigo with a lock when you set it yourself (tick rows → *Speaking to a woman / man / group*) — a manual pick is kept by later translations and guides the lines around it.
    - **Metric System Conversion Toggle (`convert_to_metric`):** Optional per-job setting in the Setup screen (and Genre Presets) to automatically convert imperial measurements (miles, feet, inches, lbs, Fahrenheit, gallons, acres) into natural, idiomatic metric equivalents (km, m, kg, Celsius, liters, dunams) with natural rounding while preserving figurative idioms.
    - Missing lines are retried individually; anything that still fails is **flagged**, never silently left in English. "Retranslate failed" / "Retranslate all" (or a different target language) without re-transcribing.
    - Subtitles are saved as soon as they're refined and after every translated batch — nothing is lost if translation fails.
@@ -139,18 +146,20 @@ Tools available inside the interactive Studio Editor and Whisper refinement pipe
 
 ## ⚙️ Settings, Models & Pricing
 
-Open **Settings** (bottom of the sidebar — its compact status badge tracks readiness across all 3 active pipeline steps at a glance). The screen is organized into a clean, single-page **4-Row Bento layout** designed to eliminate clutter and remove duplication with per-video job setup:
+Open **Settings** (bottom of the sidebar — its compact status badge tracks readiness across all 3 active pipeline steps at a glance). The screen is organized into a clean, single-page **4-Row Bento layout** with a **Section Navigation Bar** (`All Sections`, `API Keys`, `AI Models`, `Cost & Local AI`, `Storage & System`) designed to eliminate clutter and remove duplication with per-video job setup:
 
-- **Compact Header & Appearance + Local AI Row (Row 1):**
-  - **Appearance Card:** Interface language (Hebrew / English, with full RTL layout in Hebrew), Dark / Light theme, and *Back to studio* shortcut.
-  - **Local AI & Cost-Saver Mode Card (`cost_saver_mode`, off by default):** Pre-filters sampled frames locally using Pillow edge detection and 64-bit dHash (~75–80% Vision token savings), unloads Faster-Whisper from GPU VRAM after transcription, and auto-tags ambiguous pronouns via local Ollama (`qwen2.5:7b`). Includes live Ollama status, official download link, one-click daemon startup/pull (`POST /api/settings/ollama/setup`), and a collapsible details drawer with manual CLI instructions.
-- **Multi-Provider AI Key Vault (`ApiKeySection`, Row 2):** Auto-collapsed when keys are already loaded (plus a first-run onboarding modal when no AI key exists yet). Tabbed panel (`GET/POST /api/settings/keys`, `PUT/DELETE /api/settings/keys/{key_id}`, `POST /api/settings/providers/refresh`) supporting **Google Gemini**, **OpenAI**, **Anthropic Claude**, and **Ollama (Local / Cloud)** with multiple named keys per provider, default selection, custom base URL / **Ollama Cloud** preset, masked secret previews (`AIza••••••••abcd`), direct "Get API Key" links, and live model discovery.
-- **AI Models per Pipeline Step, Best-Value Optimizer & Cost Estimator (Row 3):**
+- **Compact Header, Appearance & Section Navigation Tabs:**
+  - **Appearance Bar:** Interface language (Hebrew / English, with full RTL layout in Hebrew), Dark / Light theme, and *Back to studio* shortcut.
+  - **Section Tabs (`settings-section-tabs`):** View all settings on one page or focus on a specific section (`All`, `Keys`, `Models`, `Cost`, `System`).
+- **Multi-Provider AI Key Vault (`ApiKeySection`, Row 1):** Auto-collapsed when keys are already loaded (plus a first-run onboarding modal when no AI key exists yet). Tabbed panel (`GET/POST /api/settings/keys`, `PUT/DELETE /api/settings/keys/{key_id}`, `POST /api/settings/providers/refresh`) supporting **Google Gemini**, **OpenAI**, **Anthropic Claude**, and **Ollama (Local / Cloud)** with multiple named keys per provider, default selection, custom base URL / **Ollama Cloud** preset, masked secret previews (`AIza••••••••abcd`), direct "Get API Key" links, and live model discovery.
+- **AI Models per Pipeline Step, Best-Value Optimizer & Flex Cooldown (Row 2):**
   - **Best-Value (Cost / Quality) Auto-Selector:** One-click optimizer (*Auto-select best value (Cost / Quality)*) inspects all configured keys across all providers, compares episode costs including Google **Flex (`-50%`)**, and assigns the lowest-cost recommended model per stage (enabling Flex automatically when Google Flex wins). Includes an optional GPU/VRAM-aware **"Include free Local AI"** checkbox that selects recommended local models (`>= 6.5B`) fitting your detected CUDA VRAM and explains any skipped heavy models.
-  - **3-Column AI Stage Cards:** *Translation*, *Glossary pass*, and *On-screen text (vision)* appear side-by-side on desktop (plus Vision frame detail resolution). Pick provider, optional key, model, thinking level (Google Gemini), and Flex mode per step (`storage/settings.json`), with estimated cost badges for a ~45-minute and a ~120-minute video (`$0.00` for local Ollama), suitability warnings, and strict live/task capability filtering (`/api/show` vision & size checks for Ollama).
-  - **Test models & Flex fallback:** *Test models* sends a tiny test request to each configured step (`POST /api/settings/check`); Google Flex sends requests with `service_tier="flex"` at 50% off Standard and automatically falls back to Standard after repeated busy errors (`429`/`503`).
+  - **3-Column AI Stage Cards:** *Translation*, *Glossary pass*, and *On-screen text (vision)* appear side-by-side on desktop (plus Vision frame detail resolution `low`/`medium`/`high` and max frame width `480px`/`640px`/`960px`). Pick provider, optional key, model, thinking level (Google Gemini), and Flex mode per step (`storage/settings.json`), with estimated cost badges for a ~45-minute and a ~120-minute video (`$0.00` for local Ollama), suitability warnings, and strict live/task capability filtering (`/api/show` vision & size checks for Ollama).
+  - **Test models & Smart Flex Cooldown / Re-Probe (`providers/gemini_calls.py`):** *Test models* sends a tiny test request to each configured step (`POST /api/settings/check`); Google Flex sends requests with `service_tier="flex"` at 50% off Standard with a 2-minute timeout (`FLEX_TIMEOUT_MS=120000`) and asyncio safety guard, falls back immediately on `504 DEADLINE_EXCEEDED` or capacity errors (`429`/`503`), and after two consecutive slow/busy Flex calls enters a temporary cooldown (`12` requests or `90s`) followed by an automatic single-shot re-probe so discounted Flex pricing resumes as soon as Google capacity recovers.
+- **Local AI & Cost-Saver Mode + Interactive Cost Estimator (Row 3):**
+  - **Local AI & Cost-Saver Mode Card (`cost_saver_mode`, off by default):** Pre-filters sampled frames locally using Pillow edge detection and 64-bit dHash (~75–80% Vision token savings), unloads Faster-Whisper from GPU VRAM after transcription, and auto-tags ambiguous pronouns via local Ollama (`qwen2.5:7b`). Includes live Ollama status, official download link, one-click daemon startup/pull (`POST /api/settings/ollama/setup`), and a collapsible details drawer with manual CLI instructions.
   - **Collapsible Cost Estimator:** Interactive per-step request, token, and USD calculator for any video length, updating live before saving (the Setup screen also displays the estimate for your loaded file).
-  - **Zero Duplication with Setup (`PipelineConfig`):** Per-video formatting and content options (*Convert to metric*, *Remove SDH speaker names*, *Smart end-credits filter*, and default *On-screen OCR text position*) live exclusively in the post-video **Setup** screen (controlled by **Genre Presets**) rather than duplicating controls in Settings.
+  - **Zero Duplication with Setup (`PipelineConfig`):** Per-video formatting and content options (*Convert to metric*, *Remove SDH speaker names*, *Smart end-credits filter*, and default *On-screen OCR text position*) live exclusively in the post-video **Setup** screen (controlled by **Smart Workflow Presets**) rather than duplicating controls in Settings.
 - **Storage, Diagnostics, Updater & Feedback (Row 4):**
   - **Storage & Cleanup (`GET /api/storage`, `POST /api/storage/clean`):** Compact 2×3 category grid protecting source folders, active jobs, and `server.log`.
   - **Diagnostics, Auto-Updater & Feedback:** *Download server log* (`storage/logs/server.log`), **Software Version & Updates** (shows installed version/commit, checks GitHub Release tags `vX.Y.Z` via `POST /api/system/update/check`, and applies release updates via `POST /api/system/update/apply` when no jobs are active), plus *Report a Bug* and *Request a Feature* links.
@@ -161,7 +170,7 @@ Pricing covers Google Gemini (paid tier + dated promotions in `backend/app/core/
 
 ## 🏗️ Repository Architecture
 
-Pipeline per job: **Probe → Audio → Transcribe → Diarize** *(optional)* **→ On-screen text** *(optional)* **→ Refine → Translate**, with live progress and segments pushed over a WebSocket (`/ws/jobs/{job_id}`).
+Pipeline per job: **Probe → Audio → Audio Conditioning / Vocal Isolation** *(optional Smart Audio Map / Demucs)* **→ Transcribe → Diarize** *(optional)* **→ On-screen text** *(optional)* **→ Refine → Translate**, with live progress and segments pushed over a WebSocket (`/ws/jobs/{job_id}`).
 
 ```text
 SubBuild Studio/
@@ -174,7 +183,8 @@ SubBuild Studio/
 ├── packaging/                  # Source-based desktop window & tray launcher, icon generator, desktop shortcuts
 ├── backend/
 │   ├── .env.example            # Configuration template (copy to .env)
-│   ├── requirements.txt        # Python dependencies (incl. CUDA cuBLAS/cuDNN wheels)
+│   ├── requirements.txt        # Core Python dependencies (incl. CUDA cuBLAS/cuDNN wheels)
+│   ├── requirements-optional.txt # Optional Demucs vocal isolation & WhisperX phoneme alignment packages
 │   ├── app/
 │   │   ├── main.py             # FastAPI app: CORS, trusted hosts, CSRF guard, routers, startup discovery, WebSocket
 │   │   ├── api/                # Routes: system (+ updater), media, jobs, export, settings (+ key vault), glossary profiles, storage
@@ -185,8 +195,8 @@ SubBuild Studio/
 │   │   ├── pipeline/
 │   │   │   ├── orchestrator.py # Runs the stages: GPU queue, cancel, save-as-you-go, recovery after restart
 │   │   │   ├── job_report.py   # Per-job log: settings at the start, result, usage and cost at the end
-│   │   │   ├── stages/         # probe, audio, transcribe, diarize, ocr (on-screen text), refine, translate, sync
-│   │   │   ├── diarization.py, speaker_match.py  # Local ONNX voiceprint clustering & character matching
+│   │   │   ├── stages/         # probe, audio, vocal_isolation (Smart Audio Map / Demucs), transcribe, diarize, ocr, refine, translate, sync
+│   │   │   ├── diarization.py, speaker_match.py  # Local ONNX voiceprint clustering, long-film cluster re-split & character matching
 │   │   │   ├── voice_gender.py # Speaker gender from voice pitch (F0)
 │   │   │   ├── addressee.py    # Who each line is spoken to: confidence-scored listener per line (evidence, conversation state, turn-taking)
 │   │   │   ├── waveform.py     # Cached 50 peaks/s audio amplitude extraction for WaveformTimeline
@@ -207,7 +217,9 @@ SubBuild Studio/
 │   │   │   ├── foreign_speech.py              # Passages in other languages
 │   │   │   ├── speaker_detect.py, qa.py       # Gender detection from frames, quality check
 │   │   │   └── context.py                     # Job context passed between stages
-│   │   ├── providers/          # faster-whisper transcription; llm/client.py (Gemini, OpenAI, Anthropic, Ollama); Flex wrapper
+│   │   ├── services/           # smart_audio_map.py (acoustic timeline scanner & selective window conditioner),
+│   │   │                       #   audio_isolation.py (Demucs / audio-separator vocal extraction & cache)
+│   │   ├── providers/          # faster-whisper & whisperx transcription; llm/client.py (Gemini, OpenAI, Anthropic, Ollama); Flex wrapper with cooldown/re-probe
 │   │   └── utils/              # SRT/VTT formatter, subtitle file parser, RTL fixer, speaker split/SDH cleaner, languages, text rules
 │   ├── pytest.ini              # Pytest markers (unit, api, pipeline, ffmpeg, security, smoke, regression)
 │   └── tests/                  # Layered pytest suites (unit/, api/, pipeline/, security/, fixtures/)
@@ -230,7 +242,7 @@ SubBuild Studio/
     ├── settings.json           # Choices from the Settings screen
     ├── provider_keys.json      # Saved multi-provider API keys (masked in API responses)
     ├── uploads/                # Browser-uploaded video copies
-    ├── audio/, frames/         # Temporary audio and sampled frames
+    ├── audio/, vocals/, frames/# Temporary audio, conditioned/isolated vocals, and sampled frames
     ├── exports/                # Exported subtitle files
     ├── regions/                # Speech-map cache for "Re-check timing"
     ├── glossaries/             # Series glossary profiles
@@ -297,12 +309,15 @@ Optional environment defaults (fallback defaults — per-stage AI models, Cost-S
 
 | Setting | Default | What it does |
 |---|---|---|
+| `TRANSCRIPTION_PROVIDER` | `faster_whisper` | Default local speech-to-text engine (`faster_whisper` or `whisperx`). |
 | `WHISPER_DEVICE` / `WHISPER_COMPUTE_TYPE` | `auto` / `auto` | `cuda` or `cpu`; `float16` or `int8`. `auto` picks CUDA FP16 when a GPU is found, otherwise CPU INT8. |
-| `WHISPER_BATCH_SIZE` | `8` | Batched GPU inference. Lower if you run out of VRAM; `0` = sequential. |
-| `WHISPER_GAP_RECOVERY` | `true` | Missed-speech recovery (see Studio Quality tools above). |
-| `WHISPER_SNAP_STARTS` | `true` | Subtitle start alignment (see Studio Quality tools above). |
+| `WHISPER_BATCH_SIZE` / `WHISPERX_BATCH_SIZE` | `8` / `8` | Batched GPU inference for Faster-Whisper and WhisperX. Lower if you run out of VRAM; `0` = sequential. |
+| `VOCAL_ISOLATION` / `VOCAL_ISOLATION_MODEL` | `false` / `htdemucs` | Optional Demucs / `audio-separator` vocal isolation default and model name (managed per job via `vocal_isolation_mode`: `off`, `auto`, `on`). |
+| `HF_TOKEN` | unset | Optional HuggingFace token for integrated WhisperX pyannote speaker diarization (local WeSpeaker ONNX diarization needs no token). |
+| `WHISPER_GAP_RECOVERY` | `true` | Missed-speech recovery for Faster-Whisper (see Studio Quality tools above). |
+| `WHISPER_SNAP_STARTS` | `true` | Subtitle start alignment for Faster-Whisper (see Studio Quality tools above). |
 | `MAX_CONCURRENT_TRANSCRIPTIONS` | `1` | Jobs allowed on the GPU at once (others wait as *Queued*). |
-| `GEMINI_BATCH_SIZE` | `120` | Default batch line budget fallback for Gemini translation requests. |
+| `GEMINI_BATCH_SIZE` | `35` | Default batch line budget fallback for capable cloud translation requests. |
 | `GEMINI_GLOSSARY_PASS` | `true` | Default fallback: build a character/terminology glossary before translating. |
 | `COST_SAVER_MODE` | `false` | Default fallback for local frame pre-filtering, Whisper VRAM unloading, and Ollama pre-tagging (managed in Settings). |
 | `ALLOW_ONSCREEN_OVERLAP` | `true` | Default fallback allowing on-screen OCR titles to display concurrently with dialogue subtitles. |
@@ -417,6 +432,7 @@ For people who should not need Python, Node.js or a terminal, every release tag 
 - **What it ships:** the release's source tree without the development-only parts, the interface already built (`frontend/dist`, so no Node.js), `ffmpeg`/`ffprobe`, python.org's Python 3.12 (`python/`), and [`uv`](https://github.com/astral-sh/uv) (`tools/uv.exe`). Staged by `packaging/windows/stage.ps1`, packed by Inno Setup from `packaging/windows/SubBuildStudio.iss`.
 - **Per-user install, no administrator rights:** `%LOCALAPPDATA%\Programs\SubBuild Studio`, with Start-menu and optional desktop shortcuts that open the desktop window (`packaging/launcher.py`). Projects, settings and API keys live in `%LOCALAPPDATA%\SubBuild Studio`, so reinstalling or uninstalling never touches them.
 - **Python on first install:** `packaging/windows/setup-env.cmd` (run by the installer in a visible window) lets `uv` install `backend/requirements.txt` + `packaging/requirements-desktop.txt` straight into the python.org Python 3.12 shipped in the installer (`python\`, from the official NuGet package, so `python.exe` and `pythonw.exe` are signed by the PSF). It is private to the app, so there is no venv and the shortcuts start `python\pythonw.exe` directly. (uv's own Python is unsigned and was blocked by behaviour-based antivirus, and installing it creates a junction that Windows 11 RedirectionGuard may refuse.) This is the large, one-time download (the CUDA libraries); the installer itself stays small.
+- **Optional Demucs & WhisperX installer task (`optionalaudio`):** The Inno Setup wizard includes an optional checkbox (*"Install Demucs Vocal Isolation & WhisperX"*) that passes `--with-optional-audio` to `setup-env.cmd`, automatically detecting whether an NVIDIA GPU is present (`nvidia-smi`) to install CUDA or CPU PyTorch/Torchaudio alongside `backend/requirements-optional.txt` (`demucs`, `audio-separator`, `whisperx`).
 - **Updates:** an installed copy carries an `INSTALLER` marker file. The in-app updater still reports new releases, but instead of patching files in place (it has no Node.js to rebuild the interface) it asks the user to download and run the new installer, which upgrades in place and keeps all data.
 - **Build it locally:** `cd frontend && npm ci && npm run build`, then `.\packaging\windows\stage.ps1` and `"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=2.2.0 packaging\windows\SubBuildStudio.iss` → `build\windows\SubBuild-Studio-Setup.exe`.
 - The installer is not code-signed yet, so Windows SmartScreen shows *"Windows protected your PC"* on first run (*More info → Run anyway*).
@@ -453,39 +469,39 @@ SubBuild Studio uses a **Multi-Layer Hybrid Test Pyramid** combining fast in-pro
 flowchart TD
     E2E["Black-Box UI E2E — Java 21 + Selenium 4 POM (18 tests)"]
     BAPI["Black-Box API & Security — Java 21 + RestAssured (35 tests)"]
-    FE["Frontend UI & Store — Vitest + RTL (14 tests) + oxlint + tsc"]
-    PIPE["Backend API, Pipeline & Security — Pytest (377 tests)"]
-    UNIT["Pure Unit & Domain Rules — Pytest (135 tests)"]
+    FE["Frontend UI & Store — Vitest + RTL (85 tests) + oxlint + tsc"]
+    PIPE["Backend API, Pipeline & Security — Pytest (462 tests)"]
+    UNIT["Pure Unit & Domain Rules — Pytest (358 tests)"]
     E2E --> BAPI --> FE --> PIPE --> UNIT
 ```
 
-### 1. Backend Pytest Suite (`backend/tests/`, 512 tests)
+### 1. Backend Pytest Suite (`backend/tests/`, 820 tests)
 Tests are organized into explicit architectural layers with shared builders/fakes (`tests/fixtures/`) and registered markers in `backend/pytest.ini`:
 
 ```powershell
 cd backend
 
-# Run the full suite (512 tests)
+# Run the full suite (820 tests)
 .\.venv\Scripts\python.exe -m pytest -q
 
 # Run by architectural layer or execution tag
-.\.venv\Scripts\python.exe -m pytest -m unit -q        # 135 pure unit tests (no DB / no FFmpeg)
-.\.venv\Scripts\python.exe -m pytest -m api -q         # 141 FastAPI + SQLite integration tests
-.\.venv\Scripts\python.exe -m pytest -m pipeline -q    # 170 pipeline, AI provider fake & FFmpeg tests
+.\.venv\Scripts\python.exe -m pytest -m unit -q        # 358 pure unit tests (no DB / no FFmpeg)
+.\.venv\Scripts\python.exe -m pytest -m api -q         # 161 FastAPI + SQLite integration tests
+.\.venv\Scripts\python.exe -m pytest -m pipeline -q    # 235 pipeline, AI provider fake & FFmpeg tests
 .\.venv\Scripts\python.exe -m pytest -m security -q    # 66 auth, CSRF, headers, FFmpeg SSRF & upload tests
 .\.venv\Scripts\python.exe -m pytest -m smoke -q       # 54 critical-path smoke tests
 ```
 
-- **`tests/unit/`**: RTL BiDi wrapping, SRT/VTT timecode & formatting, segmentation/orphan-word healing, smart end-credits detection, speaker turn splitting & SDH cleanup, missing speech supplementation, QA rules, Git/Release auto-updater (`test_updater.py`), DB migration, and desktop launcher/shortcut logic.
+- **`tests/unit/`**: RTL BiDi wrapping, SRT/VTT timecode & formatting, segmentation/orphan-word healing, Smart Audio Map window analysis & selective conditioning (`test_smart_audio_and_cost_optimizations.py`), Demucs vocal isolation & WhisperX phoneme alignment/interjection filtering (`test_vocal_isolation_and_whisperx.py`), pipeline quality & long-film diarization cluster re-split (`test_pipeline_quality_upgrade.py`, `test_job_320de88c99_regressions.py`, `test_job_5b4c9f644a_polish.py`), voice-pitch gender (`test_voice_gender.py`), smart end-credits detection, speaker turn splitting & SDH cleanup, missing speech supplementation, QA rules, Git/Release auto-updater (`test_updater.py`), DB migration, and desktop launcher/shortcut logic.
 - **`tests/api/`**: System info & auto-updater endpoints (`update/check`, `update/apply` + active-job `409` guard), multi-provider key vault & live discovery (`test_multi_provider_ai.py`), job persistence & slim listings, live WebSocket segment streaming, segment CRUD, undo/redo edit history, upload SHA-256 deduplication & Range parsing, row-scoped retranslation, glossary profiles, speaker detection, retime/reorder, settings/pricing, save-next-to-video, and storage cleanup.
-- **`tests/pipeline/`**: Gender in translation on a real two-speaker video (`tests/fixtures/media/conversation_2_genders.mp4` + its script in `conversation_2_genders.json`: voice pitch, diarization, who is spoken to, and the 2nd-person re-check; the diarization test runs when the speaker model is cached in `backend/storage/models`), end-to-end pipeline on generated FFmpeg clips, Whisper threading/OOM fallback/cancellation, Gemini/LLM batching/retries/Flex tier fallback, FinOps dHash pre-filtering & Ollama local pre-tagging, OCR & tactical comms boost, foreign speech, sync alignment/burned-in detection, gap recovery, word snapping, video embedding, and per-job logging.
+- **`tests/pipeline/`**: Gender in translation on a real two-speaker video (`tests/fixtures/media/conversation_2_genders.mp4` + its script in `conversation_2_genders.json`: voice pitch, diarization, who is spoken to, and the 2nd-person re-check; the diarization test runs when the speaker model is cached in `backend/storage/models`), end-to-end pipeline on generated FFmpeg clips, Whisper threading/OOM fallback/cancellation, Gemini/LLM batching/retries/Flex tier cooldown & single-attempt re-probe (`test_flex.py`), FinOps dHash pre-filtering & Ollama local pre-tagging, OCR & tactical comms boost, foreign speech, sync alignment/burned-in detection, gap recovery, word snapping, video embedding, and per-job logging.
 - **`tests/security/`**: Per-launch session token (`X-SubBuild-Token` & HttpOnly cookie) and UNC path refusal, CSRF Origin/Fetch-Metadata & Host validation, anti-framing/CSP security headers, FFmpeg `-protocol_whitelist file` & AST audit, and `Content-Length` upload limits.
 
-### 2. Frontend Checks & Tests (`frontend/`, 14 tests)
+### 2. Frontend Checks & Tests (`frontend/`, 85 tests across 16 test files)
 ```powershell
 cd frontend
 npm run lint    # oxlint
-npm test        # Vitest + React Testing Library (14 tests)
+npm test        # Vitest + React Testing Library (85 tests)
 npm run build   # tsc -b + vitest run + vite build
 ```
 
@@ -514,8 +530,8 @@ mvn test -Pregression "-Dsubbuild.headless=true"
 - **Branch flow (`feature/*` → `main`):** Work is developed on feature/fix branches and merged into **`main`** via Pull Request after passing automated verification (GitHub Actions + Jenkins: pytest, frontend checks, Java RestAssured/Selenium).
 - **Self-Hosted Jenkins CI (Raspberry Pi 4 8GB, Linux `aarch64`):** Configured via [`Jenkinsfile`](Jenkinsfile) and triggered automatically on pushes and PRs to `main` via **GitHub Webhook** (plus manual parameterized runs with `JAVA_PROFILE=regression|smoke`, `RUN_BACKEND_PYTEST`, and `RUN_FRONTEND_CHECKS`).
   1. **Preflight Check:** Verifies `python3`, `node`, `npm`, `java`, `mvn`, `ffmpeg`, and `chromium`/`chromedriver`.
-  2. **Backend Pytest (`512` tests):** Provisions `backend/.venv` (filtering out `nvidia-*` CUDA packages, cached by `requirements.txt` SHA-256) and emits JUnit XML.
-  3. **Frontend Checks & Build (`14` Vitest + Vite `dist`):** Runs `npm ci`, `oxlint`, `tsc -b`, `vitest run`, and `vite build` so `backend/app/main.py` serves `frontend/dist` for Selenium tests.
+  2. **Backend Pytest (`820` tests):** Provisions `backend/.venv` (filtering out `nvidia-*` CUDA packages, cached by `requirements.txt` SHA-256) and emits JUnit XML.
+  3. **Frontend Checks & Build (`85` Vitest + Vite `dist`):** Runs `npm ci`, `oxlint`, `tsc -b`, `vitest run`, and `vite build` so `backend/app/main.py` serves `frontend/dist` for Selenium tests.
   4. **Java Black-Box QA (`53` regression / `9` smoke):** Executes `mvn -B clean test -P"${JAVA_PROFILE}" -Dsubbuild.headless=true -Dsubbuild.timeoutSeconds=30`, then publishes unified JUnit results and archives `ExtentReports` HTML + failure screenshots.
 - **Cross-Platform Driver & Headless Resolution (`TestConfig` + `DriverFactory`):** Auto-enables `--headless=new` in `CI`/`JENKINS_URL`/`GITHUB_ACTIONS` or display-less Linux environments; preserves Selenium Manager on Windows and GitHub Actions (`ubuntu-latest` `x86_64`), and automatically falls back to OS-packaged `/usr/bin/chromium` + `/usr/bin/chromedriver` on Linux ARM64 (`aarch64`).
 - **GitHub Actions ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)):** Runs backend `pytest` + `pip-audit` and frontend `npm audit` + `oxlint` + `vitest` + `vite build` on `ubuntu-latest` (`main`, PRs, and weekly schedule).

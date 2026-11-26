@@ -17,9 +17,9 @@ Our QA strategy separates deterministic white-box verification from black-box sy
 flowchart TD
     E2E["Layer 5: Black-Box Browser E2E<br/>Java 21 + Selenium 4 POM (18 UI Tests)<br/>Hybrid API Seeding + Chrome/Chromium/Edge"]
     BAPI["Layer 4: Black-Box REST & Security Contracts<br/>Java 21 + RestAssured (35 API Tests)<br/>Session Token, CSRF, Key Vault, Updater, Job Lifecycle, Edge Cases"]
-    FE["Layer 3: Frontend Component & Store<br/>Vitest + React Testing Library (14 Tests)<br/>TypeScript tsc -b + oxlint"]
-    PIPE["Layer 2: Backend API, Pipeline & Security<br/>Pytest (377 Tests: 141 API + 170 Pipeline + 66 Security)<br/>FastAPI TestClient, SQLite, AI Fakes, 24 FFmpeg Tests"]
-    UNIT["Layer 1: Pure Unit & Domain Rules<br/>Pytest (135 Tests)<br/>RTL BiDi, SRT/VTT, Segmentation, Credits, Auto-Updater, QA Rules"]
+    FE["Layer 3: Frontend Component & Store<br/>Vitest + React Testing Library (85 Tests / 16 Specs)<br/>TypeScript tsc -b + oxlint"]
+    PIPE["Layer 2: Backend API, Pipeline & Security<br/>Pytest (462 Tests: 161 API + 235 Pipeline + 66 Security)<br/>FastAPI TestClient, SQLite, AI Fakes, FFmpeg Tests"]
+    UNIT["Layer 1: Pure Unit & Domain Rules<br/>Pytest (358 Tests)<br/>RTL BiDi, Smart Audio Map, Vocal Isolation, WhisperX, Diarization, SRT/VTT, Segmentation, Credits, Auto-Updater, QA Rules"]
 
     E2E --> BAPI
     BAPI --> FE
@@ -37,27 +37,25 @@ Running full Whisper transcription and AI translation through a browser UI for e
 
 ## 3. Suite Breakdown & Directory Layout
 
-### 3.1 Python Backend Test Suite (`backend/tests/`) — 512 Tests
+### 3.1 Python Backend Test Suite (`backend/tests/`) — 820 Tests
 Configured in [`backend/pytest.ini`](../backend/pytest.ini) with `pythonpath = .` and automated directory-based tagging in [`backend/tests/conftest.py`](../backend/tests/conftest.py).
 
 | Layer / Marker | Directory | Files | Collected Tests | Scope & Isolation |
 |---|---|---:|---:|---|
-| `@pytest.mark.unit` | `backend/tests/unit/` | 13 | 135 | Pure logic with zero DB or FFmpeg: RTL BiDi (`test_rtl_fixer.py`), SRT/VTT serialization & timestamp carry (`test_srt_formatter.py`), segmentation & orphan-word healing (`test_refine_stage.py`, `test_refine_quality.py`), end-credits detection (`test_credits_detect.py`), speaker split & SDH (`test_speaker_split.py`), missing speech (`test_missing_speech.py`), QA rules (`test_qa.py`), Git/Release auto-updater (`test_updater.py`), desktop launcher & shortcuts (`test_desktop_launcher.py`, `test_create_shortcut.py`), DB migration (`test_legacy_rename.py`). |
-| `@pytest.mark.api` | `backend/tests/api/` | 13 | 141 | FastAPI `TestClient` + isolated SQLite: job lifecycle, system info & update check/apply (`409` active-job guard) (`test_api_and_pipeline.py`), multi-provider key vault, strict filtering, Ollama `/api/show` capability discovery, OpenAI snapshot deduplication, startup discovery guard, GPT-5.4/GPT-6 pricing & mixed-provider runtime (`test_multi_provider_ai.py`), segment CRUD (`test_insert_segment.py`), undo/redo edit history (`test_edit_history.py`), upload deduplication & SHA-256 cache (`test_media_upload.py`), row-scoped retranslation (`test_row_translate.py`), glossary profiles (`test_glossary_profiles.py`), speaker detection (`test_speaker_detect.py`), retime/reorder (`test_retime.py`), settings/pricing (`test_settings_pricing.py`), review fixes (`test_review_fixes.py`), save next to video (`test_save_next_to_video.py`), storage cleanup (`test_storage_cleanup.py`). |
-| `@pytest.mark.pipeline` | `backend/tests/pipeline/` | 13 | 170 | Pipeline orchestration & AI adapters: full E2E clip (`test_pipeline_e2e.py`), Whisper threading/OOM/cancel (`test_whisper_provider.py`), Gemini/LLM retries/glossary/truncation (`test_gemini_provider.py`), Flex tier fallback (`test_flex.py`), FinOps dHash prefilter & Ollama pre-tagging (`test_finops_optimizations.py`), OCR & tactical comms (`test_comms_onscreen.py`), foreign speech (`test_foreign_speech.py`), sync alignment & burned-in detection (`test_sync.py`), gap recovery (`test_gap_recovery.py`), word snapping (`test_word_snap.py`), video embedding (`test_embed_video.py`), embedded tracks (`test_embedded_subtitles.py`), per-job logging (`test_logs.py`). |
+| `@pytest.mark.unit` | `backend/tests/unit/` | 30 | 358 | Pure logic with zero DB or FFmpeg: RTL BiDi (`test_rtl_fixer.py`), SRT/VTT serialization & timestamp carry (`test_srt_formatter.py`), segmentation & orphan-word healing (`test_refine_stage.py`, `test_refine_quality.py`), Smart Audio Map window analysis & selective conditioning (`test_smart_audio_and_cost_optimizations.py`), Demucs vocal isolation & WhisperX phoneme alignment/interjection filtering (`test_vocal_isolation_and_whisperx.py`), pipeline quality & long-film diarization cluster re-split (`test_pipeline_quality_upgrade.py`, `test_job_320de88c99_regressions.py`, `test_job_5b4c9f644a_polish.py`), voice-pitch gender (`test_voice_gender.py`), end-credits detection (`test_credits_detect.py`), speaker split & SDH (`test_speaker_split.py`), missing speech (`test_missing_speech.py`), QA rules (`test_qa.py`), Git/Release auto-updater (`test_updater.py`), desktop launcher & shortcuts (`test_desktop_launcher.py`, `test_create_shortcut.py`), DB migration (`test_legacy_rename.py`). |
+| `@pytest.mark.api` | `backend/tests/api/` | 17 | 161 | FastAPI `TestClient` + isolated SQLite: job lifecycle, system info & update check/apply (`409` active-job guard) (`test_api_and_pipeline.py`), multi-provider key vault, strict filtering, Ollama `/api/show` capability discovery, OpenAI snapshot deduplication, startup discovery guard, GPT-5.4/GPT-6 pricing & mixed-provider runtime (`test_multi_provider_ai.py`), segment CRUD (`test_insert_segment.py`), undo/redo edit history (`test_edit_history.py`), upload deduplication & SHA-256 cache (`test_media_upload.py`), row-scoped retranslation (`test_row_translate.py`), glossary profiles (`test_glossary_profiles.py`), speaker detection (`test_speaker_detect.py`), retime/reorder (`test_retime.py`), settings/pricing (`test_settings_pricing.py`), review fixes (`test_review_fixes.py`), save next to video (`test_save_next_to_video.py`), storage cleanup (`test_storage_cleanup.py`). |
+| `@pytest.mark.pipeline` | `backend/tests/pipeline/` | 17 | 235 | Pipeline orchestration & AI adapters: full E2E clip (`test_pipeline_e2e.py`), real two-speaker video gender & diarization (`test_gender_video.py`, `test_diarization.py`, `test_addressee.py`), Whisper threading/OOM/cancel (`test_whisper_provider.py`), Gemini/LLM retries/glossary/truncation (`test_gemini_provider.py`), Flex tier temporary cooldown & single-attempt re-probe (`test_flex.py`), FinOps dHash prefilter & Ollama pre-tagging (`test_finops_optimizations.py`), OCR & tactical comms (`test_comms_onscreen.py`), foreign speech (`test_foreign_speech.py`), sync alignment & burned-in detection (`test_sync.py`), gap recovery (`test_gap_recovery.py`), word snapping (`test_word_snap.py`), video embedding (`test_embed_video.py`), embedded tracks (`test_embedded_subtitles.py`), per-job logging (`test_logs.py`). |
 | `@pytest.mark.security` | `backend/tests/security/` | 5 | 66 | Defense-in-depth verification: `X-SubBuild-Token` & cookie bootstrap + UNC path refusal (`test_session_auth.py`), Origin/Fetch-Metadata CSRF guard & `TrustedHostMiddleware` (`test_request_guard.py`), CSP & anti-framing headers (`test_security_headers.py`), FFmpeg `-protocol_whitelist file` & AST bare `-i` audit (`test_ffmpeg_safety.py`), `Content-Length` upload limits & filename sanitization (`test_upload_limits.py`). |
 | Shared Fixtures | `backend/tests/fixtures/` | 2 | — | `builders.py` (`insert_job`, `create_job_with_segments`, `wait_for_job`) and `fakes.py` (`FakeTranslator`, `SlowTranscriber`). |
 
 Additional cross-cutting Pytest markers:
 - `@pytest.mark.smoke` (**54 tests**): Critical-path sanity checks across auth, core API, pipeline E2E, RTL, and SRT/VTT formatting.
-- `@pytest.mark.ffmpeg` (**24 tests**): Tests invoking real `ffmpeg`/`ffprobe` binaries.
-- `@pytest.mark.regression` (**512 tests**): Full regression coverage.
+- `@pytest.mark.ffmpeg`: Tests invoking real `ffmpeg`/`ffprobe` binaries.
+- `@pytest.mark.regression` (**820 tests**): Full regression coverage.
 
-### 3.2 Frontend Test & Static Analysis Suite (`frontend/`) — 14 Tests
+### 3.2 Frontend Test & Static Analysis Suite (`frontend/`) — 85 Tests (16 Spec Files)
 - **Static Checks:** `oxlint` (`npm run lint`) and TypeScript compiler (`tsc -b`).
-- **Component & Store Tests:**
-  - `frontend/src/__tests__/reliability_and_editor_roundtrip.test.tsx` (**9 tests**): autosave state, split/merge/shift controls, search navigation, and bilingual export URL generation.
-  - `frontend/src/__tests__/multi_provider_settings.test.tsx` (**5 tests**): multi-key provider vault tabs, Ollama Cloud preset, strict key & task filtering, zero SettingsScreen content duplication (`metric-conversion-toggle` / `remove-sdh-speakers-toggle` live only in `PipelineConfig`), `vision-media-resolution` selector, collapsible Ollama details & Cost Estimator panels, per-episode/movie cost benchmarks, `RowTranslateDialog` model filtering & provider-conditional Thinking selector, `ExportToolbar`/`Sidebar` multi-stage AI status without Gemini keys, GPU/VRAM-aware Best-Value Auto-Selector (with Google Flex support), and Sidebar version/update badges & Settings auto-updater controls.
+- **Component & Store Tests (`frontend/src/__tests__/`):** 16 Vitest + React Testing Library spec files covering `addressee_ui`, `batch_queue_ingest`, `context_glossary_ingest` (Smart Audio Processing, Advanced Audio drawer, Vocal Isolation & WhisperX selectors, creator workflow presets), `creator_exports_and_karaoke`, `diarization_ui`, `first_run_modal`, `gpu_libs_dialog`, `hebrew_workflow`, `multi_provider_settings`, `reliability_and_editor_roundtrip`, `review_fixes`, `subtitle_style`, `subtitle_virtual_scroll`, `update_available_dialog`, `ux_improvements`, and `waveform_timeline`.
 
 ### 3.3 Java Enterprise Black-Box Automation (`qa-automation-java/`) — 53 Tests
 Standard Maven project built with **Java 21**, **JUnit 5**, **Selenium WebDriver 4.27**, **RestAssured 5.5**, and **ExtentReports 5** (`9 @Tag("smoke")` + `44` additional `@Tag("regression")` tests; every `smoke` test also carries `@Tag("regression")` so `-Pregression` runs the complete 53-test suite).
@@ -116,7 +114,7 @@ All automated test suites strictly protect real user data (`backend/storage/subb
 ```powershell
 cd "backend"
 
-# Full regression suite (512 tests)
+# Full regression suite (820 tests)
 .\.venv\Scripts\python.exe -m pytest -q
 
 # Fast targeted layers
@@ -194,8 +192,8 @@ SubBuild Studio runs automated verification across both cloud CI (**GitHub Actio
 flowchart LR
     GH["GitHub Push / PR (main)"] -->|Webhook| J["Jenkins Pipeline (Jenkinsfile)"]
     J --> S1["1. Preflight Check<br/>Java 21, Maven, Python3, Node 22, FFmpeg, Chromium"]
-    S1 --> S2["2. Backend Pytest (512)<br/>.venv + CUDA-free reqs + JUnit XML"]
-    S2 --> S3["3. Frontend Build (14 Vitest)<br/>oxlint + tsc + vite build -> frontend/dist"]
+    S1 --> S2["2. Backend Pytest (820)<br/>.venv + CUDA-free reqs + JUnit XML"]
+    S2 --> S3["3. Frontend Build (85 Vitest)<br/>oxlint + tsc + vite build -> frontend/dist"]
     S3 --> S4["4. Java QA (53 Regression / 9 Smoke)<br/>ARM64 Chromium Headless + RestAssured"]
     S4 --> R["Unified JUnit Results + ExtentReports HTML & Screenshots"]
 ```
