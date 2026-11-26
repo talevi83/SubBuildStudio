@@ -44,9 +44,18 @@ def detect_sync_tools() -> Dict[str, bool]:
 def _ffsubsync_command(reference_path: Path, srt_path: Path, output_path: Path) -> Optional[List[str]]:
     exe = shutil.which("ffsubsync")
     if exe:
-        return [exe, str(reference_path), "-i", str(srt_path), "-o", str(output_path)]
+        return [exe, str(reference_path), "--srtin", str(srt_path), "--srtout", str(output_path)]
     if importlib.util.find_spec("ffsubsync") is not None:
-        return [sys.executable, "-m", "ffsubsync", str(reference_path), "-i", str(srt_path), "-o", str(output_path)]
+        return [
+            sys.executable,
+            "-m",
+            "ffsubsync",
+            str(reference_path),
+            "--srtin",
+            str(srt_path),
+            "--srtout",
+            str(output_path),
+        ]
     return None
 
 
